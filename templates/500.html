@@ -1,0 +1,20 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}500 - Server Error | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <div class="card" style="text-align:center; padding:40px;">
+    <h1 style="font-size:48px;">500</h1>
+    <h2>Server Error</h2>
+    <p>Something went wrong on our server. Please try again later.</p>
+
+    <div style="margin-top:20px;">
+      <a href="/" class="btn-primary">Go Home</a>
+      <a href="/api/user/dashboard" class="btn-secondary" style="margin-left:10px;">Dashboard</a>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

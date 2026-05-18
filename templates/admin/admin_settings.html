@@ -1,0 +1,126 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Platform Settings</h2>
+
+<div class="card" style="margin-bottom: 30px;">
+  <p>Manage key‑value settings that control various aspects of the platform.</p>
+  <div id="settingsContainer" style="margin-top:20px;"></div>
+  <div id="settingsStatus" class="status-text"></div>
+</div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+const authHeaders = {
+  "Content-Type": "application/json",
+  "Authorization": "Bearer " + token
+};
+
+// Load all settings on page load
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/admin/settings", { headers: authHeaders });
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Session expired. Please login again.");
+        window.location.href = "/admin/login";
+        return;
+      }
+      throw new Error("Failed to load settings");
+    }
+
+    const settings = await res.json();
+    let html = "";
+
+    if (!settings || Object.keys(settings).length === 0) {
+      html = "<p>No settings found.</p>";
+    } else {
+      html += '<table class="admin-table"><thead><tr><th>Key</th><th>Value</th><th>Actions</th></tr></thead><tbody>';
+      for (const [key, value] of Object.entries(settings)) {
+        html += `
+          <tr>
+            <td><strong>${key}</strong></td>
+            <td>
+              <input type="text" id="val_${key}" value="${value}" style="width:100%; padding:5px;" />
+            </td>
+            <td>
+              <button onclick="updateSetting('${key}')" style="padding:6px 12px;">Save</button>
+            </td>
+          </tr>
+        `;
+      }
+      html += '</tbody></table>';
+    }
+
+    document.getElementById("settingsContainer").innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    document.getElementById("settingsContainer").innerHTML = "<p>Error loading settings.</p>";
+  }
+}
+
+// Update a single setting
+async function updateSetting(key) {
+  const newValue = document.getElementById("val_" + key).value.trim();
+  if (!newValue) {
+    document.getElementById("settingsStatus").innerText = "Value cannot be empty.";
+    return;
+  }
+
+  document.getElementById("settingsStatus").innerText = "Saving...";
+  try {
+    const res = await fetch("/api/admin/settings", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ key: key, value: newValue })
+    });
+
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to update");
+    }
+
+    document.getElementById("settingsStatus").innerText = `"${key}" updated successfully.`;
+    // Optionally reload settings to confirm
+    loadSettings();
+  } catch (err) {
+    console.error(err);
+    document.getElementById("settingsStatus").innerText = "Update failed: " + err.message;
+  }
+}
+
+// Initial load
+loadSettings();
+</script>
+
+<style>
+  .admin-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .admin-table th, .admin-table td {
+    border: 1px solid #ddd;
+    padding: 10px;
+    text-align: left;
+  }
+  .admin-table th {
+    background: #f2f2f2;
+  }
+  .card {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.05);
+  }
+  .status-text {
+    margin-top: 10px;
+    min-height: 20px;
+  }
+</style>
+
+{% endblock %}

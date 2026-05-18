@@ -1,0 +1,242 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Dashboard | LANDMARK{% endblock %}
+
+{% block content %}
+<style>
+  /* Main content wrapper */
+  .dashboard-main {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  /* Wallet card (gold style you liked) */
+  .wallet-card {
+    background: linear-gradient(135deg, #ffd700, #ffcc00);
+    color: #1a1a1a;
+    padding: 22px;
+    border-radius: 16px;
+    margin-bottom: 25px;
+    box-shadow: 0 10px 30px rgba(255, 215, 0, 0.3);
+  }
+  .wallet-card h2 {
+    margin: 0 0 5px;
+    font-size: 1.5rem;
+  }
+  .wallet-balance {
+    font-size: 2rem;
+    font-weight: 800;
+  }
+  .wallet-buttons {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+  }
+  .wallet-buttons button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .btn-add {
+    background: #22c55e;
+    color: white;
+  }
+  .btn-withdraw {
+    background: #ef4444;
+    color: white;
+  }
+
+  /* Action grid */
+  .action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 18px;
+    margin-bottom: 30px;
+  }
+  .action-card {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(8px);
+    border-radius: 20px;
+    padding: 20px 12px;
+    text-align: center;
+    text-decoration: none;
+    transition: 0.2s;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #eef5ff;
+  }
+  .action-card:hover {
+    transform: translateY(-3px);
+    border-color: #ffd700;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.3);
+  }
+  .action-icon {
+    font-size: 2rem;
+    display: block;
+    margin-bottom: 8px;
+  }
+  .action-title {
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+
+  /* Sections (Earn, Activity, Analytics) */
+  .section-title {
+    font-size: 1.3rem;
+    margin: 25px 0 15px;
+    color: #ffd966;
+  }
+  .info-card {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    padding: 15px;
+    margin-bottom: 20px;
+  }
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+</style>
+
+<div class="dashboard-main">
+  <!-- Wallet Card -->
+  <div class="wallet-card">
+    <h2>💰 Wallet Balance</h2>
+    <div class="wallet-balance" id="walletBalance">₹ 0</div>
+    <p>🎁 Referral Earnings: <span id="refEarnings">₹ 0</span></p>
+    <div class="wallet-buttons">
+      <button class="btn-add" onclick="alert('Add money coming soon')">Add Money</button>
+      <button class="btn-withdraw" onclick="alert('Withdraw coming soon')">Withdraw</button>
+    </div>
+  </div>
+
+  <!-- Main Action Grid -->
+  <div class="action-grid">
+    <a href="/api/user/browse" class="action-card">
+      <span class="action-icon">🔍</span>
+      <span class="action-title">Search Nearby</span>
+    </a>
+    <a href="/api/user/create-listing" class="action-card">
+      <span class="action-icon">➕</span>
+      <span class="action-title">Add Business</span>
+    </a>
+    <a href="/api/user/invite" class="action-card">
+      <span class="action-icon">🤝</span>
+      <span class="action-title">Invite Friends</span>
+    </a>
+    <a href="/api/user/profile" class="action-card">
+      <span class="action-icon">👤</span>
+      <span class="action-title">Profile</span>
+    </a>
+    <a href="/wallet" class="action-card">
+      <span class="action-icon">💳</span>
+      <span class="action-title">Wallet</span>
+    </a>
+    <a href="/transactions" class="action-card">
+      <span class="action-icon">📜</span>
+      <span class="action-title">Transactions</span>
+    </a>
+    <a href="/pricing" class="action-card">
+      <span class="action-icon">💎</span>
+      <span class="action-title">Upgrade</span>
+    </a>
+  </div>
+
+  <!-- Earn Section -->
+  <div class="section-title">💸 Earn with LANDMARK</div>
+  <div class="action-grid">
+    <div class="action-card">Invite & Earn</div>
+    <div class="action-card">Boost Business</div>
+    <div class="action-card">Premium Listing</div>
+    <div class="action-card">Ads Promotion</div>
+  </div>
+
+  <!-- Recent Activity -->
+  <div class="section-title">📌 Recent Activity</div>
+  <div class="info-card">
+    <div class="info-row"><span>Someone viewed your business</span><span>1 min ago</span></div>
+    <div class="info-row"><span>₹500 added to wallet</span><span>2 days ago</span></div>
+    <div class="info-row"><span>New service request</span><span>3 days ago</span></div>
+  </div>
+
+  <!-- Analytics -->
+  <div class="section-title">📊 Your Growth</div>
+  <div class="info-card">
+    <div class="info-row"><span>Views</span><span id="views">0</span></div>
+    <div class="info-row"><span>Clicks</span><span id="clicks">0</span></div>
+    <div class="info-row"><span>Leads</span><span id="leads">0</span></div>
+  </div>
+</div>
+
+<script>
+  // JWT helpers (same as before)
+  function getAccessToken() { return localStorage.getItem("access_token"); }
+  function getRefreshToken() { return localStorage.getItem("refresh_token"); }
+
+  function redirectToLogin() {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    window.location.href = "/api/auth/public/login";
+  }
+
+  async function authFetch(url, options = {}) {
+    const token = getAccessToken();
+    if (!token) { redirectToLogin(); throw new Error("No token"); }
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+      ...options.headers
+    };
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) {
+      const refresh = getRefreshToken();
+      if (refresh) {
+        const refreshRes = await fetch("/api/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refresh })
+        });
+        if (refreshRes.ok) {
+          const newData = await refreshRes.json();
+          localStorage.setItem("access_token", newData.access_token);
+          return authFetch(url, options);
+        }
+      }
+      redirectToLogin();
+      throw new Error("Unauthorized");
+    }
+    return response;
+  }
+
+  async function loadDashboardData() {
+    try {
+      // Get wallet balance
+      const walletRes = await authFetch("/api/payment/wallet");
+      if (walletRes.ok) {
+        const data = await walletRes.json();
+        const balance = data.wallet_balance || data.balance || 0;
+        document.getElementById("walletBalance").innerText = `₹ ${balance.toLocaleString('en-IN')}`;
+      }
+      // Optionally fetch referral earnings, views, clicks, leads from your APIs
+    } catch (err) {
+      console.error(err);
+      document.getElementById("walletBalance").innerText = "₹ --";
+    }
+  }
+
+  // Global logout for sidebar link
+  window.logout = function() {
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    window.location.href = "/api/auth/public/login";
+  };
+
+  document.addEventListener("DOMContentLoaded", () => {
+    if (!getAccessToken()) redirectToLogin();
+    else loadDashboardData();
+  });
+</script>
+{% endblock %}

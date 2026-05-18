@@ -1,0 +1,132 @@
+{% extends "layouts/layout_app.html" %}
+{% block title %}Invite Friends | LANDMARK{% endblock %}
+{% block content %}
+<div class="invite-container">
+  <div class="invite-card">
+    <h1>Invite <span class="gradient">Friends</span></h1>
+    <p>Share your referral link and earn rewards when they join!</p>
+    
+    <div class="ref-link-box">
+      <input type="text" id="referralLink" readonly>
+      <button onclick="copyLink()">📋 Copy</button>
+    </div>
+    
+    <button class="whatsapp-btn" onclick="shareWhatsApp()">💬 Invite via WhatsApp</button>
+  </div>
+</div>
+
+<style>
+  .invite-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 70vh;
+    background: radial-gradient(circle at 10% 30%, rgba(5,15,25,0.9), #03070f);
+    padding: 2rem;
+  }
+  .invite-card {
+    background: rgba(15, 25, 45, 0.7);
+    backdrop-filter: blur(12px);
+    border-radius: 2rem;
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    padding: 2rem;
+    max-width: 500px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 20px 35px -15px rgba(0,0,0,0.3);
+  }
+  h1 {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+    color: #e0f2fe;
+  }
+  .gradient {
+    background: linear-gradient(135deg, #00ffff, #8b5cf6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .ref-link-box {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1.5rem 0;
+  }
+  #referralLink {
+    flex: 1;
+    padding: 0.7rem;
+    border-radius: 2rem;
+    border: 1px solid #0ff;
+    background: #0a0f1c;
+    color: white;
+    font-size: 0.9rem;
+    text-align: center;
+  }
+  button {
+    background: rgba(0, 255, 255, 0.15);
+    border: 1px solid #0ff;
+    border-radius: 2rem;
+    padding: 0.5rem 1rem;
+    color: #0ff;
+    cursor: pointer;
+    transition: 0.2s;
+  }
+  button:hover {
+    background: rgba(0, 255, 255, 0.3);
+    box-shadow: 0 0 8px #0ff;
+  }
+  .whatsapp-btn {
+    background: #25D366;
+    border-color: #25D366;
+    color: white;
+    margin-top: 0.5rem;
+  }
+  .whatsapp-btn:hover {
+    background: #128C7E;
+    box-shadow: 0 0 8px #25D366;
+  }
+</style>
+
+<script>
+  async function loadReferral() {
+    const token = localStorage.getItem("access_token");
+    if (!token) {
+        window.location.href = "/api/auth/public/login";
+        return;
+    }
+    try {
+        const res = await fetch("/api/user/api/invite", {
+            headers: { "Authorization": `Bearer ${token}` }
+        });
+        const data = await res.json();
+        console.log("Full response from /api/user/api/invite:", data);
+        if (data.referral_code) {
+            const link = `${window.location.origin}/register?ref=${data.referral_code}`;
+            document.getElementById("referralLink").value = link;
+        } else {
+            document.getElementById("referralLink").value = "No referral code available";
+        }
+    } catch (err) {
+        console.error("Fetch error:", err);
+        document.getElementById("referralLink").value = "Error loading referral code";
+    }
+} 
+
+  function copyLink() {
+    const input = document.getElementById("referralLink");
+    input.select();
+    document.execCommand("copy");
+    alert("Referral link copied!");
+  }
+
+  function shareWhatsApp() {
+    const link = document.getElementById("referralLink").value;
+    if (link && link !== "No referral code available") {
+      window.open(`https://wa.me/?text=${encodeURIComponent("Join me on LANDMARK! 🎉 Use my referral link: " + link)}`, "_blank");
+    } else {
+      alert("Referral code not ready yet. Please refresh.");
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", loadReferral);
+</script>
+{% endblock %}

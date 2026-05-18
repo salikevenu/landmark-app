@@ -1,0 +1,342 @@
+{% extends "layouts/layout_public.html" %}
+{% block title %}Nearby Map | LANDMARK{% endblock %}
+
+{% block content %}
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css"/>
+
+<style>
+  .map-layout {
+    display: flex;
+    gap: 12px;
+    height: 75vh;
+    margin-top: 10px;
+  }
+  #map {
+    width: 60%;
+    border-radius: 10px;
+  }
+  #list {
+    width: 40%;
+    overflow-y: auto;
+    padding: 12px;
+    background: #f4f7ff;
+    border-radius: 10px;
+  }
+  .list-card {
+    background: white;
+    padding: 14px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    cursor: pointer;
+    transition: all .25s;
+  }
+  .list-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 16px rgba(0,0,0,.15);
+  }
+  .premium {
+    border-left: 6px solid gold;
+    background: #fffdf5;
+  }
+  .badge {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    margin-left: 6px;
+    color: white;
+  }
+  .business { background: #16a34a; }
+  .service { background: #f59e0b; }
+  .sponsored {
+    background: #9333ea;
+    color: white;
+    font-size: 10px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+  }
+  .rating {
+    font-size: 13px;
+    margin-top: 5px;
+    color: #f59e0b;
+  }
+  .review-count {
+    font-size: 12px;
+    color: #666;
+    margin-left: 4px;
+  }
+  .photo {
+    width: 100%;
+    height: 120px;
+    object-fit: cover;
+    border-radius: 8px;
+    margin-bottom: 8px;
+  }
+  .contact-btn {
+    display: inline-block;
+    margin-top: 10px;
+    margin-right: 6px;
+    padding: 7px 12px;
+    background: #25D366;
+    color: white;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .call-btn {
+    display: inline-block;
+    margin-top: 10px;
+    margin-right: 6px;
+    padding: 7px 12px;
+    background: #2563eb;
+    color: white;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .header-card {
+    padding: 15px;
+  }
+</style>
+
+<div class="container">
+  <div class="card header-card">
+    <h2>LANDMARK Nearby Businesses & Services</h2>
+
+    <div class="controls">
+      <button class="btn-primary" onclick="getLocation()">Find Nearby</button>
+      <button class="btn-secondary" onclick="setFilter('')">All</button>
+      <button class="btn-secondary" onclick="setFilter('business')">Businesses</button>
+      <button class="btn-secondary" onclick="setFilter('service')">Services</button>
+      <input id="searchBox" type="text" placeholder="Search business..." onkeyup="filterList()"/>
+      <button class="btn-secondary" onclick="startVoiceSearch()">🎤 Voice</button>
+    </div>
+
+    <div class="map-filters">
+      <button onclick="setCategory('')">All</button>
+      <button onclick="setCategory('restaurant')">🍴 Restaurants</button>
+      <button onclick="setCategory('hospital')">🏥 Hospitals</button>
+      <button onclick="setCategory('hotel')">🏨 Hotels</button>
+      <button onclick="setCategory('shop')">🛒 Shops</button>
+      <button onclick="setCategory('service')">⚙ Services</button>
+    </div>
+
+    <div class="map-sorting">
+      <button onclick="setSort('distance')">📍 Closest</button>
+      <button onclick="setSort('rating')">⭐ Top Rated</button>
+      <button onclick="setSort('trending')">🔥 Trending</button>
+      <button onclick="setSort('sponsored')">💰 Sponsored</button>
+    </div>
+
+    <div class="map-layout">
+      <div id="map"></div>
+      <div id="list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+
+<script>
+let map;
+let markerCluster;
+let currentType = '';
+let currentSort = 'smart';   // ✅ Default sort
+let allListings = [];
+let moveTimer = null;
+
+// Parse token for protected endpoints (heatmap)
+const token = localStorage.getItem("access_token");
+
+function initMap(lat, lng) {
+  map = L.map("map").setView([lat, lng], 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "© OpenStreetMap"
+  }).addTo(map);
+
+  markerCluster = L.markerClusterGroup();
+  map.addLayer(markerCluster);
+
+  // Attach moveend event AFTER map creation
+  map.on("moveend", function() {
+    clearTimeout(moveTimer);
+    moveTimer = setTimeout(loadNearbyListings, 500);
+  });
+
+  loadHeatmap(); // optional heatmap
+  loadNearbyListings(); // initial load
+}
+
+// Load listings at current map center
+function loadNearbyListings() {
+  const center = map.getCenter();
+  fetch(`/api/nearby/nearby?lat=${center.lat}&lng=${center.lng}&type=${currentType}&sort=${currentSort}`)  // ✅ correct endpoint
+    .then(res => res.json())
+    .then(data => {
+      if (!data.results) return;
+      allListings = data.results;
+      renderList(allListings);
+    })
+    .catch(() => {
+      document.getElementById("list").innerHTML = "Failed to load listings.";
+    });
+}
+
+// Render listing cards and markers
+function renderList(data) {
+  markerCluster.clearLayers();
+  const listDiv = document.getElementById("list");
+  listDiv.innerHTML = "";
+
+  data.forEach(item => {
+    const photo = item.image_url || "/static/default.jpg"; // ✅ local fallback
+
+    // Marker
+    const marker = L.marker([item.latitude, item.longitude])
+      .bindPopup(`
+        <b>${item.business_name}</b><br>
+        ${item.category}<br>
+        ⭐ ${item.rating || 0} (${item.total_reviews || 0} reviews)<br>
+        📍 ${item.distance_km} km<br>
+        <a href="tel:+91${item.phone}">📞 Call</a><br>
+        <a href="https://wa.me/91${item.whatsapp || item.phone}" target="_blank">💬 WhatsApp</a><br>
+        <a href="https://www.google.com/maps/dir/?api=1&destination=${item.latitude},${item.longitude}" target="_blank">📍 Directions</a>
+      `);
+    markerCluster.addLayer(marker);
+
+    // Card
+    const premiumClass = item.is_premium ? "premium" : "";
+    const stars = "⭐".repeat(Math.round(item.rating || 0));
+    const icon = getCategoryIcon(item.category);
+
+    const card = `
+      <div class="list-card ${premiumClass}" onclick="map.setView([${item.latitude},${item.longitude}],16)">
+        <img class="photo" src="${photo}" alt="${item.business_name}">
+        <h3>
+          ${icon} ${item.business_name}
+          ${item.is_verified ? "✔️" : ""}
+          ${item.is_premium ? "⭐" : ""}
+          ${item.is_sponsored ? '<span class="sponsored">Sponsored</span>' : ""}
+        </h3>
+        <div class="rating">${stars} <span class="review-count">(${item.total_reviews || 0} reviews)</span></div>
+        <p><b>Category:</b> ${item.category}</p>
+        <p>${item.city || ""}, ${item.state || ""}</p>
+        <p class="distance">Distance: ${item.distance_km || 0} km</p>
+        <p>${item.description || ""}</p>
+        <a class="contact-btn" href="https://wa.me/91${item.phone || ''}" target="_blank">WhatsApp</a>
+        <a class="call-btn" href="tel:+91${item.phone || ''}">Call</a>
+        <a class="contact-btn" href="https://www.google.com/maps/dir/?api=1&destination=${item.latitude},${item.longitude}" target="_blank">Directions</a>
+      </div>
+    `;
+    listDiv.innerHTML += card;
+  });
+
+  if (markerCluster.getLayers().length > 0) {
+    const group = new L.featureGroup(markerCluster.getLayers());
+    map.fitBounds(group.getBounds().pad(0.2));
+  }
+}
+
+function getCategoryIcon(category) {
+  const cat = (category || "").toLowerCase();
+  if (cat.includes("restaurant")) return "🍽️";
+  if (cat.includes("doctor")) return "🩺";
+  if (cat.includes("shop")) return "🛍️";
+  if (cat.includes("hotel")) return "🏨";
+  if (cat.includes("repair")) return "🔧";
+  return "📍";
+}
+
+function setCategory(category) {
+  currentType = category;
+  loadNearbyListings();
+}
+
+function setSort(type) {
+  currentSort = type;
+  loadNearbyListings();
+}
+
+function setFilter(type) {
+  currentType = type;
+  loadNearbyListings();
+}
+
+// Location button
+function getLocation() {
+  if (!navigator.geolocation) {
+    alert("Location not supported");
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    if (!map) {
+      initMap(pos.coords.latitude, pos.coords.longitude);
+    } else {
+      map.setView([pos.coords.latitude, pos.coords.longitude], 13);
+      loadNearbyListings();
+    }
+  });
+}
+
+// Filter by search
+function filterList() {
+  const q = document.getElementById("searchBox").value.toLowerCase();
+  const filtered = allListings.filter(item =>
+    (item.business_name || "").toLowerCase().includes(q)
+  );
+  renderList(filtered);
+}
+
+// Optional heatmap (JWT protected, but won't break if unauthorized)
+function loadHeatmap() {
+  fetch("/api/heatmap", {
+    headers: token ? { "Authorization": "Bearer " + token } : {}
+  })
+  .then(res => {
+    if (!res.ok) throw new Error("Unauthorized");
+    return res.json();
+  })
+  .then(data => {
+    const points = data.map(p => [p.lat, p.lng, 0.5]);
+    const heat = L.heatLayer(points, { radius: 25, blur: 15, maxZoom: 17 });
+    heat.addTo(map);
+  })
+  .catch(() => {
+    console.log("Heatmap unavailable (requires login)");
+  });
+}
+
+// Voice search
+function startVoiceSearch() {
+  if (!('webkitSpeechRecognition' in window)) {
+    alert("Voice search not supported");
+    return;
+  }
+  const recognition = new webkitSpeechRecognition();
+  recognition.lang = "en-IN";
+  recognition.interimResults = false;
+  recognition.onresult = function(event) {
+    document.getElementById("searchBox").value = event.results[0][0].transcript;
+    filterList();
+  };
+  recognition.onerror = () => alert("Voice recognition failed");
+  recognition.start();
+}
+
+// Initialise on page load
+window.onload = getLocation;
+</script>
+
+{% endblock %}

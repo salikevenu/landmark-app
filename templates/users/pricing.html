@@ -1,0 +1,162 @@
+{% extends "layouts/layout_app.html" %}
+{% block title %}Pricing | LANDMARK{% endblock %}
+{% block content %}
+<style>
+  .pricing-container {
+    max-width: 900px;
+    margin: 40px auto;
+    padding: 20px;
+    color: #eef5ff;
+  }
+  .plans {
+    display: flex;
+    justify-content: center;
+    gap: 30px;
+    flex-wrap: wrap;
+  }
+  .plan-card {
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px;
+    padding: 30px 20px;
+    width: 220px;
+    text-align: center;
+    transition: 0.3s;
+  }
+  .plan-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 0 20px rgba(255,215,0,0.2);
+  }
+  .plan-card h3 {
+    color: #facc15;
+    margin-bottom: 10px;
+  }
+  .price {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 15px 0;
+  }
+  .btn-plan {
+    background: linear-gradient(135deg, #facc15, #f59e0b);
+    border: none;
+    padding: 12px 25px;
+    border-radius: 30px;
+    font-weight: 700;
+    color: #1a1a1a;
+    cursor: pointer;
+    transition: 0.2s;
+    margin-top: 15px;
+    width: 100%;
+  }
+  .btn-plan:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+</style>
+
+<div class="pricing-container">
+  <h2 style="text-align:center; color:#facc15;">Choose Your Plan</h2>
+  <div class="plans" id="plansContainer">
+    <!-- Plans will be rendered by JavaScript -->
+  </div>
+</div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  // All available plans – include an 'eligibleRoles' field
+  const ALL_PLANS = [
+    { id: "service", name: "Service Provider", price: 499, role: "service_provider", eligibleRoles: ["free"] },
+    { id: "basic", name: "Business Basic", price: 999, role: "business_basic", eligibleRoles: ["free", "service_provider"] },
+    { id: "premium", name: "Business Premium", price: 1999, role: "business_premium", eligibleRoles: ["free", "service_provider", "business_basic"] },
+    { id: "extra_business", name: "Extra Business Slot", price: 249, role: null, eligibleRoles: ["business_premium"] }
+  ];
+
+  async function loadPlans() {
+    // Fetch current user role from subscription-status endpoint
+    let userRole = "free";
+    try {
+      const res = await fetch("/api/user/subscription-status", {
+        credentials: "include"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        userRole = data.role;
+      }
+    } catch(e) { console.error("Could not fetch role", e); }
+
+    const container = document.getElementById("plansContainer");
+    container.innerHTML = "";
+
+    ALL_PLANS.forEach(plan => {
+      if (!plan.eligibleRoles.includes(userRole)) return; // skip if user already has this or can't buy
+
+      const card = document.createElement("div");
+      card.className = "plan-card";
+      card.innerHTML = `
+        <h3>${plan.name}</h3>
+        <div class="price">₹${plan.price}</div>
+        <p>per month</p>
+        <button class="btn-plan" onclick="startPayment('${plan.id}')">
+          ${plan.id === "extra_business" ? "Buy Slot" : "Choose Plan"}
+        </button>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  async function startPayment(planType) {
+    try {
+      const res = await fetch("/api/user/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ plan: planType })
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
+
+      const options = {
+        key: data.key,
+        amount: data.amount,
+        currency: data.currency,
+        order_id: data.order_id,
+        name: "LANDMARK",
+        description: `Upgrade to ${planType}`,
+        handler: async function(response) {
+          // Verify payment
+          const verifyRes = await fetch("/api/user/verify-payment", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_signature: response.razorpay_signature,
+              plan: planType
+            })
+          });
+          const verifyData = await verifyRes.json();
+          if (verifyData.message) {
+            alert(verifyData.message);
+            window.location.href = verifyData.redirect || "/dashboard";
+          } else {
+            alert("Payment verification failed");
+          }
+        }
+      };
+      const rzp = new Razorpay(options);
+      rzp.open();
+    } catch(e) {
+      console.error(e);
+      alert("Payment initiation failed");
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", loadPlans);
+</script>
+{% endblock %}

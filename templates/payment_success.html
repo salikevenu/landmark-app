@@ -1,0 +1,30 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Payment Successful | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <div class="card" style="text-align:center; padding:40px;">
+    <h2>Payment Successful 🎉</h2>
+    <p>Your subscription has been successfully activated.</p>
+
+    <div style="margin-top:15px;">
+      <button class="btn-primary" onclick="goDashboard()">Go to Dashboard</button>
+      <a href="/api/user/browse" class="btn-secondary" style="margin-left:10px;">Browse Listings</a>
+    </div>
+
+    <p id="statusMessage" class="status-text"></p>
+  </div>
+</div>
+
+<script>
+function goDashboard() {
+  document.getElementById("statusMessage").innerText = "Redirecting to dashboard...";
+  setTimeout(function() {
+    window.location.href = "/api/user/dashboard";   // ✅ correct dashboard
+  }, 500);
+}
+</script>
+
+{% endblock %}

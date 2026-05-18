@@ -1,0 +1,127 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Edit Listing | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+
+<h2>Edit Listing</h2>
+
+<div class="card">
+
+<input type="text" id="business_name" placeholder="Business Name">
+
+<input type="text" id="category" placeholder="Category">
+
+<input type="text" id="city" placeholder="City">
+
+<input type="text" id="state" placeholder="State">
+
+<textarea id="description" placeholder="Description"></textarea>
+
+<button class="btn-primary" onclick="updateListing()">Update Listing</button>
+
+<p id="statusMessage" class="status-text"></p>
+
+</div>
+
+</div>
+
+
+<script src="/static/js/auth.js">
+
+const listingId = window.location.pathname.split("/").pop();
+
+
+document.addEventListener("DOMContentLoaded", function(){
+
+const token = localStorage.getItem("token");
+
+if(!token){
+alert("Please login first");
+window.location.href="/login";
+return;
+}
+
+fetch(`/api/listing/${listingId}`,{
+headers:{
+"Authorization":"Bearer " + token
+}
+})
+.then(res=>res.json())
+.then(data=>{
+
+document.getElementById("business_name").value = data.business_name || "";
+document.getElementById("category").value = data.category || "";
+document.getElementById("city").value = data.city || "";
+document.getElementById("state").value = data.state || "";
+document.getElementById("description").value = data.description || "";
+
+});
+
+});
+
+
+function updateListing(){
+
+const token = localStorage.getItem("token");
+
+const business_name = document.getElementById("business_name").value.trim();
+const category = document.getElementById("category").value.trim();
+const city = document.getElementById("city").value.trim();
+const state = document.getElementById("state").value.trim();
+const description = document.getElementById("description").value.trim();
+
+const status = document.getElementById("statusMessage");
+
+if(!business_name || !category){
+
+status.innerText = "Business name and category are required.";
+return;
+
+}
+
+fetch(`/api/update-listing/${listingId}`,{
+
+method:"PUT",
+
+headers:{
+"Content-Type":"application/json",
+"Authorization":"Bearer " + token
+},
+
+body:JSON.stringify({
+business_name,
+category,
+city,
+state,
+description
+})
+
+})
+.then(res=>res.json())
+.then(data=>{
+
+status.innerText = data.message || data.error;
+
+if(data.message){
+
+setTimeout(function(){
+window.location.href="/my-listings";
+},800);
+
+}
+
+})
+.catch(()=>{
+
+status.innerText="Update failed.";
+
+});
+
+}
+
+</script>
+
+{% endblock %}

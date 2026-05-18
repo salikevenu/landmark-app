@@ -1,0 +1,62 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Payments</h2>
+<table border="1" width="100%" cellpadding="8">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>User Phone</th>
+      <th>Amount</th>
+      <th>Status</th>
+      <th>Date</th>
+    </tr>
+  </thead>
+  <tbody id="paymentsTable">
+    <tr><td colspan="5">Loading...</td></tr>
+  </tbody>
+</table>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+fetch("/api/admin/payments", {
+  headers: { "Authorization": "Bearer " + token }
+})
+.then(res => {
+  if (!res.ok) {
+    if (res.status === 401) {
+      alert("Session expired. Please login again.");
+      window.location.href = "/api/auth/public/login";
+      throw new Error("Unauthorized");
+    }
+    throw new Error("Failed to load");
+  }
+  return res.json();
+})
+.then(data => {
+  let html = "";
+  data.forEach(p => {
+    html += `
+      <tr>
+        <td>${p.id}</td>
+        <td>${p.user_phone}</td>
+        <td>₹${p.amount}</td>
+        <td>${p.status}</td>
+        <td>${p.created_at}</td>
+      </tr>
+    `;
+  });
+  document.getElementById("paymentsTable").innerHTML = html || "<tr><td colspan='5'>No payments found.</td></tr>";
+})
+.catch(err => {
+  console.error(err);
+  document.getElementById("paymentsTable").innerHTML = "<tr><td colspan='5'>Error loading payments.</td></tr>";
+});
+</script>
+
+{% endblock %}

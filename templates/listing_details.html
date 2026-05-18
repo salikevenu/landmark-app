@@ -1,0 +1,123 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Business Details | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <div class="card" id="listingDetails">
+    <div class="loading">Loading business details...</div>
+  </div>
+</div>
+
+<style>
+  .business-header { display: flex; gap: 15px; align-items: center; margin-bottom: 15px; }
+  .business-img { width: 110px; height: 110px; object-fit: cover; border-radius: 10px; }
+  .business-info { flex: 1; }
+  .business-actions { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .review-box { margin-top: 20px; padding: 10px; border-top: 1px solid #eee; }
+  .review-item { margin-bottom: 10px; padding: 10px; background: #f7f7f7; border-radius: 6px; }
+  .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; margin-right: 5px; }
+  .verified { background: #28a745; color: white; }
+  .premium { background: #ffc107; color: black; }
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  const container = document.getElementById("listingDetails");
+  const pathParts = window.location.pathname.split("/");
+  const listingId = pathParts[pathParts.length - 1];
+
+  fetch(`/api/listing/${listingId}`)          // ✅ public endpoint added above
+    .then(res => {
+      if (!res.ok) throw new Error("Failed to load listing");
+      return res.json();
+    })
+    .then(data => {
+      const item = data.listing;
+
+      let html = `
+        <div class="business-header">
+          <img class="business-img" src="${item.image || '/static/default-business.png'}" alt="${item.business_name}">
+          <div class="business-info">
+            <h2>${item.business_name}</h2>
+            <p><strong>Category:</strong> ${item.category}</p>
+            <p><strong>Location:</strong> ${item.city || ""}, ${item.state || ""}</p>
+            <p><strong>Views:</strong> ${item.views || 0}</p>
+            <p><strong>Rating:</strong> ⭐ ${item.rating || "0.0"}</p>
+            ${item.is_verified ? '<span class="badge verified">Verified</span>' : ''}
+            ${item.is_premium ? '<span class="badge premium">Premium</span>' : ''}
+          </div>
+        </div>
+
+        <p>${item.description || ""}</p>
+
+        <div class="map-box">
+          <iframe
+            width="100%"
+            height="300"
+            frameborder="0"
+            style="border-radius:10px"
+            src="https://maps.google.com/maps?q=${item.latitude},${item.longitude}&z=15&output=embed">
+          </iframe>
+        </div>
+
+        <div class="business-actions">
+          <a href="tel:${item.phone}" class="btn-primary">Call</a>
+          <a href="https://wa.me/91${item.phone}" target="_blank" class="btn-primary">WhatsApp</a>
+          <a href="https://maps.google.com/?q=${item.latitude},${item.longitude}" target="_blank" class="btn-secondary">Directions</a>
+          <button class="btn-secondary" onclick="shareListing()">Share</button>
+        </div>
+
+        <div class="review-box">
+          <h3>Reviews</h3>
+          <div id="reviewsContainer">Loading reviews...</div>
+        </div>
+      `;
+
+      container.innerHTML = html;
+      loadReviews(listingId);
+    })
+    .catch(() => {
+      container.innerHTML = "<p>Unable to load listing.</p>";
+    });
+});
+
+function loadReviews(id) {
+  fetch(`/api/listing/reviews/${id}`)       // ✅ existing public endpoint
+    .then(res => res.json())
+    .then(data => {
+      const box = document.getElementById("reviewsContainer");
+      if (!data.reviews || data.reviews.length === 0) {
+        box.innerHTML = "<p>No reviews yet.</p>";
+        return;
+      }
+
+      let html = "";
+      data.reviews.forEach(r => {
+        html += `
+          <div class="review-item">
+            <strong>${r.user_name || r.user_phone}</strong>
+            <p>⭐ ${r.rating}</p>
+            <p>${r.review}</p>
+          </div>
+        `;
+      });
+      box.innerHTML = html;
+    });
+}
+
+function shareListing() {
+  if (navigator.share) {
+    navigator.share({
+      title: "LANDMARK Business",
+      text: "Check this business on LANDMARK",
+      url: window.location.href
+    });
+  } else {
+    prompt("Copy link", window.location.href);
+  }
+}
+</script>
+
+{% endblock %}

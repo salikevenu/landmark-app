@@ -1,0 +1,30 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Payment Failed | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <div class="card" style="text-align:center; padding:40px;">
+    <h2>Payment Failed ❌</h2>
+    <p>Something went wrong while processing your payment. Please try again.</p>
+
+    <div style="margin-top:15px;">
+      <button class="btn-primary" onclick="retryPayment()">Retry Payment</button>
+      <a href="/api/user/dashboard" class="btn-secondary" style="margin-left:10px;">Go to Dashboard</a>
+    </div>
+
+    <p id="statusMessage" class="status-text"></p>
+  </div>
+</div>
+
+<script>
+function retryPayment() {
+  document.getElementById("statusMessage").innerText = "Redirecting to pricing page...";
+  setTimeout(function() {
+    window.location.href = "/api/user/pricing";   // ✅ correct pricing page
+  }, 500);
+}
+</script>
+
+{% endblock %}

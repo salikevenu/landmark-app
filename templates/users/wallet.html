@@ -1,0 +1,317 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Wallet | LANDMARK{% endblock %}
+
+{% block content %}
+
+<style>
+  /* ===== WALLET SPECIFIC DARK THEME ===== */
+  .wallet-page {
+    max-width: 550px;
+    margin: 0 auto;
+    padding: 20px 15px;
+    color: #eef5ff;                 /* light text for dark background */
+  }
+
+  .wallet-page h2 {
+    text-align: center;
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #facc15, #ffaa00);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 25px;
+  }
+
+  /* ----- Balance Card (dark card) ----- */
+  .wallet-card {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    padding: 22px 20px;
+    margin-bottom: 25px;
+    border: 1px solid rgba(255,255,255,0.1);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 20px;
+    color: #eef5ff;
+  }
+
+  .balance-item {
+    text-align: center;
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .balance-item span {
+    font-size: 14px;
+    color: rgba(255,255,255,0.7);
+  }
+
+  .balance {
+    font-size: 34px;
+    font-weight: 800;
+    color: #16a34a;                 /* green for available */
+    display: block;
+    margin-top: 6px;
+  }
+
+  .pending strong {
+    font-size: 24px;
+    font-weight: 700;
+    color: #facc15;                /* gold for pending */
+    display: block;
+    margin-top: 6px;
+  }
+
+  .payout-info {
+    width: 100%;
+    text-align: center;
+    font-size: 14px;
+    color: rgba(255,255,255,0.6);
+    margin-top: 10px;
+  }
+
+  /* ----- Withdraw Card ----- */
+  .withdraw-card {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    padding: 22px 20px;
+    margin-bottom: 25px;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #eef5ff;
+  }
+
+  .withdraw-card h3 {
+    margin-bottom: 15px;
+    font-weight: 600;
+    color: #facc15;
+  }
+
+  .withdraw-card input {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(0,0,0,0.4);
+    color: #fff;
+    font-size: 15px;
+  }
+
+  .withdraw-card input::placeholder {
+    color: rgba(255,255,255,0.5);
+  }
+
+  .withdraw-card input:focus {
+    outline: none;
+    border-color: #facc15;
+    box-shadow: 0 0 0 3px rgba(250,204,21,0.25);
+  }
+
+  button {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, #facc15, #f59e0b);
+    border: none;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 16px;
+    color: #1a1a1a;
+    cursor: pointer;
+    transition: 0.2s;
+  }
+
+  button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 15px rgba(250,204,21,0.4);
+  }
+
+  /* ----- Transactions Section ----- */
+  .wallet-section {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(12px);
+    border-radius: 16px;
+    padding: 22px 20px;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #eef5ff;
+  }
+
+  .wallet-section h3 {
+    color: #facc15;
+    margin-bottom: 12px;
+  }
+
+  #transactions {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  #transactions li {
+    padding: 14px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    color: #eef5ff;
+  }
+
+  #transactions li:last-child {
+    border-bottom: none;
+  }
+
+  #transactions li .credit {
+    color: #16a34a;
+    font-weight: 700;
+  }
+
+  #transactions li .debit {
+    color: #ef4444;
+    font-weight: 700;
+  }
+
+  #transactions li small {
+    color: rgba(255,255,255,0.6);
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    font-size: 13px;
+  }
+</style>
+
+<div class="wallet-page">
+  <h2>MY WALLET</h2>
+
+  <!-- Balance Cards -->
+  <div class="wallet-card">
+    <div class="balance-item">
+      <span>Available Balance</span>
+      <strong class="balance">₹<span id="availableBalance">0</span></strong>
+    </div>
+    <div class="balance-item pending">
+      <span>Unlocking Saturday 6 PM</span>
+      <strong id="pendingAmount">₹0</strong>
+    </div>
+    <div class="payout-info" id="nextPayout"></div>
+  </div>
+
+  <!-- Withdraw Form -->
+  <div class="withdraw-card">
+    <h3>Withdraw to UPI</h3>
+    <input type="number" id="withdraw_amount" placeholder="Enter amount (min ₹1)">
+    <input type="text" id="upi_id" placeholder="Enter your UPI ID">
+    <button onclick="submitWithdraw()">Request Withdrawal</button>
+  </div>
+
+  <!-- Transactions -->
+  <div class="wallet-section">
+    <h3>Recent Transactions</h3>
+    <ul id="transactions"></ul>
+  </div>
+</div>
+
+<!-- Your original JS – unchanged -->
+<script>
+  // (All fetch functions remain exactly as they were)
+  async function loadWalletOverview() {
+    try {
+      const res = await fetch("/api/wallet/overview");
+      const data = await res.json();
+      document.getElementById("availableBalance").innerText = data.available_balance || 0;
+      document.getElementById("pendingAmount").innerText = '₹' + (data.pending_unlock || 0);
+      if (data.next_payout_ist) {
+        document.getElementById("nextPayout").innerText = 
+          "Next payout: " + data.next_payout_ist;
+      }
+    } catch (e) {
+      console.error("Failed to load wallet overview", e);
+    }
+  }
+
+  async function loadTransactions() {
+    try {
+      const res = await fetch("/api/wallet/transactions");
+      const data = await res.json();
+      const list = document.getElementById("transactions");
+      list.innerHTML = "";
+
+      if (!Array.isArray(data)) return;
+
+      data.forEach(tx => {
+        const amount = parseFloat(tx.amount).toFixed(2);
+        const isCredit = (tx.type === 'credit');
+        const sign = isCredit ? '+' : '-';
+        const cls = isCredit ? 'credit' : 'debit';
+
+        const sourceMap = {
+          'activation_bonus': 'Activation Bonus (5%)',
+          'base_referral': 'Base Referral (5%)',
+          'referral_first_bonus': 'First Payment Bonus (10%)',
+          'referral_recurring': 'Recurring Commission (5%)',
+          'withdraw_request': 'Withdrawal Request',
+          'withdrawal': 'Withdrawal',
+          'admin_adjustment': 'Adjustment'
+        };
+        const sourceLabel = sourceMap[tx.source] || tx.source || 'Transaction';
+
+        const li = document.createElement("li");
+        li.className = cls;
+        li.innerHTML = `
+          <span>${sourceLabel}</span>
+          <strong>${sign}₹${amount}</strong>
+          <br><small>${new Date(tx.created_at).toLocaleString()}</small>
+        `;
+        list.appendChild(li);
+      });
+    } catch (e) {
+      console.error("Failed to load transactions", e);
+    }
+  }
+
+  async function submitWithdraw() {
+    const amount = document.getElementById("withdraw_amount").value;
+    const upi = document.getElementById("upi_id").value;
+
+    if (!amount || parseFloat(amount) <= 0) {
+      alert("Enter a valid amount");
+      return;
+    }
+    if (!upi) {
+      alert("Enter your UPI ID");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/withdraw/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: parseFloat(amount),
+          upi_id: upi
+        })
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert(data.error);
+      } else {
+        alert("Withdrawal request submitted successfully");
+        loadWalletOverview();
+        loadTransactions();
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error");
+    }
+  }
+
+  loadWalletOverview();
+  loadTransactions();
+</script>
+
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "layout.html" %}
+{% block title %}Admin Login | LANDMARK{% endblock %}
+{% block content %}
+<div class="container">
+  <h2>Admin Login</h2>
+  <div class="card">
+    <div class="form-group">
+      <input type="text" id="phone" placeholder="Admin Phone Number">
+    </div>
+    <div class="form-group" id="otpGroup" style="display:none;">
+      <input type="text" id="otp" placeholder="Enter OTP">
+    </div>
+    <button class="btn-primary" id="actionBtn" onclick="handleAction()">Send OTP</button>
+    <p id="status"></p>
+  </div>
+</div>
+
+<script>
+let currentStep = 'phone';
+const phoneInput = document.getElementById('phone');
+const otpInput = document.getElementById('otp');
+const otpGroup = document.getElementById('otpGroup');
+const actionBtn = document.getElementById('actionBtn');
+const statusEl = document.getElementById('status');
+
+function handleAction() {
+  if (currentStep === 'phone') {
+    sendOTP();
+  } else {
+    verifyOTP();
+  }
+}
+
+async function sendOTP() {
+  const phone = phoneInput.value.trim();
+  if (!phone) {
+    statusEl.innerText = "Phone number required";
+    return;
+  }
+
+  statusEl.innerText = "Sending OTP...";
+  try {
+    const res = await fetch("/api/auth/send-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone })
+    });
+    const data = await res.json();
+
+    if (data.status === "success") {
+      otpGroup.style.display = "block";
+      actionBtn.innerText = "Verify OTP";
+      currentStep = 'otp';
+      phoneInput.disabled = true;
+      statusEl.innerText = "OTP sent (check terminal in dev mode)";
+    } else {
+      statusEl.innerText = data.error || "Failed to send OTP";
+    }
+  } catch (err) {
+    statusEl.innerText = "Server error";
+  }
+}
+
+async function verifyOTP() {
+  const phone = phoneInput.value.trim();
+  const otp = otpInput.value.trim();
+  if (!otp) {
+    statusEl.innerText = "OTP required";
+    return;
+  }
+
+  statusEl.innerText = "Verifying...";
+  try {
+    const res = await fetch("/api/auth/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, otp })
+    });
+    const data = await res.json();
+
+    if (data.access_token) {
+      const token = data.access_token;
+      // Check if the user is an admin
+      const meRes = await fetch("/api/auth/me", {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      const userData = await meRes.json();
+
+      if (userData.role !== "admin") {
+        statusEl.innerText = "Access denied. Admin only.";
+        return;
+      }
+
+      // ✅ Store token with the same key used by all admin pages
+      localStorage.setItem("access_token", token);
+      window.location.href = "/admin/dashboard";
+    } else {
+      statusEl.innerText = data.error || "Invalid OTP";
+    }
+  } catch (err) {
+    statusEl.innerText = "Server error";
+  }
+}
+</script>
+{% endblock %}

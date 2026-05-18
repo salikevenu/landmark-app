@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.exceptions import HTTPException
-from flask_jwt_extended import unset_jwt_cookies
+from flask_jwt_extended import unset_jwt_cookies, verify_jwt_in_request
 from flask_cors import CORS
 import sqlite3
 from flask import make_response
@@ -38,12 +38,19 @@ app.config.update(
     JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "your-secure-jwt-secret-key"),
     JWT_ACCESS_TOKEN_EXPIRES=timedelta(days=1),
     JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=30),
-    JWT_TOKEN_LOCATION=["headers"],
+    JWT_TOKEN_LOCATION=["cookies", "headers"],
+    JWT_COOKIE_SECURE=False,                     # Set True only if using HTTPS
+    JWT_COOKIE_CSRF_PROTECT=False,               # Enable after adding CSRF tokens
+    JWT_ACCESS_COOKIE_PATH="/",
+    JWT_ACCESS_COOKIE_NAME="access_token",
+    JWT_REFRESH_COOKIE_NAME="refresh_token",
+    JWT_REFRESH_COOKIE_PATH="/token/refresh",
 )
 
 # Initialize JWT manager
 jwt = JWTManager(app)
 
+print("JWT SECRET:", app.config["JWT_SECRET_KEY"])
 # ------------------------------
 # Ensure required folders exist
 # ------------------------------
@@ -98,7 +105,37 @@ def get_translation(lang):
         }
     }
     return translations.get(lang, translations["en"])
+@app.before_request
+def log_every_request():
+    from flask import request
+    print(f"🔷 {request.method} {request.path}")   # shows every request
 
+@app.context_processor
+def inject_language():
+    # 1. Cookie (set by the language switcher or login)
+    lang = request.cookies.get("lang")
+
+    # 2. If no cookie, try to get the language from the DB for logged-in users
+    if not lang:
+        try:
+            verify_jwt_in_request(optional=True)
+            user_id = get_jwt_identity()
+            if user_id:
+                conn = get_db()
+                row = conn.execute(
+                    "SELECT language FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                if row and row["language"]:
+                    lang = row["language"]
+        except Exception:
+            pass
+
+    # 3. Ultimate fallback
+    if not lang:
+        lang = "en"
+
+    t = get_translation(lang)
+    return dict(t=t, current_lang=lang)
 # ------------------------------
 # Web Routes (public or language-only session)
 # ------------------------------
@@ -138,10 +175,6 @@ def redirect_invite():
 @app.route("/wallet")
 def wallet_page():
     return render_template("users/wallet.html")   # create a minimal template
-
-@app.route("/transactions")
-def transactions_page():
-    return render_template("users/transactions.html")
 
 @app.route("/pricing")
 def pricing():
@@ -208,6 +241,44 @@ def api_add_business():
     )
     return jsonify({"message": "Business added successfully"}), 201
 
+@app.route('/internal/saturday-payout', methods=['POST'])
+def saturday_payout():
+    token = request.headers.get('Authorization')
+    if token != 'Bearer YOUR_LONG_SECRET_KEY':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    conn = get_db()
+    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Find locked referral credits that are due
+    locked = conn.execute("""
+        SELECT id, user_id, amount
+        FROM wallet_transactions
+        WHERE type = 'credit'
+          AND source IN ('referral_first_bonus', 'referral_recurring')
+          AND status = 'locked'
+          AND unlock_at <= ?
+    """, (now_utc,)).fetchall()
+
+    for row in locked:
+        # Credit the wallet_balance table
+        conn.execute("""
+            INSERT INTO wallet_balance (user_id, balance, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?, updated_at = datetime('now')
+        """, (row["user_id"], row["amount"], row["amount"]))
+
+        # Update user's wallet_balance field for quick display
+        conn.execute("UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?",
+                     (row["amount"], row["user_id"]))
+
+        # Mark transaction as released
+        conn.execute("UPDATE wallet_transactions SET status = 'released' WHERE id = ?",
+                     (row["id"],))
+
+    conn.commit()
+    return jsonify({"released": len(locked)}), 200
+
 # ------------------------------
 # Static / Favicon / Well‑known (ignore)
 # ------------------------------
@@ -256,9 +327,19 @@ def privacy_policy():
 def terms_of_service():
     return render_template("terms.html")  # you'll create this too if needed
 
+@app.route('/temp-token')
+def temp_token():
+    from flask_jwt_extended import create_access_token
+    from datetime import timedelta
+    token = create_access_token(
+        identity='9959543954',  # your admin phone
+        additional_claims={"role": "admin"},
+        expires_delta=timedelta(days=30)
+    )
+    return {"token": token}
+
 # ------------------------------
 # Run the app
-# -
 # -----------------------------
 if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_DEBUG", "True").lower() == "true"

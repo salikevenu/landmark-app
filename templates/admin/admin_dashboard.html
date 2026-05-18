@@ -1,0 +1,227 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<div class="dashboard-wrapper">
+  <!-- ========== ROW 1: Stats (4 cards) ========== -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-title">Users</div>
+      <div class="stat-value" id="totalUsers">0</div>
+      <canvas id="usersChart" height="30"></canvas>
+    </div>
+    <div class="stat-card">
+      <div class="stat-title">Listings</div>
+      <div class="stat-value" id="totalListings">0</div>
+      <canvas id="listingsChart" height="30"></canvas>
+    </div>
+    <div class="stat-card">
+      <div class="stat-title">Revenue ₹</div>
+      <div class="stat-value" id="totalRevenue">0</div>
+      <canvas id="revenueChart" height="30"></canvas>
+    </div>
+    <div class="stat-card">
+      <div class="stat-title">Referrals</div>
+      <div class="stat-value" id="totalReferrals">0</div>
+      <canvas id="referralsChart" height="30"></canvas>
+    </div>
+  </div>
+
+  <!-- ========== ROW 2: Manual Activation + Recent Users side by side ========== -->
+  <div class="bottom-row">
+    <!-- Manual Activation (compact horizontal) -->
+    <div class="card activation-card">
+      <h4>Quick Activation</h4>
+      <div class="activation-form">
+        <input type="text" id="phone" placeholder="Phone">
+        <select id="plan">
+          <option value="service_provider">Service Provider</option>
+          <option value="business_basic">Business Basic</option>
+          <option value="business_premium">Business Premium</option>
+        </select>
+        <button onclick="activateSubscription()">Activate</button>
+      </div>
+      <p id="activationStatus" class="status-text"></p>
+    </div>
+
+    <!-- Recent Users (only 3 rows, no scroll) -->
+    <div class="card recent-card">
+      <h4>Recent Users</h4>
+      <div id="userList" class="user-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) { alert("Admin login required"); window.location.href = "/admin/login"; }
+
+// ---------- Manual Activation ----------
+async function activateSubscription(){
+  const phone = document.getElementById("phone").value.trim();
+  const plan = document.getElementById("plan").value;
+  const status = document.getElementById("activationStatus");
+  if(!phone){ status.innerText = "Phone required"; return; }
+  try{
+    const res = await fetch("/api/admin/activate", {
+      method: "POST",
+      headers: { "Content-Type":"application/json", "Authorization":"Bearer "+token },
+      body: JSON.stringify({ phone, plan })
+    });
+    const data = await res.json();
+    status.innerText = data.status || data.message || data.error || "Done";
+  } catch(err){ status.innerText = "Server error"; }
+}
+
+// ---------- Stats + Charts ----------
+async function loadStats(){
+  try{
+    const [statsRes, chartRes] = await Promise.all([
+      fetch("/api/admin/stats", { headers: {"Authorization":"Bearer "+token} }),
+      fetch("/api/admin/stats/chart", { headers: {"Authorization":"Bearer "+token} })
+    ]);
+    const stats = await statsRes.json();
+    const chart = await chartRes.json();
+
+    document.getElementById("totalUsers").innerText = stats.total_users || 0;
+    document.getElementById("totalListings").innerText = stats.total_listings || 0;
+    document.getElementById("totalRevenue").innerText = "₹"+(stats.total_revenue||0);
+    document.getElementById("totalReferrals").innerText = stats.total_referrals || 0;
+
+    new Chart(document.getElementById("usersChart"), miniChart(chart.labels, chart.users, '#3b82f6'));
+    new Chart(document.getElementById("listingsChart"), miniChart(chart.labels, chart.listings, '#10b981'));
+    new Chart(document.getElementById("revenueChart"), miniChart(chart.labels, chart.revenue, '#f59e0b'));
+    new Chart(document.getElementById("referralsChart"), miniChart(chart.labels, chart.referrals||[], '#8b5cf6'));
+  } catch(err){ console.error(err); }
+}
+
+function miniChart(labels, data, color){
+  return {
+    type: 'line',
+    data: { labels, datasets:[{ data, borderColor:color, borderWidth:2, pointRadius:0, tension:0.3, fill:false }] },
+    options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{display:false},y:{display:false}} }
+  };
+}
+
+// ---------- Recent Users (only 3) ----------
+async function loadUsers(){
+  try{
+    const res = await fetch("/api/admin/users?limit=3", { headers: {"Authorization":"Bearer "+token} });
+    const data = await res.json();
+    const users = Array.isArray(data) ? data : (data.users || []);
+    let html = "";
+    if(users.length){
+      users.forEach(u => {
+        html += `<div class="user-row"><span>📱 ${u.phone}</span><span>🏷️ ${u.role}</span></div>`;
+      });
+    } else html = "<p>No users</p>";
+    document.getElementById("userList").innerHTML = html;
+  } catch(err){ console.error(err); }
+}
+
+loadStats();
+loadUsers();
+</script>
+
+<style>
+  /* ---------- LAYOUT (strict height, no scroll) ---------- */
+  .dashboard-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 80px);   /* fill viewport minus sidebar/header */
+    max-height: 620px;
+  }
+
+  /* ---------- Stats row (horizontal grid) ---------- */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 15px;
+    flex-shrink: 0;
+  }
+
+  .stat-card {
+    background: white;
+    padding: 8px;
+    border-radius: 8px;
+    text-align: center;
+    box-shadow: 0 0 6px rgba(0,0,0,0.04);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .stat-title { font-size: 0.75rem; color: #64748b; margin-bottom: 2px; }
+  .stat-value { font-size: 1.3rem; font-weight: 700; margin-bottom: 2px; }
+  .stat-card canvas { max-width: 100%; height: 30px !important; }
+
+  /* ---------- Bottom row (two columns) ---------- */
+  .bottom-row {
+    display: flex;
+    gap: 15px;
+    flex: 1;
+    min-height: 0;      /* allow flex children to shrink */
+  }
+
+  .card {
+    background: white;
+    padding: 12px;
+    border-radius: 8px;
+    box-shadow: 0 0 6px rgba(0,0,0,0.04);
+  }
+
+  /* Manual activation – compact inline form */
+  .activation-card {
+    flex: 1;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+  }
+  .activation-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .activation-form input,
+  .activation-form select {
+    padding: 6px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    flex: 1;
+    min-width: 100px;
+  }
+  .activation-form button {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .status-text { font-size: 0.8rem; margin-top: 4px; min-height: 18px; }
+
+  /* Recent users – tight list */
+  .recent-card {
+    flex: 1.5;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;          /* no internal scroll */
+  }
+  .user-list {
+    flex: 1;
+  }
+  .user-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 0.85rem;
+  }
+
+  h4 { margin: 0 0 8px 0; font-size: 1rem; }
+</style>
+
+{% endblock %}

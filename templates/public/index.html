@@ -1,0 +1,198 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}LANDMARK | Home{% endblock %}
+
+{% block content %}
+
+<style>
+  /* ---------- HEADER BAR ---------- */
+  .header-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 15px 30px;
+    background: rgba(0,0,0,0.25);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .logo-img {
+    height: 40px;                 /* small left logo */
+    width: auto;
+  }
+
+  .header-title {
+    font-size: 1.8rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #ffd700, #ffaa00);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 1px;
+  }
+
+  .lang-select {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: white;
+    padding: 8px 15px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  /* ---------- REST (unchanged) ---------- */
+  .home-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 80vh;
+    text-align: center;
+    padding: 40px 20px;
+  }
+
+  .hero h1 {
+    font-size: 2.8rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #ffd700, #ffaa00);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin: 10px 0;
+  }
+
+  .hero-tagline {
+    font-size: 1.2rem;
+    color: rgba(255,255,255,0.8);
+    letter-spacing: 2px;
+    margin-bottom: 25px;
+  }
+
+  .hero-subtitle {
+    color: rgba(255,255,255,0.7);
+    max-width: 500px;
+    margin: 0 auto 30px;
+  }
+
+  .btn {
+    display: inline-block;
+    padding: 14px 35px;
+    border-radius: 30px;
+    font-weight: 600;
+    text-decoration: none;
+    margin: 0 8px;
+    transition: all 0.2s;
+  }
+
+  .btn-primary {
+    background: linear-gradient(135deg, #ffd700, #ffaa00);
+    color: #1a1a1a;
+    border: none;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 0 20px rgba(255,215,0,0.4);
+  }
+
+  .btn-secondary {
+    background: transparent;
+    color: white;
+    border: 1px solid white;
+  }
+
+  .btn-secondary:hover {
+    background: rgba(255,255,255,0.1);
+  }
+
+  .why-section {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 30px;
+    margin-top: 60px;
+    max-width: 1000px;
+    width: 100%;
+  }
+
+  .why-card {
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px;
+    padding: 30px 25px;
+    width: 250px;
+    text-align: center;
+  }
+
+  .why-card h3 {
+    color: #ffd700;
+    margin-bottom: 12px;
+    font-size: 1.5rem;
+  }
+
+  .footer {
+    margin-top: 60px;
+    padding: 20px 0;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    width: 100%;
+    text-align: center;
+  }
+</style>
+
+<!-- ======== HEADER BAR ======== -->
+<div class="header-bar">
+  <img src="{{ url_for('static', filename='images/landmark-logo.png') }}" class="logo-img" alt="LANDMARK">
+  <div class="header-title">LANDMARK</div>
+  <select class="lang-select" onchange="changeLanguage(this.value)">
+    <option value="en" {% if session.get('lang', 'en') == 'en' %}selected{% endif %}>EN</option>
+    <option value="te" {% if session.get('lang') == 'te' %}selected{% endif %}>TE</option>
+    <option value="hi" {% if session.get('lang') == 'hi' %}selected{% endif %}>HI</option>
+    <option value="ta" {% if session.get('lang') == 'ta' %}selected{% endif %}>TA</option>
+    <option value="kn" {% if session.get('lang') == 'kn' %}selected{% endif %}>KN</option>
+  </select>
+</div>
+
+<!-- ======== MAIN CONTENT ======== -->
+<div class="home-container">
+
+  <!-- HERO (without the big LANDMARK word – now in header) -->
+  <div class="hero">
+    <p class="hero-tagline">CONNECT → GROW</p>
+    <h1>Discover Nearby Businesses</h1>
+    <p class="hero-subtitle">Earn money through finds & referrals</p>
+
+    <div style="margin-top: 20px;">
+      <a href="/api/auth/register" class="btn btn-primary">Get Started</a>
+      <a href="/api/auth/public/login" class="btn btn-secondary">Login</a>
+    </div>
+  </div>
+
+  <!-- WHY CARDS -->
+  <div class="why-section">
+    <div class="why-card">
+      <h3>📍 Discover</h3>
+      <p>Find nearby opportunities</p>
+    </div>
+    <div class="why-card">
+      <h3>💰 Earn</h3>
+      <p>Earn from your network</p>
+    </div>
+    <div class="why-card">
+      <h3>⚡ Simple</h3>
+      <p>Easy to use platform</p>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <p style="font-size: 0.9rem;">Start Earning Today</p>
+    <a href="/api/auth/register" class="btn btn-primary">Get Started</a>
+    <p style="font-size: 0.7rem; margin-top: 10px;">© 2026 LANDMARK</p>
+  </div>
+</div>
+{% endblock %}

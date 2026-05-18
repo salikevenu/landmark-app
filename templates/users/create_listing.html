@@ -1,0 +1,284 @@
+{% extends "layouts/layout_app.html" %}
+{% block title %}Create Listing | LANDMARK{% endblock %}
+
+{% block content %}
+<style>
+body { background:#0a0c10; color:#fff; font-family: 'Poppins', sans-serif; }
+.container { max-width:1100px; margin:40px auto; display:flex; gap:30px; flex-wrap:wrap; }
+.card {
+    flex:1;
+    background:#0f1722;
+    padding:25px;
+    border-radius:20px;
+    border:1px solid #1f3a5f;
+}
+input, select, textarea {
+    width:100%;
+    margin-bottom:15px;
+    padding:12px;
+    border-radius:10px;
+    border:1px solid #2a4c7a;
+    background:#000;
+    color:#fff;
+}
+button {
+    padding:12px 20px;
+    border:none;
+    border-radius:10px;
+    background:#00e5ff;
+    color:#000;
+    font-weight:bold;
+    cursor:pointer;
+}
+.preview img {
+    width:70px;
+    height:70px;
+    object-fit:cover;
+    margin:5px;
+    border-radius:10px;
+}
+.drop-zone {
+    border:2px dashed #00e5ff;
+    padding:20px;
+    text-align:center;
+    border-radius:15px;
+    cursor:pointer;
+}
+.success-screen {
+    text-align:center;
+    margin-top:100px;
+}
+</style>
+
+<div class="container">
+    <!-- FORM -->
+    <div class="card">
+        <h2>Create Listing</h2>
+        <form id="listingForm">
+            <input name="business_name" id="name" placeholder="Business Name *" required>
+            <select name="category" id="category" required>
+                <option value="">Category</option>
+                <option>Restaurant</option>
+                <option>Shop</option>
+                <option>Service</option>
+                <option>Electrician</option>
+                <option>Plumber</option>
+            </select>
+            <textarea name="description" placeholder="Description"></textarea>
+            <input name="whatsapp" id="whatsapp" placeholder="WhatsApp number">
+            <input name="address" placeholder="Address (optional)">
+
+            <!-- Hidden location fields -->
+            <input type="hidden" name="latitude" id="lat">
+            <input type="hidden" name="longitude" id="lng">
+
+            <button type="button" onclick="getLocation()">📍 Use Location</button>
+
+            <div class="drop-zone" id="dropZone">Drop images here (max 5, 2MB each)</div>
+            <input type="file" id="images" name="images" multiple hidden accept="image/*">
+
+            <label>Video (optional)</label>
+            <input type="file" id="video" name="video" accept="video/*">
+
+            <br><br>
+            <button type="submit" id="submitBtn">Submit</button>
+        </form>
+    </div>
+
+    <!-- PREVIEW -->
+    <div class="card">
+        <h3>Live Preview</h3>
+        <h2 id="p_name">Business Name</h2>
+        <p id="p_category"></p>
+        <p id="p_phone"></p>
+        <p id="p_desc"></p>
+        <div class="preview" id="preview"></div>
+        <video id="p_video" controls style="width:100%; display:none;"></video>
+    </div>
+</div>
+
+<script>
+    // ===== LIVE PREVIEW =====
+    const nameField = document.getElementById("name");
+    const p_name = document.getElementById("p_name");
+    const categoryField = document.getElementById("category");
+    const p_category = document.getElementById("p_category");
+    const descField = document.querySelector("textarea");
+    const p_desc = document.getElementById("p_desc");
+
+    nameField.oninput = () => p_name.innerText = nameField.value || "Business Name";
+    categoryField.onchange = () => p_category.innerText = categoryField.value;
+    descField.oninput = e => p_desc.innerText = e.target.value;
+
+    // Auto WhatsApp (optional)
+    const whatsappField = document.getElementById("whatsapp");
+    // ===== LOCATION =====
+    function getLocation() {
+        if (!navigator.geolocation) {
+            alert("Geolocation not supported");
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(pos => {
+            document.getElementById("lat").value = pos.coords.latitude;
+            document.getElementById("lng").value = pos.coords.longitude;
+            alert("Location captured");
+        }, err => {
+            alert("Unable to get location: " + err.message);
+        });
+    }
+
+    // ===== DRAG & DROP IMAGES =====
+    const dropZone = document.getElementById("dropZone");
+    const imgInput = document.getElementById("images");
+    const previewDiv = document.getElementById("preview");
+
+    dropZone.onclick = () => imgInput.click();
+
+    dropZone.ondragover = e => {
+        e.preventDefault();
+        dropZone.style.background = "#123";
+    };
+    dropZone.ondragleave = () => {
+        dropZone.style.background = "";
+    };
+    dropZone.ondrop = e => {
+        e.preventDefault();
+        dropZone.style.background = "";
+        imgInput.files = e.dataTransfer.files;
+        showImages();
+    };
+
+    imgInput.onchange = showImages;
+
+    function showImages() {
+        previewDiv.innerHTML = "";
+        const files = Array.from(imgInput.files);
+        if (files.length > 5) {
+            alert("Max 5 images");
+            imgInput.value = "";
+            return;
+        }
+        files.forEach((file, idx) => {
+            if (file.size > 2 * 1024 * 1024) {
+                alert("Image too large (max 2MB)");
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = e => {
+                const wrapper = document.createElement("div");
+                wrapper.style.position = "relative";
+                wrapper.style.display = "inline-block";
+                wrapper.style.margin = "5px";
+                const img = document.createElement("img");
+                img.src = e.target.result;
+                img.style.width = "70px";
+                img.style.height = "70px";
+                img.style.objectFit = "cover";
+                img.style.borderRadius = "10px";
+                const removeBtn = document.createElement("span");
+                removeBtn.innerText = "❌";
+                removeBtn.style.position = "absolute";
+                removeBtn.style.top = "0";
+                removeBtn.style.right = "0";
+                removeBtn.style.cursor = "pointer";
+                removeBtn.style.background = "rgba(0,0,0,0.6)";
+                removeBtn.style.borderRadius = "50%";
+                removeBtn.style.padding = "2px";
+                removeBtn.onclick = () => {
+                    const newFiles = Array.from(imgInput.files).filter((_, i) => i !== idx);
+                    const dt = new DataTransfer();
+                    newFiles.forEach(f => dt.items.add(f));
+                    imgInput.files = dt.files;
+                    showImages();
+                };
+                wrapper.appendChild(img);
+                wrapper.appendChild(removeBtn);
+                previewDiv.appendChild(wrapper);
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // ===== VIDEO PREVIEW =====
+    const videoInput = document.getElementById("video");
+    const p_video = document.getElementById("p_video");
+    videoInput.onchange = e => {
+        const file = e.target.files[0];
+        if (file && file.type.startsWith("video/")) {
+            const url = URL.createObjectURL(file);
+            p_video.src = url;
+            p_video.style.display = "block";
+        } else {
+            p_video.style.display = "none";
+        }
+    };
+
+    // ===== FORM SUBMISSION =====
+    const form = document.getElementById("listingForm");
+    const submitBtn = document.getElementById("submitBtn");
+
+    form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        const token = localStorage.getItem("access_token");
+        if (!token) {
+            alert("Please login first");
+            window.location.href = "/api/auth/public/login";
+            return;
+        }
+
+        submitBtn.innerText = "Submitting...";
+        submitBtn.disabled = true;
+
+        const formData = new FormData(form);
+
+        try {
+            // ✅ Correct endpoint (matches your blueprint + route)
+            const response = await fetch("/api/listing/api/create-listing", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${token}`
+                    // DO NOT set Content-Type; browser will set multipart boundary
+                },
+                body: formData
+            });
+
+            if (response.status === 401) {
+                alert("Session expired. Please login again.");
+                localStorage.removeItem("access_token");
+                localStorage.removeItem("refresh_token");
+                window.location.href = "/api/auth/public/login";
+                return;
+            }
+
+            let data;
+            try {
+                data = await response.json();
+            } catch (err) {
+                console.error("Invalid JSON", err);
+                alert("Server returned an invalid response");
+                return;
+            }
+
+            if (response.ok && data.success) {
+                // Show success screen
+                document.body.innerHTML = `
+                    <div class="success-screen">
+                        <h1>✅ Listing Submitted</h1>
+                        <p>Under admin review</p>
+                        <a href="/my-listings">Go to My Listings</a>
+                    </div>
+                `;
+            } else {
+                alert(data.error || data.message || "Error creating listing");
+            }
+        } catch (err) {
+            console.error("Fetch error:", err);
+            alert("Network error: " + err.message);
+        } finally {
+            submitBtn.innerText = "Submit";
+            submitBtn.disabled = false;
+        }
+    });
+</script>
+{% endblock %}

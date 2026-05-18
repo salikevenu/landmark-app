@@ -1,0 +1,93 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Referral Transactions</h2>
+
+<div style="overflow-x:auto;">
+  <table class="admin-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Referrer</th>
+        <th>Referred User</th>
+        <th>Reward (₹)</th>
+        <th>Status</th>
+        <th>Date</th>
+      </tr>
+    </thead>
+    <tbody id="referralsTable">
+      <tr><td colspan="6">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+const authHeaders = {
+  "Content-Type": "application/json",
+  "Authorization": "Bearer " + token
+};
+
+async function loadReferrals() {
+  try {
+    const res = await fetch("/api/admin/referrals", { headers: authHeaders });
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Session expired. Please login again.");
+        window.location.href = "/api/auth/public/login";
+        return;
+      }
+      throw new Error("Failed to load");
+    }
+
+    const data = await res.json();
+    let html = "";
+    if (!data || data.length === 0) {
+      html = "<tr><td colspan='6'>No referral transactions found.</td></tr>";
+    } else {
+      data.forEach(r => {
+        html += `
+          <tr>
+            <td>${r.id}</td>
+            <td>${r.referrer_phone || ''}</td>
+            <td>${r.referred_phone || ''}</td>
+            <td>₹${r.reward_amount}</td>
+            <td>${r.status}</td>
+            <td>${r.created_at}</td>
+          </tr>
+        `;
+      });
+    }
+
+    document.getElementById("referralsTable").innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    document.getElementById("referralsTable").innerHTML =
+      "<tr><td colspan='6'>Error loading referrals.</td></tr>";
+  }
+}
+
+loadReferrals();
+</script>
+
+<style>
+  .admin-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .admin-table th, .admin-table td {
+    border: 1px solid #ddd;
+    padding: 10px;
+    text-align: left;
+  }
+  .admin-table th {
+    background: #f2f2f2;
+  }
+</style>
+
+{% endblock %}

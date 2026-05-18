@@ -1,0 +1,20 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Subscription Cancelled | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <div class="card" style="text-align:center; padding:40px;">
+    <h2>Subscription Cancelled</h2>
+    <p>Your subscription has been cancelled or expired.</p>
+    <p>You can upgrade again anytime to continue using premium features.</p>
+
+    <div style="margin-top:15px;">
+      <a href="/api/user/pricing" class="btn-primary">Upgrade Again</a>
+      <a href="/api/user/dashboard" class="btn-secondary" style="margin-left:10px;">Go to Dashboard</a>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

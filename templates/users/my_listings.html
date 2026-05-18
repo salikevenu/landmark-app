@@ -1,0 +1,455 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}My Listings | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="listings-container">
+  <div class="header-section">
+    <h1 class="page-title">My <span class="gradient-text">Listings</span></h1>
+    <a href="/api/user/create-listing" class="new-listing-btn">
+      <span class="plus-icon">+</span> New Listing
+    </a>
+  </div>
+
+  <div id="listingContainer" class="listings-grid">
+    <div class="loader-wrapper">
+      <div class="neon-spinner"></div>
+      <p class="loading-text">Loading your listings...</p>
+    </div>
+  </div>
+</div>
+
+<style>
+  /* ---------- GLOBAL RESET & COLORS ---------- */
+  .listings-container {
+    max-width: 1300px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    min-height: 100vh;
+    background: radial-gradient(circle at 10% 30%, rgba(5, 15, 25, 0.9), #03070f);
+  }
+
+  /* Header */
+  .header-section {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 2.5rem;
+    border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+    padding-bottom: 1rem;
+  }
+
+  .page-title {
+    font-size: 2.2rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0;
+    background: linear-gradient(135deg, #e0f2fe, #a5f3fc);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, #00ffff, #8b5cf6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .new-listing-btn {
+    background: linear-gradient(95deg, #0f172a, #1e293b);
+    border: 1px solid rgba(0, 255, 255, 0.4);
+    padding: 0.7rem 1.6rem;
+    border-radius: 40px;
+    color: #00ffff;
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-decoration: none;
+    backdrop-filter: blur(4px);
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    box-shadow: 0 0 6px rgba(0, 255, 255, 0.3);
+  }
+
+  .new-listing-btn:hover {
+    background: #0f172a;
+    border-color: #00ffff;
+    box-shadow: 0 0 12px #00ffff;
+    transform: translateY(-2px);
+    color: #ffffff;
+  }
+
+  .plus-icon {
+    font-size: 1.3rem;
+    font-weight: 300;
+  }
+
+  /* ---------- GRID / CARD LAYOUT ---------- */
+  .listings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  /* Listing Card - Glassmorphic / Neon */
+  .listing-card {
+    background: rgba(15, 25, 45, 0.65);
+    backdrop-filter: blur(12px);
+    border-radius: 28px;
+    border: 1px solid rgba(0, 255, 255, 0.2);
+    transition: all 0.3s cubic-bezier(0.2, 0, 0, 1);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .listing-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #00ffff, #8b5cf6, #00ffff);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .listing-card:hover::before {
+    opacity: 1;
+  }
+
+  .listing-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(0, 255, 255, 0.6);
+    box-shadow: 0 20px 35px -15px rgba(0, 255, 255, 0.2);
+  }
+
+  .card-inner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    padding: 1.5rem;
+  }
+
+  /* Image area */
+  .listing-img-wrapper {
+    flex: 0 0 140px;
+    border-radius: 20px;
+    overflow: hidden;
+    background: #0a0f1c;
+    border: 1px solid rgba(0, 255, 255, 0.2);
+    box-shadow: 0 5px 12px rgba(0,0,0,0.2);
+  }
+
+  .listing-img {
+    width: 100%;
+    height: 130px;
+    object-fit: cover;
+    transition: transform 0.4s;
+  }
+
+  .listing-card:hover .listing-img {
+    transform: scale(1.02);
+  }
+
+  /* Content area */
+  .listing-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .title-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .business-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin: 0;
+    background: linear-gradient(135deg, #ffffff, #b0f0ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.3px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 0.25rem 1rem;
+    border-radius: 30px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    backdrop-filter: blur(4px);
+    background: rgba(0,0,0,0.4);
+  }
+
+  .status-approved {
+    background: rgba(0, 255, 100, 0.15);
+    color: #00ff88;
+    border: 1px solid #00ff88;
+    box-shadow: 0 0 5px #00ff88;
+  }
+  .status-pending {
+    background: rgba(255, 200, 0, 0.15);
+    color: #ffcc00;
+    border: 1px solid #ffcc00;
+    box-shadow: 0 0 5px #ffcc00;
+  }
+  .status-rejected {
+    background: rgba(255, 50, 50, 0.15);
+    color: #ff5555;
+    border: 1px solid #ff5555;
+  }
+
+  .meta-text {
+    font-size: 0.85rem;
+    color: #cbd5e6;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 0.2rem;
+  }
+
+  .description {
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    margin: 0.3rem 0;
+  }
+
+  /* Action buttons */
+  .action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    margin-top: 0.8rem;
+  }
+
+  .btn-action {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    padding: 0.4rem 1rem;
+    border-radius: 30px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #ccf;
+    text-decoration: none;
+    transition: all 0.2s;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    backdrop-filter: blur(4px);
+  }
+
+  .btn-action:hover {
+    background: rgba(0, 255, 255, 0.15);
+    border-color: #0ff;
+    color: white;
+    transform: translateY(-1px);
+  }
+
+  .btn-danger:hover {
+    border-color: #ff5555;
+    background: rgba(255, 80, 80, 0.2);
+    color: #ffaaaa;
+  }
+
+  /* Social links */
+  .contact-links {
+    margin-top: 0.6rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    font-size: 0.8rem;
+  }
+  .contact-links a {
+    color: #8bcbff;
+    text-decoration: none;
+  }
+  .contact-links a:hover {
+    color: #00ffff;
+    text-shadow: 0 0 3px cyan;
+  }
+
+  /* Empty state */
+  .empty-state {
+    text-align: center;
+    padding: 3rem;
+    background: rgba(15, 25, 45, 0.6);
+    backdrop-filter: blur(12px);
+    border-radius: 2rem;
+    border: 1px solid rgba(0, 255, 255, 0.2);
+  }
+  .empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+  }
+  .empty-state p {
+    color: #ccddee;
+  }
+
+  /* Loader */
+  .loader-wrapper {
+    text-align: center;
+    padding: 3rem;
+  }
+  .neon-spinner {
+    width: 40px;
+    height: 40px;
+    margin: 0 auto 1rem;
+    border: 3px solid rgba(0, 255, 255, 0.2);
+    border-top: 3px solid #0ff;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    box-shadow: 0 0 8px rgba(0,255,255,0.3);
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .loading-text {
+    color: #a0c0e0;
+  }
+
+  /* Responsive */
+  @media (max-width: 700px) {
+    .card-inner {
+      flex-direction: column;
+    }
+    .listing-img-wrapper {
+      flex: auto;
+      max-width: 200px;
+      margin: 0 auto;
+    }
+    .title-row {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+</style>
+
+<script>
+  function escapeHtml(str) {
+    if (!str) return "";
+    return str.replace(/[&<>]/g, function(m) {
+      if (m === "&") return "&amp;";
+      if (m === "<") return "&lt;";
+      if (m === ">") return "&gt;";
+      return m;
+    });
+  }
+
+  const token = localStorage.getItem("access_token");
+  if (!token) {
+    window.location.href = "/api/auth/public/login";
+  }
+
+  async function deleteListing(id) {
+    if (!confirm("⚠️ Delete this listing permanently? This action cannot be undone.")) return;
+    try {
+      const res = await fetch(`/api/listing/delete-listing/${id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await res.json();
+      alert(data.message || "Listing deleted successfully");
+      location.reload();
+    } catch (err) {
+      alert("Delete failed. Please try again.");
+    }
+  }
+
+  function toggleStatus(id) {
+    alert("🔐 Status change requires admin privileges. Please contact administrator.");
+  }
+
+  function trackCall(id) {
+    fetch(`/api/listing/click-call/${id}`, { method: "POST" }).catch(e => console.warn(e));
+    alert("📞 Call action tracked");
+  }
+
+  function trackWhatsApp(id) {
+    fetch(`/api/listing/click-whatsapp/${id}`, { method: "POST" }).catch(e => console.warn(e));
+    alert("💬 WhatsApp action tracked");
+  }
+
+  document.addEventListener("DOMContentLoaded", async () => {
+    const container = document.getElementById("listingContainer");
+    try {
+      const res = await fetch("/api/listing/my-listings-data", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      if (!data.listings || data.listings.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <h3 style="color:#bbddff;">No listings yet</h3>
+            <p>Create your first business listing and start reaching customers.</p>
+            <a href="/api/user/create-listing" class="new-listing-btn" style="margin-top:1rem; display:inline-block;">+ New Listing</a>
+          </div>`;
+        return;
+      }
+
+      let html = "";
+      for (const item of data.listings) {
+        const statusClass = `status-${item.status || 'pending'}`;
+        const statusText = item.status || "pending";
+        html += `
+          <div class="listing-card">
+            <div class="card-inner">
+              <div class="listing-img-wrapper">
+                <img class="listing-img" src="/static/default-business.png" alt="${escapeHtml(item.business_name)}" onerror="this.src='/static/default-business.png'">
+              </div>
+              <div class="listing-info">
+                <div class="title-row">
+                  <h3 class="business-name">${escapeHtml(item.business_name)}</h3>
+                  <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
+                </div>
+                <div class="meta-text">
+                  <span>📁 ${escapeHtml(item.category || 'Uncategorized')}</span>
+                  <span>📍 ${escapeHtml(item.city || 'Unknown')}, ${escapeHtml(item.state || '')}</span>
+                </div>
+                <div class="description">
+                  ${escapeHtml(item.description?.substring(0, 120) || "No description provided")}${item.description?.length > 120 ? "…" : ""}
+                </div>
+                <div class="action-buttons">
+                  <a href="/api/listing/listing/${item.id}" class="btn-action">👁️ View</a>
+                  <button onclick="toggleStatus(${item.id})" class="btn-action">🔄 Toggle Status</button>
+                  <button onclick="deleteListing(${item.id})" class="btn-action btn-danger">🗑️ Delete</button>
+                </div>
+                <div class="contact-links">
+                  ${item.whatsapp ? `<a href="#" onclick="trackWhatsApp(${item.id}); return false;">💬 WhatsApp</a>` : ''}
+                  ${item.user_phone ? `<a href="#" onclick="trackCall(${item.id}); return false;">📞 Call</a>` : ''}
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      container.innerHTML = html;
+    } catch (err) {
+      console.error(err);
+      container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><h3 style="color:#ffaa88;">Failed to load listings</h3><p>Please refresh the page or try again later.</p></div>`;
+    }
+  });
+</script>
+
+{% endblock %}

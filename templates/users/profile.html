@@ -1,0 +1,263 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Profile | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="profile-container">
+  <div class="profile-header">
+    <h1 class="page-title">My <span class="gradient-text">Profile</span></h1>
+  </div>
+
+  <div class="profile-card">
+    <div id="profileData" class="profile-info">
+      <div class="spinner"></div>
+      <p class="loading-text">Loading profile...</p>
+    </div>
+    <div id="upgradeSection" class="upgrade-section" style="display: none;">
+      <button class="btn-upgrade" onclick="goPricing()">Upgrade Plan</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .profile-container {
+    max-width: 700px;
+    margin: 2rem auto;
+    padding: 1rem;
+  }
+  .profile-header {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  .page-title {
+    font-size: 2rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #e0f2fe, #a5f3fc);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: -0.5px;
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, #00ffff, #8b5cf6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .profile-card {
+    background: rgba(15, 25, 45, 0.7);
+    backdrop-filter: blur(12px);
+    border-radius: 2rem;
+    border: 1px solid rgba(0, 255, 255, 0.25);
+    box-shadow: 0 20px 35px -15px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+    transition: all 0.2s;
+  }
+  .profile-info {
+    padding: 2rem;
+  }
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 1rem 0;
+    border-bottom: 1px solid rgba(0, 255, 255, 0.15);
+  }
+  .info-label {
+    font-weight: 600;
+    color: #9ab3d5;
+    letter-spacing: 0.5px;
+  }
+  .info-value {
+    font-weight: 500;
+    color: #f0f6ff;
+    word-break: break-word;
+    text-align: right;
+  }
+  .edit-name-btn {
+    background: rgba(0, 255, 255, 0.1);
+    border: 1px solid rgba(0, 255, 255, 0.4);
+    border-radius: 2rem;
+    padding: 0.2rem 0.8rem;
+    font-size: 0.7rem;
+    color: #00ffff;
+    cursor: pointer;
+    margin-left: 0.8rem;
+    transition: 0.2s;
+  }
+  .edit-name-btn:hover {
+    background: rgba(0, 255, 255, 0.3);
+    box-shadow: 0 0 6px #0ff;
+  }
+  .upgrade-section {
+    text-align: center;
+    padding: 1rem 2rem 2rem;
+  }
+  .btn-upgrade {
+    background: linear-gradient(95deg, #f0b90b, #ffd700);
+    border: none;
+    border-radius: 3rem;
+    padding: 0.6rem 2rem;
+    font-weight: 700;
+    color: #0a0f1c;
+    cursor: pointer;
+    transition: 0.2s;
+    box-shadow: 0 0 8px rgba(255, 215, 0, 0.5);
+  }
+  .btn-upgrade:hover {
+    transform: scale(1.02);
+    background: linear-gradient(95deg, #ffd700, #ffb347);
+    box-shadow: 0 0 15px gold;
+  }
+  .spinner {
+    width: 32px;
+    height: 32px;
+    margin: 1rem auto;
+    border: 3px solid rgba(0, 255, 255, 0.2);
+    border-top: 3px solid #0ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .loading-text {
+    text-align: center;
+    color: #8ca3c0;
+  }
+  @media (max-width: 600px) {
+    .info-row {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+    .info-value {
+      text-align: left;
+    }
+  }
+</style>
+
+<script>
+  // Helper: escape HTML
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>]/g, function(m) {
+      if (m === '&') return '&amp;';
+      if (m === '<') return '&lt;';
+      if (m === '>') return '&gt;';
+      return m;
+    });
+  }
+
+  async function loadProfile() {
+    const token = localStorage.getItem("access_token");
+    if (!token) {
+      document.getElementById("profileData").innerHTML = `<div class="info-row"><div class="info-label">Please login to view your profile.</div></div>`;
+      window.location.href = "/api/auth/public/login";
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/user/profile", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem("access_token");
+          localStorage.removeItem("refresh_token");
+          window.location.href = "/api/auth/public/login";
+          return;
+        }
+        throw new Error("Failed to fetch profile");
+      }
+
+      const user = await response.json();
+      // Fallback name: if backend returns empty name, we still show phone (but backend already handles)
+      const displayName = user.name || user.phone;
+
+      const container = document.getElementById("profileData");
+      container.innerHTML = `
+        <div class="info-row">
+          <div class="info-label">📱 Phone</div>
+          <div class="info-value">${escapeHtml(user.phone || "-")}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">👤 Name</div>
+          <div class="info-value">
+            ${escapeHtml(displayName)}
+            <button class="edit-name-btn" onclick="updateName()">✏️ Edit</button>
+          </div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">🎭 Role</div>
+          <div class="info-value">${escapeHtml(user.role || "User")}</div>
+        </div>
+        <div class="info-row">
+          <div class="info-label">💎 Plan</div>
+          <div class="info-value">${escapeHtml(user.plan || "Free")}</div>
+        </div>
+      `;
+
+      const upgradeSection = document.getElementById("upgradeSection");
+      if (user.plan === "free" || user.role === "user") {
+        upgradeSection.style.display = "block";
+      } else {
+        upgradeSection.style.display = "none";
+      }
+    } catch (err) {
+      console.error(err);
+      document.getElementById("profileData").innerHTML = `<div class="info-row"><div class="info-label">⚠️ Unable to load profile. Please try again later.</div></div>`;
+    }
+  }
+
+  async function updateName() {
+    const currentNameSpan = document.querySelector("#profileData .info-value");
+    let currentName = "User";
+    if (currentNameSpan) {
+      const text = currentNameSpan.innerText;
+      currentName = text.replace("✏️ Edit", "").trim();
+    }
+    const newName = prompt("Enter your new name:", currentName);
+    if (!newName) return;
+
+    const token = localStorage.getItem("access_token");
+    if (!token) {
+      alert("Please login again");
+      window.location.href = "/api/auth/public/login";
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/user/profile/update", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ name: newName })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || "Name updated successfully");
+        loadProfile(); // refresh
+      } else {
+        alert(data.error || "Update failed");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error. Please try again.");
+    }
+  }
+
+  function goPricing() {
+    window.location.href = "/pricing";
+  }
+
+  document.addEventListener("DOMContentLoaded", loadProfile);
+</script>
+
+{% endblock %}

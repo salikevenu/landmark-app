@@ -1,0 +1,26 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="admin-wrapper" style="display: flex; min-height: 100vh;">
+  <!-- Sidebar -->
+  <aside class="admin-sidebar" style="width: 220px; background: #1e293b; color: white; padding: 20px;">
+    <h3 style="color: #facc15;">Landmark Admin</h3>
+    <nav>
+      <a href="/admin/dashboard" style="display:block; padding: 10px 0; color: white;">📊 Dashboard</a>
+      <a href="/admin/users" style="display:block; padding: 10px 0; color: white;">👥 Users</a>
+      <a href="/admin/listings" style="display:block; padding: 10px 0; color: white;">🏢 Listings</a>
+      <a href="/admin/payments" style="display:block; padding: 10px 0; color: white;">💳 Payments</a>
+      <a href="/admin/withdraws" style="display:block; padding: 10px 0; color: white;">💰 Withdrawals</a>
+      <a href="/admin/referrals" style="display:block; padding: 10px 0; color: white;">🔗 Referrals</a>
+      <a href="/admin/settings" style="display:block; padding: 10px 0; color: white;">⚙️ Settings</a>
+      <a href="/logout" style="display:block; padding: 10px 0; color: #f87171;">🚪 Logout</a>
+    </nav>
+  </aside>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <!-- Main content area -->
+  <main class="admin-main" style="flex:1; padding: 30px; background: #f8fafc;">
+    {% block admin_content %}{% endblock %}
+  </main>
+</div>
+{% endblock %}

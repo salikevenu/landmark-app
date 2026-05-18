@@ -1,0 +1,201 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Users Management</h2>
+<div class="card">
+  <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
+    <input type="text" id="searchInput" placeholder="Search by name or phone"
+           style="padding:8px; flex:1; min-width:200px;">
+    <select id="roleFilter" style="padding:8px;">
+      <option value="">All Roles</option>
+      <option value="free">Free</option>
+      <option value="service_provider">Service Provider</option>
+      <option value="business_basic">Business Basic</option>
+      <option value="business_premium">Business Premium</option>
+      <option value="admin">Admin</option>
+    </select>
+    <button onclick="loadUsers()" style="padding:8px 15px;">Refresh</button>
+  </div>
+
+  <p><strong>Total Users:</strong> <span id="userCount">0</span></p>
+
+  <div style="overflow-x:auto;">
+    <table border="1" width="100%" cellpadding="8" style="border-collapse:collapse;">
+      <thead style="background:#f2f2f2;">
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Joined</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="usersTable">
+        <tr><td colspan="7">Loading users...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Referral Tree Modal -->
+<div id="referralModal" style="display:none; position:fixed; top:10%; left:50%; transform:translateX(-50%); background:white; padding:20px; border-radius:8px; box-shadow:0 0 15px rgba(0,0,0,0.3); z-index:1000; width:400px; max-height:80vh; overflow-y:auto;">
+    <h3>Referral Tree</h3>
+    <div id="referralContent"></div>
+    <button onclick="closeModal()">Close</button>
+</div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+const authHeaders = {
+  "Content-Type": "application/json",
+  "Authorization": "Bearer " + token
+};
+
+async function loadUsers() {
+  const search = document.getElementById("searchInput").value.trim();
+  const role = document.getElementById("roleFilter").value;
+
+  let url = "/api/admin/users";
+  const params = new URLSearchParams();
+  if (search) params.append("search", search);
+  if (role) params.append("role", role);
+  if (params.toString()) url += "?" + params.toString();
+
+  try {
+    const res = await fetch(url, { headers: authHeaders });
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Session expired. Please login again.");
+        window.location.href = "/admin/login";
+        return;
+      }
+      throw new Error("Failed to load");
+    }
+
+    const data = await res.json();
+    const users = Array.isArray(data) ? data : (data.users || []);
+
+    let html = "";
+    if (users.length === 0) {
+      html = '<tr><td colspan="7">No users found</td></tr>';
+    } else {
+      users.forEach(user => {
+        html += `
+          <tr>
+            <td>${user.id}</td>
+            <td>${user.name || ""}</td>
+            <td>${user.phone}</td>
+            <td>${user.role}</td>
+            <td>${user.is_active ? "Active" : "Disabled"}</td>
+            <td>${user.created_at || ""}</td>
+            <td>
+              <button onclick="toggleUser(${user.id})">${user.is_active ? "Disable" : "Activate"}</button>
+              <button onclick="deleteUser(${user.id})" style="color:red;">Delete</button>
+              <button onclick="viewAsUser(${user.id})" style="background:#3b82f6; color:white;">View As</button>
+              <button onclick="showReferralTree(${user.id})" style="background:#8b5cf6; color:white;">Tree</button>
+            </td>
+          </tr>
+        `;
+      });
+    }
+
+    document.getElementById("usersTable").innerHTML = html;
+    document.getElementById("userCount").innerText = users.length;
+  } catch (err) {
+    console.error(err);
+    document.getElementById("usersTable").innerHTML = "<tr><td colspan='7'>Error loading users.</td></tr>";
+  }
+}
+
+async function toggleUser(userId) {
+  if (!confirm("Change user status?")) return;
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/ban`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadUsers();
+    else alert("Action failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function deleteUser(userId) {
+  if (!confirm("Delete this user permanently?")) return;
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/delete`, {
+      method: "DELETE",
+      headers: authHeaders
+    });
+    if (res.ok) loadUsers();
+    else alert("Delete failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function viewAsUser(userId) {
+    try {
+        const res = await fetch(`/api/admin/users/${userId}/impersonate`, {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + token }
+        });
+        if (!res.ok) throw new Error("Failed");
+        const data = await res.json();
+        localStorage.setItem("impersonated_token", data.access_token);
+        window.open("/api/user/dashboard", "_blank");
+    } catch (err) {
+        alert("Impersonation failed");
+    }
+}
+
+async function showReferralTree(userId) {
+    const res = await fetch(`/api/admin/users/${userId}/referral-tree`, {
+        headers: { "Authorization": "Bearer " + token }
+    });
+    const data = await res.json();
+
+    let html = `<p><strong>User:</strong> ${data.user.phone} (${data.user.name || ''})</p>`;
+    if (data.referrer) {
+        html += `<p><strong>Referred by:</strong> ${data.referrer.phone} (${data.referrer.name || ''})</p>`;
+    } else {
+        html += `<p><strong>Referred by:</strong> <em>Organic</em></p>`;
+    }
+    html += `<h4>Direct Referrals (${data.referrals.length})</h4><ul>`;
+    data.referrals.forEach(r => {
+        html += `<li>${r.phone} – joined ${r.created_at?.split(' ')[0]}</li>`;
+    });
+    html += `</ul>`;
+
+    document.getElementById("referralContent").innerHTML = html;
+    document.getElementById("referralModal").style.display = "block";
+}
+
+function closeModal() {
+    document.getElementById("referralModal").style.display = "none";
+}
+
+document.getElementById("searchInput").addEventListener("keyup", function(e) {
+  if (e.key === "Enter") loadUsers();
+});
+document.getElementById("roleFilter").addEventListener("change", loadUsers);
+
+loadUsers();
+</script>
+
+<style>
+  table th { text-align: left; }
+  button { padding: 6px 10px; margin-right: 5px; cursor: pointer; }
+  .card {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    margin-top: 20px;
+  }
+</style>
+{% endblock %}

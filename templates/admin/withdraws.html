@@ -1,0 +1,140 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Withdraw Requests</h2>
+
+<table border="1" width="100%" cellpadding="10">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>User Phone</th>
+      <th>Amount</th>
+      <th>UPI</th>
+      <th>Status</th>
+      <th>Date</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="withdrawTable">
+    <tr><td colspan="7">Loading...</td></tr>
+  </tbody>
+</table>
+
+<div style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">
+    <label>From: <input type="date" id="startDate"></label>
+    <label>To: <input type="date" id="endDate"></label>
+    <button onclick="loadData()">Apply</button>
+</div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+const authHeaders = {
+  "Content-Type": "application/json",
+  "Authorization": "Bearer " + token
+};
+
+async function loadWithdraws() {
+  const start = document.getElementById("startDate").value;
+    const end = document.getElementById("endDate").value;
+    let url = "/api/admin/payments";
+    const params = new URLSearchParams();
+    if (start) params.append("start_date", start);
+    if (end) params.append("end_date", end);
+    if (params.toString()) url += "?" + params.toString();
+  try {
+    const res = await fetch("/api/admin/withdrawals", { headers: authHeaders });
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Session expired. Please login again.");
+        window.location.href = "/api/auth/public/login";
+        return;
+      }
+      throw new Error("Failed to load");
+    }
+
+    const data = await res.json();
+    let html = "";
+
+    if (data.length === 0) {
+      html = "<tr><td colspan='7'>No withdraw requests found</td></tr>";
+    } else {
+      data.forEach(w => {
+        html += `
+          <tr>
+            <td>${w.id}</td>
+            <td>${w.phone}</td>
+            <td>₹${w.amount}</td>
+            <td>${w.upi_id}</td>
+            <td>${w.status}</td>
+            <td>${w.created_at}</td>
+            <td>${getActions(w)}</td>
+          </tr>
+        `;
+      });
+    }
+
+    document.getElementById("withdrawTable").innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    document.getElementById("withdrawTable").innerHTML = "<tr><td colspan='7'>Error loading data.</td></tr>";
+  }
+}
+
+function getActions(w) {
+  if (w.status === 'pending') {
+    return `
+      <button onclick="approveWithdraw(${w.id})">Approve</button>
+      <button onclick="rejectWithdraw(${w.id})" style="color:red;">Reject</button>
+    `;
+  } else if (w.status === 'approved') {
+    return `<button onclick="markPaid(${w.id})">Mark Paid</button>`;
+  } else {
+    return 'Completed';
+  }
+}
+
+async function approveWithdraw(id) {
+  if (!confirm("Approve this withdrawal?")) return;
+  try {
+    const res = await fetch(`/api/admin/withdrawals/${id}/approve`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadWithdraws();
+    else alert("Approval failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function rejectWithdraw(id) {
+  if (!confirm("Reject this withdrawal?")) return;
+  try {
+    const res = await fetch(`/api/admin/withdrawals/${id}/reject`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadWithdraws();
+    else alert("Rejection failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function markPaid(id) {
+  if (!confirm("Mark this withdrawal as paid?")) return;
+  try {
+    const res = await fetch(`/api/admin/withdrawals/${id}/paid`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadWithdraws();
+    else alert("Action failed");
+  } catch (err) { alert("Network error"); }
+}
+
+loadWithdraws();
+</script>
+
+{% endblock %}

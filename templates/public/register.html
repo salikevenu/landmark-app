@@ -1,0 +1,107 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Register | LANDMARK{% endblock %}
+
+{% block content %}
+
+<style>
+.register-wrapper {
+    text-align: center;
+    width: 100%;
+    max-width: 400px;
+}
+.register-title {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+.page-subtitle {
+    margin-bottom: 20px;
+}
+.input-group {
+    text-align: left;
+}
+.btn-primary {
+    width: 100%;
+    margin-top: 10px;
+}
+.status-text {
+    text-align: center;
+    min-height: 20px;
+}
+</style>
+
+<div class="container">
+    <div class="card register-wrapper">
+        <h2 class="register-title">Create Account</h2>
+        <p class="page-subtitle">Join LANDMARK & start earning 💰</p>
+
+        <form onsubmit="event.preventDefault(); registerUser();">
+            <input id="phone" type="text" placeholder="Phone number" required>
+            <input id="name" type="text" placeholder="Your name" required>
+            <input id="referral" type="text" placeholder="Referral Code (optional)">
+
+            <button type="submit" class="btn-primary">Get Started</button>
+        </form>
+
+        <p id="statusMessage" class="status-text"></p>
+
+        <p style="margin-top:15px; font-size:14px;">
+            Already have an account? 
+            <a href="/api/auth/public/login" style="color:#ffd700;">Login</a>
+        </p>
+    </div>
+</div>
+
+<script>
+function registerUser() {
+    const phone = document.getElementById("phone").value.trim();
+    const name = document.getElementById("name").value.trim();
+    const referral = document.getElementById("referral").value.trim();
+    const status = document.getElementById("statusMessage");
+
+    if (!phone || !name) {
+        status.innerText = "Phone and name are required.";
+        return;
+    }
+    if (!/^[6-9]\d{9}$/.test(phone)) {
+        status.innerText = "Enter a valid 10‑digit Indian phone number.";
+        return;
+    }
+
+    status.innerText = "Creating account...";
+
+    fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            phone: phone,
+            name: name,
+            referral_code: referral || null
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.error) {
+            status.innerText = data.error;
+        } else if (data.access_token) {
+            // Auto‑login: store tokens
+            localStorage.setItem("access_token", data.access_token);
+            if (data.refresh_token) {
+                localStorage.setItem("refresh_token", data.refresh_token);
+            }
+            status.innerText = "✅ Account created! Redirecting...";
+            setTimeout(() => {
+                window.location.href = "/api/user/dashboard";   // go to dashboard
+            }, 800);
+        } else {
+            status.innerText = "Unexpected response.";
+        }
+    })
+    .catch(() => {
+        status.innerText = "Server error";
+    });
+}
+</script>
+
+{% endblock %}

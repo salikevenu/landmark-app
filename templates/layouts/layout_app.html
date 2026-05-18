@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}LANDMARK{% endblock %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+    <link rel="icon" href="data:,">
+
+    <!-- PWA -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <meta name="theme-color" content="#0ff">
+
+    <!-- Preconnect for performance -->
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+
+    <!-- Google Fonts (Poppins + Inter) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&family=Poppins:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Leaflet & Marker Cluster (for maps) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+    <!-- Razorpay -->
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+    <!-- Global Futuristic Styles -->
+    <style>
+        /* ===== GLOBAL RESET & FUTURISTIC BASE ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0c10;
+            font-family: 'Inter', 'Poppins', system-ui, sans-serif;
+            color: #eef5ff;
+            overflow-x: hidden;
+        }
+
+        /* Animated Cyberpunk Background (global) */
+        .cyber-bg-global {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 20% 30%, #0d111c, #03050b);
+            z-index: -2;
+        }
+
+        .cyber-bg-global::before {
+            content: "";
+            position: absolute;
+            width: 200%;
+            height: 200%;
+            top: -50%;
+            left: -50%;
+            background: repeating-linear-gradient(45deg, rgba(0, 255, 255, 0.02) 0px, rgba(0, 255, 255, 0.02) 2px, transparent 2px, transparent 8px);
+            animation: drift 25s linear infinite;
+            pointer-events: none;
+        }
+
+        @keyframes drift {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(60px, 60px); }
+        }
+
+        .noise-global {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJmIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjciIG51bU9jdGF2ZXM9IjMiLz48L2ZpbHRlcj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWx0ZXI9InVybCgjZikiIG9wYWNpdHk9IjAuMDYiLz48L3N2Zz4=');
+            opacity: 0.12;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        /* ===== TOPBAR ===== */
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 30px;
+            background: rgba(8, 12, 20, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid rgba(0, 255, 255, 0.25);
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .menu-toggle {
+            background: transparent;
+            border: 1px solid #0ff;
+            border-radius: 12px;
+            color: #0ff;
+            font-size: 1.6rem;
+            padding: 4px 12px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .menu-toggle:hover {
+            background: #0ff;
+            color: #000;
+            box-shadow: 0 0 12px cyan;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+        }
+
+        .logo {
+            height: 40px;
+            width: auto;
+            filter: drop-shadow(0 0 6px cyan);
+        }
+
+        .brand-name {
+            font-size: 1.6rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff, #0ff, #f0f);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .topbar-right {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .plan-badge {
+            background: rgba(255,255,255,0.1);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #facc15;
+            text-transform: capitalize;
+        }
+
+        .lang-select {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #2a4c7a;
+            border-radius: 40px;
+            padding: 8px 16px;
+            color: white;
+            font-weight: 500;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .lang-select:hover {
+            border-color: #0ff;
+            box-shadow: 0 0 8px cyan;
+        }
+
+        /* ===== SIDEBAR & MAIN LAYOUT ===== */
+        .app-layout {
+            display: flex;
+            min-height: calc(100vh - 70px);
+        }
+
+        .sidebar {
+            width: 260px;
+            background: rgba(8, 12, 20, 0.9);
+            backdrop-filter: blur(12px);
+            border-right: 1px solid rgba(0, 255, 255, 0.2);
+            padding: 30px 0;
+            transition: left 0.3s ease;
+            position: sticky;
+            top: 70px;
+            height: calc(100vh - 70px);
+            overflow-y: auto;
+            z-index: 1000;
+            pointer-events: auto;
+        }
+
+        .sidebar a {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            color: #ccddf8;
+            text-decoration: none;
+            font-weight: 500;
+            transition: 0.2s;
+            border-left: 3px solid transparent;
+        }
+
+        .sidebar a:hover {
+            background: rgba(0, 255, 255, 0.1);
+            color: #0ff;
+            border-left-color: #0ff;
+            box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.1);
+        }
+
+        .sidebar a.active {
+            background: linear-gradient(90deg, rgba(0, 255, 255, 0.15), transparent);
+            color: #0ff;
+            border-left-color: #0ff;
+            font-weight: 600;
+        }
+
+        /* Main content */
+        .main-content {
+            flex: 1;
+            padding: 20px 30px;
+            overflow-x: auto;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Responsive sidebar */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                left: -280px;
+                top: 70px;
+                height: calc(100vh - 70px);
+                z-index: 1000;
+            }
+            .sidebar.active {
+                left: 0;
+            }
+            .main-content {
+                padding: 15px;
+            }
+            .topbar {
+                padding: 10px 16px;
+            }
+            .brand-name {
+                font-size: 1.2rem;
+            }
+
+            /* Backdrop overlay */
+            .sidebar-overlay {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0,0,0,0.5);
+                z-index: 999;
+                opacity: 0;
+                pointer-events: none;
+                transition: opacity 0.3s ease;
+            }
+            .sidebar-overlay.show {
+                opacity: 1;
+                pointer-events: auto;
+            }
+
+            /* Map container stays behind */
+            .leaflet-container {
+                z-index: 0 !important;
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a0c10;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #0ff;
+            border-radius: 10px;
+        }
+    </style>
+
+    {% block extra_head %}{% endblock %}
+</head>
+
+<body>
+
+    <!-- Global background effects -->
+    <div class="cyber-bg-global"></div>
+    <div class="noise-global"></div>
+
+    <!-- ================= TOP BAR ================= -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <button class="menu-toggle" id="menuToggle" type="button">☰</button>
+            <a href="/" class="brand">
+                <img src="{{ url_for('static', filename='images/landmark-logo.png') }}" class="logo" alt="LANDMARK Logo">
+                <span class="brand-name">LANDMARK</span>
+            </a>
+        </div>
+        <div class="topbar-right">
+            <!-- Plan badge (auto‑updated via JavaScript) -->
+            <span id="userPlanBadge" class="plan-badge">Free User</span>
+
+            <!-- Language selector (with session pre‑selection) -->
+            <select class="lang-select" id="langSelect">
+                <option value="en" {% if session.get('lang', 'en') == 'en' %}selected{% endif %}>EN</option>
+                <option value="te" {% if session.get('lang') == 'te' %}selected{% endif %}>TE</option>
+                <option value="hi" {% if session.get('lang') == 'hi' %}selected{% endif %}>HI</option>
+                <option value="ta" {% if session.get('lang') == 'ta' %}selected{% endif %}>TA</option>
+                <option value="kn" {% if session.get('lang') == 'kn' %}selected{% endif %}>KN</option>
+            </select>
+        </div>
+    </header>
+
+    <!-- ================= LAYOUT ================= -->
+    <div class="app-layout">
+        <!-- SIDEBAR -->
+        <aside class="sidebar" id="sidebar">
+            <a href="/dashboard" title="Dashboard">📊 Dashboard</a>
+            <a href="/wallet" title="Wallet">💰 Wallet</a>
+            <a href="/api/user/browse" title="Search Nearby">🔍 Search Nearby</a>
+            <a href="/api/user/create-listing" title="Add Business">➕ Add Business</a>
+            <a href="/service/add" title="Add Service">🛠️ Add Service</a>
+            <a href="/promotions" title="Promotions">📢 Promotions</a>
+            <a href="/my-listings" title="My Listings">💼 My Listings</a>
+            <a href="/analytics" title="Analytics">📊 Analytics</a>
+            <a href="/api/user/invite" title="Referrals">👥 Referrals</a>
+            <a href="/reviews" title="Reviews">⭐ Reviews</a>
+            <a href="/api/user/profile" title="Profile">👤 Profile</a>
+            <a href="/transactions" title="Transactions">🧾 Transactions</a>
+            <a href="/pricing" title="Upgrade">⭐ Upgrade</a>
+            <a href="#" id="logoutLink" title="Logout">🚪 Logout</a>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- ================= SCRIPTS ================= -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+    <script>
+      // ========== SIDEBAR TOGGLE + LOGOUT + LINK HIGHLIGHT ==========
+      (function() {
+        const sidebar = document.getElementById('sidebar');
+        const menuToggle = document.getElementById('menuToggle');
+
+        if (sidebar && menuToggle) {
+          menuToggle.addEventListener('click', function(e) {
+            e.stopPropagation();
+            sidebar.classList.toggle('active');
+            menuToggle.blur();
+          });
+
+          document.addEventListener('click', function(e) {
+            if (sidebar.classList.contains('active') &&
+                !sidebar.contains(e.target) &&
+                e.target !== menuToggle) {
+              sidebar.classList.remove('active');
+            }
+          });
+
+          // Overlay for mobile
+          let overlay = document.querySelector('.sidebar-overlay');
+          if (!overlay && window.innerWidth <= 768) {
+            overlay = document.createElement('div');
+            overlay.className = 'sidebar-overlay';
+            document.body.appendChild(overlay);
+          }
+
+          if (overlay) {
+            const observer = new MutationObserver(() => {
+              if (sidebar.classList.contains('active')) {
+                overlay.classList.add('show');
+              } else {
+                overlay.classList.remove('show');
+              }
+            });
+            observer.observe(sidebar, { attributes: true, attributeFilter: ['class'] });
+
+            overlay.addEventListener('click', () => {
+              sidebar.classList.remove('active');
+            });
+          }
+
+          sidebar.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', function(e) {
+              setTimeout(() => sidebar.classList.remove('active'), 10);
+            });
+          });
+        }
+
+        // Logout
+        const logoutLink = document.getElementById('logoutLink');
+        if (logoutLink) {
+          logoutLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('refresh_token');
+            window.location.href = '/api/auth/public/login';
+          });
+        }
+
+        // Activate current link
+        const links = document.querySelectorAll('.sidebar a');
+        const path = window.location.pathname;
+        links.forEach(link => {
+          const href = link.getAttribute('href');
+          if (href && (path === href || (href !== '/' && path.startsWith(href)))) {
+            link.classList.add('active');
+          }
+        });
+      })();
+
+      // ========== LANGUAGE SWITCHER ==========
+      const langSelect = document.getElementById('langSelect');
+      if (langSelect) {
+        langSelect.addEventListener('change', function() {
+          const lang = this.value;
+          fetch('/set-language', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lang: lang })
+          }).then(() => location.reload());
+        });
+
+        let currentLang = "{{ current_lang | default('en') }}";
+        if (currentLang && langSelect.value !== currentLang) {
+          langSelect.value = currentLang;
+        }
+      }
+
+      // ========== USER PLAN BADGE (reads from localStorage) ==========
+      (function() {
+        function parseJwt(token) {
+          try {
+            const base64Url = token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            return JSON.parse(window.atob(base64));
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function roleToDisplay(role) {
+          const map = {
+            'free': 'Free User',
+            'service_provider': 'Service Provider',
+            'business_basic': 'Business Basic',
+            'business_premium': 'Business Premium'
+          };
+          return map[role] || role || 'Free User';
+        }
+
+        function updateBadge() {
+          const token = localStorage.getItem('access_token');   // ← from localStorage, not cookie
+          const badge = document.getElementById('userPlanBadge');
+          if (!badge) return;
+
+          if (token) {
+            const claims = parseJwt(token);
+            if (claims && claims.role) {
+              badge.textContent = roleToDisplay(claims.role);
+              return;
+            }
+          }
+          badge.textContent = 'Free User';
+        }
+
+        // Update immediately
+        updateBadge();
+
+        // Also update when the page becomes visible (e.g. after login redirect)
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') updateBadge();
+        });
+        window.addEventListener('focus', updateBadge);
+      })();
+    </script>
+
+    {% block extra_scripts %}{% endblock %}
+</body>
+
+</html>

@@ -1,0 +1,39 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Logout | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+
+<div class="card" style="text-align:center; padding:40px;">
+
+<h2>You have been logged out</h2>
+
+<p>Thank you for using LANDMARK.</p>
+
+<p>Redirecting to login...</p>
+
+<a href="/" class="btn-primary">Go to Home</a>
+
+</div>
+
+</div>
+
+
+<script>
+    // Clear JWT tokens (the ones used in your app)
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    // Optional: clear any other old keys
+    localStorage.removeItem("user");
+    localStorage.removeItem("token");
+    localStorage.removeItem("role");
+
+    // Redirect to login page after a short delay
+    setTimeout(function(){
+        window.location.href = "/api/auth/public/login";
+    }, 2000);
+</script>
+
+{% endblock %}

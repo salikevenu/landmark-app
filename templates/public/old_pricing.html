@@ -1,0 +1,134 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Pricing | LANDMARK{% endblock %}
+
+{% block content %}
+
+<div class="container">
+  <h2>Subscription Plans</h2>
+  <p class="page-subtitle">Upgrade your account to unlock listing features.</p>
+
+  <div class="pricing-grid">
+    <div class="card">
+      <h3>Service Provider</h3>
+      <p class="price">₹499</p>
+      <p>Create and manage your service listing.</p>
+      <button class="btn-primary" onclick="upgrade('service')">Buy Plan</button>
+    </div>
+
+    <div class="card">
+      <h3>Basic Business</h3>
+      <p class="price">₹999</p>
+      <p>List your business with premium visibility.</p>
+      <button class="btn-primary" onclick="upgrade('basic')">Buy Plan</button>
+    </div>
+
+    <div class="card">
+      <h3>Premium Business</h3>
+      <p class="price">₹1999</p>
+      <p>The full package – featured placements & more.</p>
+      <button class="btn-primary" onclick="upgrade('premium')">Buy Plan</button>
+    </div>
+  </div>
+
+  <p id="paymentStatus" class="status-text"></p>
+</div>
+
+<!-- Razorpay checkout script -->
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+<script>
+function upgrade(plan) {
+  const token = localStorage.getItem("access_token");   // ✅ standardised key
+  const status = document.getElementById("paymentStatus");
+
+  if (!token) {
+    alert("Please login first.");
+    window.location.href = "/api/auth/public/login";   // correct login URL
+    return;
+  }
+
+  status.innerText = "Creating order...";
+
+  fetch("/api/payment/create-order", {                 // ✅ correct endpoint
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + token              // ✅ JWT required
+    },
+    body: JSON.stringify({ plan: plan })              // only plan needed
+  })
+  .then(res => {
+    if (!res.ok) throw new Error("Order creation failed");
+    return res.json();
+  })
+  .then(data => {
+    if (data.order_id) {
+      // Open Razorpay checkout
+      const options = {
+        key: data.key,                                 // Razorpay key ID
+        amount: data.amount,                           // in paisa
+        currency: "INR",
+        name: "LANDMARK",
+        description: plan + " subscription",
+        order_id: data.order_id,
+        handler: function (response) {
+          // Payment successful – verify on server
+          verifyPayment(response, plan);
+        },
+        prefill: {
+          // optional: user email/phone from token claims if needed
+        },
+        theme: {
+          color: "#0a2540"
+        }
+      };
+      const rzp = new Razorpay(options);
+      rzp.open();
+    } else {
+      status.innerText = data.error || "Payment initiation failed.";
+    }
+  })
+  .catch(err => {
+    status.innerText = "Server error while creating order.";
+    console.error(err);
+  });
+}
+
+function verifyPayment(response, plan) {
+  const token = localStorage.getItem("access_token");
+  const status = document.getElementById("paymentStatus");
+
+  status.innerText = "Verifying payment...";
+
+  fetch("/api/payment/verify-payment", {               // ✅ payment verification endpoint
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + token
+    },
+    body: JSON.stringify({
+      razorpay_order_id: response.razorpay_order_id,
+      razorpay_payment_id: response.razorpay_payment_id,
+      razorpay_signature: response.razorpay_signature,
+      plan: plan
+    })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.status && data.status.includes("activated")) {
+      status.innerText = "Payment successful! Redirecting...";
+      // Optionally redirect to dashboard
+      setTimeout(() => { window.location.href = "/api/user/dashboard"; }, 2000);
+    } else {
+      status.innerText = data.error || "Payment verification failed.";
+    }
+  })
+  .catch(err => {
+    status.innerText = "Verification error.";
+    console.error(err);
+  });
+}
+</script>
+
+{% endblock %}

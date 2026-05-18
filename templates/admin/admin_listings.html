@@ -1,0 +1,114 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+
+<h2>Manage Listings</h2>
+<div id="listingContainer"></div>
+
+<script>
+const token = localStorage.getItem("access_token");
+if (!token) {
+  alert("Admin login required");
+  window.location.href = "/admin/login";
+}
+
+const authHeaders = {
+  "Content-Type": "application/json",
+  "Authorization": "Bearer " + token
+};
+
+async function loadListings() {
+  try {
+    const res = await fetch("/api/admin/listings", { headers: authHeaders });
+    if (!res.ok) {
+      if (res.status === 401) {
+        alert("Session expired. Please login again.");
+        window.location.href = "/admin/login";
+        return;
+      }
+      throw new Error("Failed to load");
+    }
+
+    const data = await res.json();
+    let html = "";
+
+    if (!data || data.length === 0) {
+      html = "<p>No listings found.</p>";
+    } else {
+      data.forEach(item => {
+        html += `
+          <div class="card">
+            <h3>${item.business_name} ${item.is_verified ? "✔️" : ""}</h3>
+            <p><strong>Category:</strong> ${item.category}</p>
+            <p><strong>City:</strong> ${item.city}</p>
+            <p><strong>Phone:</strong> ${item.phone}</p>
+            <div style="margin-top:10px;">
+              <button onclick="verifyListing(${item.id})">Verify</button>
+              <button onclick="disableListing(${item.id})">Disable</button>
+              <button onclick="deleteListing(${item.id})" style="color:red;">Delete</button>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    document.getElementById("listingContainer").innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    document.getElementById("listingContainer").innerHTML = "<p>Error loading listings. Please refresh.</p>";
+  }
+}
+
+async function verifyListing(id) {
+  try {
+    const res = await fetch(`/api/admin/listings/${id}/verify`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadListings();
+    else alert("Verification failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function disableListing(id) {
+  if (!confirm("Disable this listing?")) return;
+  try {
+    const res = await fetch(`/api/admin/listings/${id}/disable`, {
+      method: "POST",
+      headers: authHeaders
+    });
+    if (res.ok) loadListings();
+    else alert("Disable failed");
+  } catch (err) { alert("Network error"); }
+}
+
+async function deleteListing(id) {
+  if (!confirm("Delete listing permanently?")) return;
+  try {
+    const res = await fetch(`/api/admin/listings/${id}/delete`, {
+      method: "DELETE",
+      headers: authHeaders
+    });
+    if (res.ok) loadListings();
+    else alert("Delete failed");
+  } catch (err) { alert("Network error"); }
+}
+
+loadListings();
+</script>
+
+<style>
+  .card {
+    background: white;
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 8px;
+    box-shadow: 0 0 8px rgba(0,0,0,0.1);
+  }
+  button {
+    padding: 6px 12px;
+    margin-right: 8px;
+    cursor: pointer;
+  }
+</style>
+
+{% endblock %}

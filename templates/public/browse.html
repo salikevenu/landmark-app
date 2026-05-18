@@ -1,0 +1,180 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Search Businesses | LANDMARK{% endblock %}
+
+{% block content %}
+
+<style>
+  .container { max-width: 900px; margin: auto; }
+  .search-box { width: 100%; padding: 10px; margin-bottom: 20px; border-radius: 6px; border: 1px solid #ddd; }
+  .listing-card {
+    background: white;
+    padding: 20px;
+    border-radius: 10px;
+    margin-bottom: 15px;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+    transition: 0.2s;
+  }
+  .listing-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  }
+  .listing-card img {
+    width: 100%;
+    border-radius: 6px;
+    margin-bottom: 10px;
+  }
+  .category { color: #555; font-size: 14px; }
+  .location { color: #888; font-size: 14px; margin-bottom: 8px; }
+  .badge { display: inline-block; padding: 4px 8px; border-radius: 5px; font-size: 12px; margin-right: 5px; }
+  .premium { background: #ffd700; }
+  .verified { background: #28a745; color: white; }
+  .pagination { margin-top: 20px; text-align: center; }
+  .btn-secondary {
+    padding: 8px 14px;
+    border: none;
+    background: #2c7be5;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    margin: 5px;
+  }
+  .page-info { margin: 0 10px; font-weight: bold; }
+</style>
+
+<div class="container">
+  <h2>Browse Businesses</h2>
+
+  <div style="display:flex; gap:8px; margin-bottom:20px;">
+    <input id="searchInput" class="search-box" placeholder="Search business or category..." style="flex:1; margin-bottom:0;">
+    <button class="btn-secondary" onclick="startVoiceSearch()">🎤 Voice</button>
+  </div>
+
+  <div id="listingContainer">
+    <p>Loading businesses...</p>
+  </div>
+</div>
+
+<script>
+let currentPage = 1;
+let currentSearch = "";
+
+function loadListings(page = 1) {
+  currentPage = page;
+  let url = `/api/user/api/browse?page=${page}`;   // ✅ correct endpoint
+
+  const search = document.getElementById("searchInput").value.trim();
+  if (search) {
+    url += `&search=${encodeURIComponent(search)}`;
+  }
+
+  fetch(url)
+    .then(res => {
+      if (!res.ok) throw new Error("Failed to load listings");
+      return res.json();
+    })
+    .then(data => {
+      const listings = data.listings || [];
+      displayListings(listings);
+      renderPagination(data.page || page, data.total_pages || 1);
+    })
+    .catch(err => {
+      console.error(err);
+      document.getElementById("listingContainer").innerHTML = "<p>Unable to load listings.</p>";
+    });
+}
+
+function displayListings(listings) {
+  const container = document.getElementById("listingContainer");
+  container.innerHTML = "";
+
+  if (!listings || listings.length === 0) {
+    container.innerHTML = "<p>No listings available.</p>";
+    return;
+  }
+
+  listings.forEach(item => {
+    // ✅ image is already a full path from API
+    const imageSrc = item.image || "/static/default.jpg";
+
+    const premiumBadge = item.premium ? '<span class="badge premium">⭐ Premium</span>' : '';
+    const verifiedBadge = item.verified ? '<span class="badge verified">✔ Verified</span>' : '';
+    const phone = item.phone || '';
+
+    container.innerHTML += `
+      <div class="listing-card">
+        <img src="${imageSrc}" alt="${item.business_name}">
+        <h3>${item.business_name}</h3>
+        ${premiumBadge} ${verifiedBadge}
+        <p class="category">${item.category || "-"}</p>
+        <p class="location">${item.city || ""}, ${item.state || ""}</p>
+        <p>${item.description || ""}</p>
+        <div style="margin-top:10px;">
+          <a href="tel:+91${phone}" class="btn-secondary">📞 Call</a>
+          <a href="https://wa.me/91${phone}" target="_blank" class="btn-secondary">💬 WhatsApp</a>
+          <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.business_name + ' ' + item.city)}" 
+             target="_blank" class="btn-secondary">📍 Directions</a>
+        </div>
+      </div>
+    `;
+  });
+}
+
+function renderPagination(current, totalPages) {
+  let paginationDiv = document.getElementById("pagination");
+  if (!paginationDiv) {
+    paginationDiv = document.createElement("div");
+    paginationDiv.id = "pagination";
+    paginationDiv.className = "pagination";
+    document.querySelector(".container").appendChild(paginationDiv);
+  }
+  paginationDiv.innerHTML = "";
+
+  if (totalPages <= 1) return;
+
+  if (current > 1) {
+    paginationDiv.innerHTML += `<button class="btn-secondary" onclick="loadListings(${current - 1})">Previous</button>`;
+  }
+  paginationDiv.innerHTML += `<span class="page-info"> Page ${current} of ${totalPages} </span>`;
+  if (current < totalPages) {
+    paginationDiv.innerHTML += `<button class="btn-secondary" onclick="loadListings(${current + 1})">Next</button>`;
+  }
+}
+
+// Search on Enter key
+document.getElementById("searchInput").addEventListener("keypress", function(e) {
+  if (e.key === "Enter") {
+    currentSearch = this.value;
+    loadListings(1);
+  }
+});
+
+// Voice search
+function startVoiceSearch() {
+  if (!('webkitSpeechRecognition' in window)) {
+    alert("Voice search not supported in this browser");
+    return;
+  }
+  const recognition = new webkitSpeechRecognition();
+  recognition.lang = "en-IN";
+  recognition.interimResults = false;
+
+  recognition.onresult = function(event) {
+    const text = event.results[0][0].transcript;
+    document.getElementById("searchInput").value = text;
+    currentSearch = text;
+    loadListings(1);
+  };
+
+  recognition.onerror = function() {
+    alert("Voice recognition failed");
+  };
+
+  recognition.start();
+}
+
+// Initial load
+document.addEventListener("DOMContentLoaded", () => loadListings(1));
+</script>
+
+{% endblock %}
