@@ -176,7 +176,7 @@ def get_admin_listings(page=1, limit=50, search='', status_filter='', category_f
     total = conn.execute(count_query, params).fetchone()[0]
 
     query = f"""
-        SELECT id, business_name, category, city, phone, status, is_verified, is_premium, is_active, created_at
+        SELECT id, business_name, category, city, user_phone, status, is_verified, is_premium, is_active, created_at
         FROM listings {where_clause}
         ORDER BY id DESC
         LIMIT ? OFFSET ?
