@@ -1,15 +1,14 @@
-import sqlite3
-import os
-from database.init_db import DB_PATH
+# migrations/add_admin_tables.py
+from sqlalchemy import text
+from database.init_db import get_db
 
 def add_admin_tables():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = get_db()
 
     # Admin audit log
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS admin_audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             admin_id INTEGER,
             admin_phone TEXT,
             action TEXT,
@@ -19,19 +18,20 @@ def add_admin_tables():
             ip_address TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_admin ON admin_audit_log(admin_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_log(created_at)")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_admin ON admin_audit_log(admin_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_log(created_at)"))
 
     # Admin settings (key-value store)
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS admin_settings (
             key TEXT PRIMARY KEY,
             value TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    # Insert default settings
+    """))
+
+    # Insert default settings (PostgreSQL upsert with ON CONFLICT)
     defaults = [
         ('commission_rate', '10'),
         ('withdrawal_min_amount', '100'),
@@ -41,18 +41,30 @@ def add_admin_tables():
         ('sponsor_price', '999'),
         ('verify_price', '499')
     ]
-    cursor.executemany("INSERT OR IGNORE INTO admin_settings (key, value) VALUES (?, ?)", defaults)
+    for key, value in defaults:
+        conn.execute(text("""
+            INSERT INTO admin_settings (key, value)
+            VALUES (:key, :value)
+            ON CONFLICT (key) DO NOTHING
+        """), {"key": key, "value": value})
 
-    # Add missing column to users if not exists
-    cursor.execute("PRAGMA table_info(users)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if 'subscription_status' not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN subscription_status TEXT DEFAULT 'inactive'")
-    if 'is_banned' not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+    # Add missing columns to users table if they don't exist (dynamic ALTER TABLE)
+    # Check if columns exist using information_schema
+    check_sub_status = conn.execute(text("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name='users' AND column_name='subscription_status'
+    """)).fetchone()
+    if not check_sub_status:
+        conn.execute(text("ALTER TABLE users ADD COLUMN subscription_status TEXT DEFAULT 'inactive'"))
+
+    check_is_banned = conn.execute(text("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name='users' AND column_name='is_banned'
+    """)).fetchone()
+    if not check_is_banned:
+        conn.execute(text("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0"))
 
     conn.commit()
-    conn.close()
     print("Admin tables and columns added successfully.")
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 import io
 import os
-from flask import Blueprint, jsonify, render_template, request, send_file,redirect 
-from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token 
-from database.init_db import get_db  
+from flask import Blueprint, jsonify, render_template, request, send_file, redirect
+from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token
+from database.init_db import get_db
 from functools import wraps
 from datetime import timedelta, datetime
+from sqlalchemy import text
+
 from services.admin_service import (
     get_admin_stats, get_admin_users, ban_user, unban_user, change_user_role, reset_user_subscription,
     get_admin_listings, approve_listing_admin, disable_listing_admin, verify_listing_admin,
@@ -18,7 +20,7 @@ from services.admin_service import (
     log_admin_action
 )
 from services.payment_service import activate_subscription
- 
+
 admin_bp = Blueprint("admin", __name__)
 
 def admin_required(fn):
@@ -34,12 +36,14 @@ def admin_required(fn):
 def get_admin_info():
     """Helper to get current admin id and phone from JWT"""
     identity = get_jwt_identity()
-    # identity could be phone or user_id – assume phone
     conn = get_db()
-    user = conn.execute("SELECT id, phone FROM users WHERE phone = ?", (identity,)).fetchone()
+    user = conn.execute(
+        text("SELECT id, phone FROM users WHERE phone = :phone"),
+        {"phone": identity}
+    ).fetchone()
     if not user:
         return None, None
-    return user['id'], user['phone']
+    return user._mapping['id'], user._mapping['phone']
 
 # -------------------------------
 # HTML PAGES (shells)
@@ -155,25 +159,31 @@ def api_reset_subscription(user_id):
 def user_referral_tree(user_id):
     conn = get_db()
     # Get the user
-    user = conn.execute("SELECT id, phone, name, referral_code, referred_by FROM users WHERE id = ?", (user_id,)).fetchone()
+    user = conn.execute(
+        text("SELECT id, phone, name, referral_code, referred_by FROM users WHERE id = :uid"),
+        {"uid": user_id}
+    ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     # Find referrer
     referrer = None
-    if user["referred_by"]:
-        referrer = conn.execute("SELECT id, phone, name FROM users WHERE id = ?", (user["referred_by"],)).fetchone()
+    if user._mapping["referred_by"]:
+        referrer = conn.execute(
+            text("SELECT id, phone, name FROM users WHERE id = :ref_id"),
+            {"ref_id": user._mapping["referred_by"]}
+        ).fetchone()
 
     # Find direct referrals (users who were referred by this user's code)
     referrals = conn.execute(
-        "SELECT id, phone, name, created_at FROM users WHERE referred_by = ? ORDER BY created_at DESC",
-        (user_id,)   # ✅ correct: find users who were referred by this user
+        text("SELECT id, phone, name, created_at FROM users WHERE referred_by = :uid ORDER BY created_at DESC"),
+        {"uid": user_id}
     ).fetchall()
 
     return jsonify({
-        "user": dict(user),
-        "referrer": dict(referrer) if referrer else None,
-        "referrals": [dict(r) for r in referrals]
+        "user": dict(user._mapping),
+        "referrer": dict(referrer._mapping) if referrer else None,
+        "referrals": [dict(r._mapping) for r in referrals]
     })
 
 # Listings
@@ -238,7 +248,7 @@ def api_payments():
     limit = int(request.args.get('limit', 50))
     search = request.args.get('search', '')
     status = request.args.get('status', '')
-    result = get_admin_payments(page, limit, search, status, start_date, end_date )
+    result = get_admin_payments(page, limit, search, status, start_date, end_date)
     return jsonify(result)
 
 @admin_bp.route("/api/admin/payments/<int:payment_id>/approve", methods=["POST"])
@@ -370,27 +380,29 @@ def approve_payment_legacy():
 @admin_required
 def impersonate_user(user_id):
     conn = get_db()
-    user = conn.execute("SELECT id, phone, role FROM users WHERE id = ?", (user_id,)).fetchone()
+    user = conn.execute(
+        text("SELECT id, phone, role FROM users WHERE id = :uid"),
+        {"uid": user_id}
+    ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     # Generate short-lived token (10 minutes)
     token = create_access_token(
-        identity=str(user["id"]),
+        identity=str(user._mapping["id"]),
         additional_claims={
-            "role": user["role"],
-            "phone": user["phone"],
+            "role": user._mapping["role"],
+            "phone": user._mapping["phone"],
             "impersonated": True
         },
         expires_delta=timedelta(minutes=10)
     )
-    return jsonify({"access_token": token, "phone": user["phone"]})
+    return jsonify({"access_token": token, "phone": user._mapping["phone"]})
 
 @admin_bp.route("/api/admin/stats/chart")
 @admin_required
 def admin_chart_data():
     conn = get_db()
-    # Last 7 days example
     days = 7
     dates = []
     user_counts = []
@@ -398,19 +410,29 @@ def admin_chart_data():
     revenue_daily = []
 
     for i in range(days - 1, -1, -1):
-        date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
-        dates.append(date)
+        date_obj = datetime.utcnow() - timedelta(days=i)
+        date_str = date_obj.strftime("%Y-%m-%d")
+        dates.append(date_str)
 
         # Users registered on that day
-        uc = conn.execute("SELECT COUNT(*) FROM users WHERE date(created_at) = ?", (date,)).fetchone()[0]
+        uc = conn.execute(
+            text("SELECT COUNT(*) FROM users WHERE DATE(created_at) = :date"),
+            {"date": date_str}
+        ).scalar()
         user_counts.append(uc)
 
         # Listings created on that day
-        lc = conn.execute("SELECT COUNT(*) FROM listings WHERE date(created_at) = ?", (date,)).fetchone()[0]
+        lc = conn.execute(
+            text("SELECT COUNT(*) FROM listings WHERE DATE(created_at) = :date"),
+            {"date": date_str}
+        ).scalar()
         listing_counts.append(lc)
 
         # Revenue (sum of payments on that day)
-        rev = conn.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='verified' AND date(created_at) = ?", (date,)).fetchone()[0]
+        rev = conn.execute(
+            text("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status='verified' AND DATE(created_at) = :date"),
+            {"date": date_str}
+        ).scalar()
         revenue_daily.append(rev)
 
     return jsonify({

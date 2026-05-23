@@ -69,3 +69,11 @@ Pipfile.lock
 
 # Firebase / sensitive credentials
 config/serviceAccountKey.json
+
+# ============================================
+# Uploads & Generated Files (add at the end)
+# ============================================
+static/uploads/*
+static/images/listings/*
+static/qrcodes/*
+*.sqbpro          # SQLite browser project file

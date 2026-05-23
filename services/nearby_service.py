@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from database.init_db import get_db
 from utils.geo_utils import calculate_distance
 
@@ -9,7 +10,7 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
     grid_range = int(radius / 11) + 1
 
     conn = get_db()
-    query = """
+    query = text("""
         SELECT id,
                business_name,
                listing_type,
@@ -28,47 +29,50 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
                is_sponsored
         FROM listings
         WHERE is_active = 1
-          AND lat_grid BETWEEN ? AND ?
-          AND lng_grid BETWEEN ? AND ?
-    """
-    rows = conn.execute(query, (
-        lat_grid - grid_range,
-        lat_grid + grid_range,
-        lng_grid - grid_range,
-        lng_grid + grid_range
-    )).fetchall()
+          AND lat_grid BETWEEN :lat_min AND :lat_max
+          AND lng_grid BETWEEN :lng_min AND :lng_max
+    """)
+    rows = conn.execute(query, {
+        "lat_min": lat_grid - grid_range,
+        "lat_max": lat_grid + grid_range,
+        "lng_min": lng_grid - grid_range,
+        "lng_max": lng_grid + grid_range
+    }).fetchall()
 
     results = []
     for row in rows:
-        distance = calculate_distance(user_lat, user_lng, row["latitude"], row["longitude"])
+        # Safe column access via _mapping
+        distance = calculate_distance(user_lat, user_lng,
+                                      row._mapping["latitude"],
+                                      row._mapping["longitude"])
         if distance > radius:
             continue
-        if listing_type and row["listing_type"] != listing_type:
+        if listing_type and row._mapping["listing_type"] != listing_type:
             continue
-        if category and row["category"] != category:
+        if category and row._mapping["category"] != category:
             continue
 
         results.append({
-            "id": row["id"],
-            "business_name": row["business_name"],
-            "type": row["listing_type"],
-            "category": row["category"],
-            "city": row["city"],
-            "state": row["state"],
-            "latitude": row["latitude"],
-            "longitude": row["longitude"],
-            "phone": row["phone"],
-            "whatsapp": row["whatsapp"],
-            "description": row["description"],
-            "rating": row["rating"],
-            "reviews": row["total_reviews"],
-            "verified": bool(row["is_verified"]),
-            "premium": bool(row["is_premium"]),
-            "sponsored": bool(row["is_sponsored"]),
+            "id": row._mapping["id"],
+            "business_name": row._mapping["business_name"],
+            "type": row._mapping["listing_type"],
+            "category": row._mapping["category"],
+            "city": row._mapping["city"],
+            "state": row._mapping["state"],
+            "latitude": row._mapping["latitude"],
+            "longitude": row._mapping["longitude"],
+            "phone": row._mapping["phone"],
+            "whatsapp": row._mapping["whatsapp"],
+            "description": row._mapping["description"],
+            "rating": row._mapping["rating"],
+            "reviews": row._mapping["total_reviews"],
+            "verified": bool(row._mapping["is_verified"]),
+            "premium": bool(row._mapping["is_premium"]),
+            "sponsored": bool(row._mapping["is_sponsored"]),
             "distance_km": round(distance, 2)
         })
 
-    # Sorting
+    # Sorting (same as before)
     if sort_type == "distance":
         results.sort(key=lambda x: x["distance_km"])
     elif sort_type == "rating":

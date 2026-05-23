@@ -4,11 +4,12 @@ from datetime import datetime
 import hmac
 import hashlib
 import os
+from sqlalchemy import text
 
 from extensions import razor_client
 from config.payment_config import PLAN_PRICES, RAZORPAY_KEY_ID
 from services.payment_service import verify_payment_service
-from database.init_db import get_db          # shared per-request connection
+from database.init_db import get_db
 from services.referral_commission import process_referral_commission
 
 payment_bp = Blueprint("payment", __name__)
@@ -29,22 +30,22 @@ def create_order():
     amount = PLAN_PRICES[plan]
 
     order = razor_client.order.create({
-        "amount": amount,   # already in paisa
+        "amount": amount,
         "currency": "INR",
         "payment_capture": 1
     })
 
     conn = get_db()
-    conn.execute("""
+    conn.execute(text("""
         INSERT INTO payments (user_id, payment_id, amount, status, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        order["id"],
-        amount,
-        "created",
-        datetime.utcnow()
-    ))
+        VALUES (:user_id, :payment_id, :amount, :status, :created_at)
+    """), {
+        "user_id": user_id,
+        "payment_id": order["id"],
+        "amount": amount,
+        "status": "created",
+        "created_at": datetime.utcnow()
+    })
     conn.commit()
 
     return jsonify({
@@ -62,8 +63,11 @@ def create_order():
 def wallet_balance():
     user_id = get_jwt_identity()
     conn = get_db()
-    row = conn.execute("SELECT balance FROM wallet_balance WHERE user_id = ?", (user_id,)).fetchone()
-    balance = row["balance"] if row else 0
+    row = conn.execute(
+        text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+        {"uid": user_id}
+    ).fetchone()
+    balance = row._mapping["balance"] if row else 0
     return jsonify({"wallet_balance": balance})
 
 
@@ -75,12 +79,12 @@ def wallet_balance():
 def wallet_transactions():
     user_id = get_jwt_identity()
     conn = get_db()
-    rows = conn.execute("""
+    rows = conn.execute(text("""
         SELECT * FROM wallet_transactions
-        WHERE user_id = ?
+        WHERE user_id = :uid
         ORDER BY created_at DESC
-    """, (user_id,)).fetchall()
-    return jsonify([dict(r) for r in rows])
+    """), {"uid": user_id}).fetchall()
+    return jsonify([dict(r._mapping) for r in rows])
 
 
 # ================================
@@ -90,7 +94,7 @@ def wallet_transactions():
 @jwt_required()
 def verify_payment():
     data = request.json
-    result = verify_payment_service(data)   # May also need updating to use get_db()
+    result = verify_payment_service(data)
     return result
 
 
@@ -125,19 +129,21 @@ def razorpay_webhook():
     from services.payment_service import process_payment
 
     conn = get_db()
-    user_row = conn.execute("SELECT id FROM users WHERE phone = ?", (phone,)).fetchone()
+    user_row = conn.execute(
+        text("SELECT id FROM users WHERE phone = :phone"),
+        {"phone": phone}
+    ).fetchone()
     if not user_row:
         return {"error": "User not found"}, 404
 
-    user_id = user_row["id"]                    
-    result = process_payment(user_id, payment_id, amount)    
+    user_id = user_row._mapping["id"]
+    result = process_payment(user_id, payment_id, amount)
 
-    # NEW: Only reward if payment was successfully captured
     if payment_entity.get("status") == "captured":
-        process_referral_commission(user_id, amount)  # amount already in rupees
-        
+        process_referral_commission(user_id, amount)
+
     return {"status": result.get("status", "error")}
-    
+
 
 # ================================
 # Submit Manual Payment Proof
@@ -153,17 +159,17 @@ def submit_payment_proof():
         return {"error": "Invalid plan"}, 400
 
     conn = get_db()
-    conn.execute("""
+    conn.execute(text("""
         INSERT INTO payments (phone, plan, amount, status, payment_method, reference_id)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        phone,
-        plan,
-        PLAN_PRICES[plan],
-        "pending",
-        "manual",
-        reference_id
-    ))
+        VALUES (:phone, :plan, :amount, :status, :payment_method, :reference_id)
+    """), {
+        "phone": phone,
+        "plan": plan,
+        "amount": PLAN_PRICES[plan],
+        "status": "pending",
+        "payment_method": "manual",
+        "reference_id": reference_id
+    })
     conn.commit()
 
     return {

@@ -1,4 +1,7 @@
+# services/wallet_service.py
+from sqlalchemy import text
 from database.init_db import get_db
+
 
 # =========================
 # GET WALLET BALANCE
@@ -6,28 +9,40 @@ from database.init_db import get_db
 def get_wallet_balance(user_id):
     conn = get_db()
     row = conn.execute(
-        "SELECT balance FROM wallet_balance WHERE user_id = ?", (user_id,)
+        text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+        {"uid": user_id}
     ).fetchone()
-    return row["balance"] if row else 0
+    return row._mapping["balance"] if row else 0
+
 
 # =========================
 # CREDIT WALLET
 # =========================
 def credit_wallet(user_id, amount, source="system", reference_id=None):
     conn = get_db()
-    # Ensure wallet row exists
-    conn.execute("INSERT OR IGNORE INTO wallet_balance (user_id, balance) VALUES (?, 0)", (user_id,))
+    # Ensure wallet row exists (PostgreSQL upsert)
+    conn.execute(text("""
+        INSERT INTO wallet_balance (user_id, balance)
+        VALUES (:uid, 0)
+        ON CONFLICT (user_id) DO NOTHING
+    """), {"uid": user_id})
     # Add amount
-    conn.execute(
-        "UPDATE wallet_balance SET balance = balance + ? WHERE user_id = ?",
-        (amount, user_id)
-    )
+    conn.execute(text("""
+        UPDATE wallet_balance
+        SET balance = balance + :amount
+        WHERE user_id = :uid
+    """), {"amount": amount, "uid": user_id})
     # Record transaction
-    conn.execute("""
+    conn.execute(text("""
         INSERT INTO wallet_transactions
         (user_id, amount, type, source, reference_id, status)
-        VALUES (?, ?, 'credit', ?, ?, 'completed')
-    """, (user_id, amount, source, reference_id))
+        VALUES (:uid, :amount, 'credit', :source, :ref_id, 'completed')
+    """), {
+        "uid": user_id,
+        "amount": amount,
+        "source": source,
+        "ref_id": reference_id
+    })
     conn.commit()
 
 
@@ -37,20 +52,27 @@ def credit_wallet(user_id, amount, source="system", reference_id=None):
 def debit_wallet(user_id, amount, source="withdraw", reference_id=None):
     conn = get_db()
     row = conn.execute(
-        "SELECT balance FROM wallet_balance WHERE user_id = ?", (user_id,)
+        text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+        {"uid": user_id}
     ).fetchone()
-    if not row or row["balance"] < amount:
+    if not row or row._mapping["balance"] < amount:
         return False
 
-    conn.execute(
-        "UPDATE wallet_balance SET balance = balance - ? WHERE user_id = ?",
-        (amount, user_id)
-    )
-    conn.execute("""
+    conn.execute(text("""
+        UPDATE wallet_balance
+        SET balance = balance - :amount
+        WHERE user_id = :uid
+    """), {"amount": amount, "uid": user_id})
+    conn.execute(text("""
         INSERT INTO wallet_transactions
         (user_id, amount, type, source, reference_id, status)
-        VALUES (?, ?, 'debit', ?, ?, 'completed')
-    """, (user_id, amount, source, reference_id))
+        VALUES (:uid, :amount, 'debit', :source, :ref_id, 'completed')
+    """), {
+        "uid": user_id,
+        "amount": amount,
+        "source": source,
+        "ref_id": reference_id
+    })
     conn.commit()
     return True
 
@@ -67,21 +89,23 @@ def process_referral(user_id, purchase_amount):
     conn = get_db()
     # Get referrer's referral code stored in 'referred_by' column
     referred_row = conn.execute(
-        "SELECT referred_by FROM users WHERE id = ?", (user_id,)
+        text("SELECT referred_by FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
-    if not referred_row or not referred_row["referred_by"]:
+    if not referred_row or not referred_row._mapping["referred_by"]:
         return
 
-    referral_code = referred_row["referred_by"]
+    referral_code = referred_row._mapping["referred_by"]
 
     # Find the referrer user by their own referral_code
     referrer = conn.execute(
-        "SELECT id FROM users WHERE referral_code = ?", (referral_code,)
+        text("SELECT id FROM users WHERE referral_code = :code"),
+        {"code": referral_code}
     ).fetchone()
     if not referrer:
         return
 
-    referrer_id = referrer["id"]
+    referrer_id = referrer._mapping["id"]
     reward = purchase_amount * 0.20
 
     # Credit the referrer's wallet
@@ -93,20 +117,20 @@ def process_referral(user_id, purchase_amount):
 # =========================
 def get_wallet_transactions(user_id):
     conn = get_db()
-    rows = conn.execute("""
+    rows = conn.execute(text("""
         SELECT type, amount, description, created_at
         FROM wallet_transactions
-        WHERE user_id = ?
+        WHERE user_id = :uid
         ORDER BY id DESC
         LIMIT 20
-    """, (user_id,)).fetchall()
+    """), {"uid": user_id}).fetchall()
 
     return [
         {
-            "type": r["type"],
-            "amount": r["amount"],
-            "description": r["description"],
-            "date": r["created_at"]
+            "type": r._mapping["type"],
+            "amount": r._mapping["amount"],
+            "description": r._mapping["description"],
+            "date": r._mapping["created_at"]
         }
         for r in rows
     ]

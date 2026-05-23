@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 import math
+from sqlalchemy import text
 from database.init_db import get_db
 from utils.geo_utils import calculate_distance
 
@@ -50,30 +51,33 @@ def find_nearby_friends(user_lat, user_lng, radius):
     grid_range = int(radius / 11) + 1
 
     conn = get_db()
-    rows = conn.execute("""
+    # Use named parameters and text() for PostgreSQL compatibility
+    query = text("""
         SELECT phone, name, latitude, longitude
         FROM users
         WHERE is_active = 1
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
-          AND lat_grid BETWEEN ? AND ?
-          AND lng_grid BETWEEN ? AND ?
-    """, (
-        lat_grid - grid_range,
-        lat_grid + grid_range,
-        lng_grid - grid_range,
-        lng_grid + grid_range
-    )).fetchall()
+          AND lat_grid BETWEEN :lat_min AND :lat_max
+          AND lng_grid BETWEEN :lng_min AND :lng_max
+    """)
+    rows = conn.execute(query, {
+        "lat_min": lat_grid - grid_range,
+        "lat_max": lat_grid + grid_range,
+        "lng_min": lng_grid - grid_range,
+        "lng_max": lng_grid + grid_range
+    }).fetchall()
 
     friends = []
     for r in rows:
-        distance = calculate_distance(user_lat, user_lng, r["latitude"], r["longitude"])
+        # Use row._mapping for dict-like access
+        distance = calculate_distance(user_lat, user_lng, r._mapping["latitude"], r._mapping["longitude"])
         if distance <= radius:
             friends.append({
-                "phone": r["phone"],
-                "name": r["name"],
-                "latitude": r["latitude"],
-                "longitude": r["longitude"],
+                "phone": r._mapping["phone"],
+                "name": r._mapping["name"],
+                "latitude": r._mapping["latitude"],
+                "longitude": r._mapping["longitude"],
                 "distance_km": round(distance, 2)
             })
 

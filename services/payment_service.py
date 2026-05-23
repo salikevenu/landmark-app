@@ -1,5 +1,6 @@
 import datetime
 from datetime import timedelta
+from sqlalchemy import text
 
 from extensions import razor_client
 from config.payment_config import PLAN_PRICES
@@ -11,18 +12,20 @@ from database.init_db import get_db
 # ACTIVATE SUBSCRIPTION
 # =========================
 def activate_subscription(phone, plan, days=30):
-    # Store only the date in YYYY-MM-DD format – consistent with the rest of the app
     expiry_date = (datetime.datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
     conn = get_db()
-    conn.execute("""
+    conn.execute(text("""
         UPDATE users
-        SET role = ?,
+        SET role = :plan,
             subscription_status = 'active',
-            subscription_expiry = ?
-        WHERE phone = ?
-    """, (plan, expiry_date, phone))
+            subscription_expiry = :expiry_date
+        WHERE phone = :phone
+    """), {
+        "plan": plan,
+        "expiry_date": expiry_date,
+        "phone": phone
+    })
     conn.commit()
-    # No conn.close() – Flask's teardown handles it
     return expiry_date
 
 
@@ -32,21 +35,29 @@ def activate_subscription(phone, plan, days=30):
 def process_payment(user_id, payment_id, amount):
     conn = get_db()
     try:
-        # Start transaction to avoid duplicate
-        conn.execute("BEGIN IMMEDIATE")
+        # Start transaction
+        conn.execute(text("BEGIN"))
+        # Check for duplicate payment_id
         existing = conn.execute(
-            "SELECT id FROM payments WHERE payment_id = ?", (payment_id,)
+            text("SELECT id FROM payments WHERE payment_id = :payment_id"),
+            {"payment_id": payment_id}
         ).fetchone()
         if existing:
+            conn.execute(text("ROLLBACK"))
             return {"status": "duplicate"}
 
-        conn.execute("""
+        conn.execute(text("""
             INSERT INTO payments (user_id, payment_id, amount, status)
-            VALUES (?, ?, ?, ?)
-        """, (user_id, payment_id, amount, "verified"))
-        conn.commit()
+            VALUES (:user_id, :payment_id, :amount, :status)
+        """), {
+            "user_id": user_id,
+            "payment_id": payment_id,
+            "amount": amount,
+            "status": "verified"
+        })
+        conn.execute(text("COMMIT"))
     except Exception as e:
-        conn.rollback()
+        conn.execute(text("ROLLBACK"))
         return {"error": str(e)}
 
     # Credit wallet after successful payment
@@ -102,10 +113,13 @@ def verify_payment_service(data, user_id):
 
     # 6. Get user phone (for subscription activation)
     conn = get_db()
-    user_row = conn.execute("SELECT phone FROM users WHERE id = ?", (user_id,)).fetchone()
+    user_row = conn.execute(
+        text("SELECT phone FROM users WHERE id = :user_id"),
+        {"user_id": user_id}
+    ).fetchone()
     if not user_row:
         return {"error": "User not found"}, 404
-    phone = user_row["phone"]   # key access, not index
+    phone = user_row._mapping["phone"]   # safe access
 
     # 7. Process payment (insert record + credit wallet)
     result = process_payment(user_id, razorpay_payment_id, expected_amount / 100)

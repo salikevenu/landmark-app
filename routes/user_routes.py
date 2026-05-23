@@ -1,12 +1,13 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
 from datetime import datetime, timedelta, date
+from sqlalchemy import text
 from database.init_db import get_db
 from time import time
 import razorpay
 import os
 import secrets
-from routes.decorators import requires_active_plan 
+from routes.decorators import requires_active_plan
 
 user_bp = Blueprint("user", __name__)
 
@@ -24,13 +25,13 @@ razor_client = razorpay.Client(auth=(
 def get_user_by_id(user_id):
     conn = get_db()
     user = conn.execute(
-        "SELECT name, phone, role, plan, referral_code, subscription_expiry FROM users WHERE id = ?",
-        (user_id,)
+        text("SELECT name, phone, role, plan, referral_code, subscription_expiry FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
-    return dict(user) if user else None
+    return dict(user._mapping) if user else None
 
 # ------------------------------------------------------------
-# Profile pages & API (unchanged)
+# Profile pages & API
 # ------------------------------------------------------------
 @user_bp.route("/profile")
 def profile_page():
@@ -60,7 +61,10 @@ def update_profile():
     if not name:
         return jsonify({"error": "Name required"}), 400
     conn = get_db()
-    conn.execute("UPDATE users SET name = ? WHERE id = ?", (name, user_id))
+    conn.execute(
+        text("UPDATE users SET name = :name WHERE id = :uid"),
+        {"name": name, "uid": user_id}
+    )
     conn.commit()
     return jsonify({"message": "Profile updated"}), 200
 
@@ -69,22 +73,21 @@ def logout():
     return jsonify({"message": "Logged out"}), 200
 
 # ------------------------------------------------------------
-# PLAN DETAILS (incl. extra business)
+# PLAN DETAILS
 # ------------------------------------------------------------
 PLAN_DETAILS = {
     "service": {"amount": 49900, "role": "service_provider", "plan": "service"},
     "basic":   {"amount": 99900, "role": "business_basic",   "plan": "basic"},
     "premium": {"amount": 199900, "role": "business_premium", "plan": "premium"},
-    "extra_business": {"amount": 24900, "role": None, "plan": "extra_business"}  # keeps existing role
+    "extra_business": {"amount": 24900, "role": None, "plan": "extra_business"}
 }
 
 # ------------------------------------------------------------
-# CREATE ORDER (works for all plans + extra business)
+# CREATE ORDER
 # ------------------------------------------------------------
 @user_bp.route("/create-order", methods=["POST"])
 @jwt_required()
 def create_order():
-    """Create a Razorpay order for the selected plan / extra business."""
     user_id = get_jwt_identity()
     data = request.get_json()
     plan_type = data.get("plan")
@@ -117,7 +120,7 @@ def create_order():
         return jsonify({"error": str(e)}), 500
 
 # ------------------------------------------------------------
-# VERIFY PAYMENT (handles upgrades AND extra business)
+# VERIFY PAYMENT
 # ------------------------------------------------------------
 @user_bp.route("/verify-payment", methods=["POST"])
 @jwt_required()
@@ -149,14 +152,13 @@ def verify_payment():
 
     conn = get_db()
 
-    # ----- Extra business purchase (doesn't change role) -----
+    # ----- Extra business purchase -----
     if plan_type == "extra_business":
         conn.execute(
-            "UPDATE users SET extra_businesses_purchased = extra_businesses_purchased + 1 WHERE id = ?",
-            (user_id,)
+            text("UPDATE users SET extra_businesses_purchased = extra_businesses_purchased + 1 WHERE id = :uid"),
+            {"uid": user_id}
         )
         conn.commit()
-        # No referral commission for extra business (optional)
         return jsonify({"message": "Extra business slot purchased successfully", "redirect": "/create-listing"})
 
     # ----- Normal plan upgrade -----
@@ -171,8 +173,14 @@ def verify_payment():
         business_limit = 0
 
     conn.execute(
-        "UPDATE users SET role = ?, plan = ?, subscription_expiry = ?, business_limit = ? WHERE id = ?",
-        (plan_info["role"], plan_info["plan"], expiry_date, business_limit, user_id)
+        text("UPDATE users SET role = :role, plan = :plan, subscription_expiry = :expiry, business_limit = :blimit WHERE id = :uid"),
+        {
+            "role": plan_info["role"],
+            "plan": plan_info["plan"],
+            "expiry": expiry_date,
+            "blimit": business_limit,
+            "uid": user_id
+        }
     )
     conn.commit()
 
@@ -181,14 +189,18 @@ def verify_payment():
     process_referral_commission(user_id, plan_info["amount"] / 100)
 
     # Record transaction
-    conn.execute(
-        """INSERT INTO payment_transactions 
-           (user_id, razorpay_order_id, razorpay_payment_id, amount, status) 
-           VALUES (?, ?, ?, ?, ?)""",
-        (user_id, order_id, payment_id, plan_info["amount"], "captured")
-    )
+    conn.execute(text("""
+        INSERT INTO payment_transactions 
+        (user_id, razorpay_order_id, razorpay_payment_id, amount, status) 
+        VALUES (:uid, :order_id, :payment_id, :amount, :status)
+    """), {
+        "uid": user_id,
+        "order_id": order_id,
+        "payment_id": payment_id,
+        "amount": plan_info["amount"],
+        "status": "captured"
+    })
     conn.commit()
-    conn.close()
 
     # Generate new JWT with updated role
     user = get_user_by_id(user_id)
@@ -205,7 +217,7 @@ def verify_payment():
     }), 200
 
 # ------------------------------------------------------------
-# Protected pages (unchanged)
+# Protected pages
 # ------------------------------------------------------------
 @user_bp.route("/dashboard")
 def user_dashboard():
@@ -217,18 +229,19 @@ def create_listing():
     user_id = get_jwt_identity()
     db = get_db()
     user = db.execute(
-        "SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = ?",
-        (user_id,)
+        text("SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
 
     business_count = db.execute(
-        "SELECT COUNT(*) FROM listings WHERE user_id = ?", (user_id,)
-    ).fetchone()[0]
+        text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
+        {"uid": user_id}
+    ).scalar()  # Use scalar for aggregate
 
-    max_allowed = user["business_limit"] + user["extra_businesses_purchased"]
+    max_allowed = user._mapping["business_limit"] + user._mapping["extra_businesses_purchased"]
 
     if business_count >= max_allowed:
-        if user["role"] == "business_premium":
+        if user._mapping["role"] == "business_premium":
             flash("You have reached your free business limit. Purchase an extra slot for ₹259.", "warning")
             return redirect(url_for('user.extra_business_payment'))
         else:
@@ -237,7 +250,6 @@ def create_listing():
 
     return render_template('users/create_listing.html')
 
-# --- EXTRA BUSINESS PAYMENT PAGE (shows Razorpay button) ---
 @user_bp.route("/extra-business")
 @requires_active_plan('business_premium')
 def extra_business_payment():
@@ -250,7 +262,6 @@ def browse():
 
 @user_bp.route("/api/browse")
 def api_browse():
-    # ... (your existing browse API – unchanged)
     try:
         page = int(request.args.get("page", 1))
         search = request.args.get("search", "")
@@ -263,56 +274,54 @@ def api_browse():
         offset = (page - 1) * limit
 
         conn = get_db()
-        cursor = conn.cursor()
 
-        query = """
-        SELECT *,
-        CASE 
-            WHEN ? IS NOT NULL AND ? IS NOT NULL THEN (
+        # Base query with optional distance calculation
+        query = text("""
+            SELECT *,
+            CASE 
+                WHEN :lat IS NOT NULL AND :lng IS NOT NULL THEN (
+                    6371 * acos(
+                        cos(radians(:lat)) *
+                        cos(radians(latitude)) *
+                        cos(radians(longitude) - radians(:lng)) +
+                        sin(radians(:lat)) *
+                        sin(radians(latitude))
+                    )
+                )
+                ELSE NULL
+            END as distance
+            FROM businesses
+            WHERE is_active = 1
+            AND (:search = '' OR business_name ILIKE :search)
+            AND (:category = '' OR category = :category)
+            AND (:distance IS NULL OR (
                 6371 * acos(
-                    cos(radians(?)) *
+                    cos(radians(:lat)) *
                     cos(radians(latitude)) *
-                    cos(radians(longitude) - radians(?)) +
-                    sin(radians(?)) *
+                    cos(radians(longitude) - radians(:lng)) +
+                    sin(radians(:lat)) *
                     sin(radians(latitude))
                 )
-            )
-            ELSE NULL
-        END as distance
-        FROM businesses
-        WHERE is_active = 1
-        """
-        params = [lat, lng, lat, lng, lat]
+            ) <= :distance)
+            ORDER BY featured DESC, premium DESC, distance ASC
+            LIMIT :limit OFFSET :offset
+        """)
 
-        if search:
-            query += " AND business_name LIKE ?"
-            params.append(f"%{search}%")
-        if category and category != "all":
-            query += " AND category = ?"
-            params.append(category)
-        if lat and lng and distance:
-            query += """
-            AND (
-                6371 * acos(
-                    cos(radians(?)) *
-                    cos(radians(latitude)) *
-                    cos(radians(longitude) - radians(?)) +
-                    sin(radians(?)) *
-                    sin(radians(latitude))
-                )
-            ) <= ?
-            """
-            params.extend([lat, lng, lat, float(distance)])
+        params = {
+            "lat": float(lat) if lat else None,
+            "lng": float(lng) if lng else None,
+            "search": f"%{search}%" if search else "",
+            "category": category if category else "",
+            "distance": float(distance) if distance else None,
+            "limit": limit,
+            "offset": offset
+        }
 
-        query += " ORDER BY featured DESC, premium DESC, distance ASC"
-        query += " LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+        rows = conn.execute(query, params).fetchall()
+        listings = [dict(r._mapping) for r in rows]
 
         return jsonify({
-            "listings": [dict(r) for r in rows],
+            "listings": listings,
             "has_more": len(rows) == limit
         })
     except Exception as e:
@@ -330,18 +339,24 @@ def invite():
 def api_invite():
     user_id = get_jwt_identity()
     conn = get_db()
-    user = conn.execute("SELECT referral_code FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not user or not user["referral_code"]:
+    user = conn.execute(
+        text("SELECT referral_code FROM users WHERE id = :uid"),
+        {"uid": user_id}
+    ).fetchone()
+    if not user or not user._mapping["referral_code"]:
         code = secrets.token_urlsafe(8)
-        conn.execute("UPDATE users SET referral_code = ? WHERE id = ?", (code, user_id))
+        conn.execute(
+            text("UPDATE users SET referral_code = :code WHERE id = :uid"),
+            {"code": code, "uid": user_id}
+        )
         conn.commit()
         referral_code = code
     else:
-        referral_code = user["referral_code"]
+        referral_code = user._mapping["referral_code"]
     return jsonify({"referral_code": referral_code})
 
 # ------------------------------------------------------------
-# Track, recommend, subscription status, pricing (unchanged)
+# Track, recommend, subscription status, pricing
 # ------------------------------------------------------------
 @user_bp.route("/api/track", methods=["POST"])
 @jwt_required()
@@ -350,8 +365,8 @@ def track():
     user_id = get_jwt_identity()
     conn = get_db()
     conn.execute(
-        "INSERT INTO interactions (business_id, user_id, action) VALUES (?, ?, ?)",
-        (data["business_id"], user_id, data["action"])
+        text("INSERT INTO interactions (business_id, user_id, action) VALUES (:bid, :uid, :action)"),
+        {"bid": data["business_id"], "uid": user_id, "action": data["action"]}
     )
     conn.commit()
     return jsonify({"status": "ok"})
@@ -359,15 +374,15 @@ def track():
 @user_bp.route("/api/recommend")
 def recommend():
     conn = get_db()
-    rows = conn.execute("""
+    rows = conn.execute(text("""
         SELECT b.*, COUNT(i.id) as score
         FROM businesses b
         LEFT JOIN interactions i ON b.id = i.business_id
         GROUP BY b.id
         ORDER BY score DESC
         LIMIT 10
-    """).fetchall()
-    return jsonify([dict(r) for r in rows])
+    """)).fetchall()
+    return jsonify([dict(r._mapping) for r in rows])
 
 @user_bp.route("/subscription-status", methods=["GET"])
 @jwt_required()
@@ -375,13 +390,13 @@ def subscription_status():
     user_id = get_jwt_identity()
     conn = get_db()
     user = conn.execute(
-        "SELECT role, plan, subscription_expiry FROM users WHERE id = ?",
-        (user_id,)
+        text("SELECT role, plan, subscription_expiry FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    expiry_str = user["subscription_expiry"]
+    expiry_str = user._mapping["subscription_expiry"]
     is_active = False
     if expiry_str:
         try:
@@ -391,8 +406,8 @@ def subscription_status():
         except (ValueError, TypeError):
             pass
 
-    role = user["role"]
-    plan = user["plan"]
+    role = user._mapping["role"]
+    plan = user._mapping["plan"]
     allowed_roles = ["service_provider", "business_basic", "business_premium"]
     can_create = (role in allowed_roles and is_active)
 

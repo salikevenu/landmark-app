@@ -1,16 +1,12 @@
+# routes/decorators.py
 from functools import wraps
 from flask import redirect, url_for, flash
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from datetime import datetime
+from sqlalchemy import text
 from database.init_db import get_db
 
 def requires_active_plan(*allowed_roles):
-    """
-    Decorator that checks:
-    - User is logged in.
-    - Subscription hasn't expired (demotes to 'free' if so).
-    - User's role is in allowed_roles.
-    """
     def decorator(f):
         @wraps(f)
         @jwt_required()
@@ -18,8 +14,8 @@ def requires_active_plan(*allowed_roles):
             user_id = get_jwt_identity()
             db = get_db()
             user = db.execute(
-                "SELECT role, subscription_expiry FROM users WHERE id = ?",
-                (user_id,)
+                text("SELECT role, subscription_expiry FROM users WHERE id = :uid"),
+                {"uid": user_id}
             ).fetchone()
 
             if not user:
@@ -27,15 +23,16 @@ def requires_active_plan(*allowed_roles):
                 return redirect(url_for('auth.login'))
 
             # ----- Expiry check -----
-            current_role = user["role"]
-            if user["subscription_expiry"]:
+            current_role = user._mapping["role"]
+            expiry_str = user._mapping["subscription_expiry"]
+            if expiry_str:
                 try:
-                    expiry = datetime.fromisoformat(user["subscription_expiry"])
+                    expiry = datetime.fromisoformat(expiry_str)
                     if datetime.utcnow() > expiry:
                         # Demote to free
                         db.execute(
-                            "UPDATE users SET role = 'free', plan = NULL, subscription_expiry = NULL, business_limit = 0 WHERE id = ?",
-                            (user_id,)
+                            text("UPDATE users SET role = 'free', plan = NULL, subscription_expiry = NULL, business_limit = 0 WHERE id = :uid"),
+                            {"uid": user_id}
                         )
                         db.commit()
                         flash("Your subscription has expired. You are now a free user.", "warning")

@@ -1,39 +1,41 @@
 import os
-import sqlite3
-from flask import g
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+load_dotenv()
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "landmark.db")
+# Read DATABASE_URL from environment (e.g., set in .env for local development)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    # Fallback to SQLite only if not set – but we want PostgreSQL now
+    # For local development, you must set DATABASE_URL.
+    raise ValueError("DATABASE_URL environment variable is not set. Example: postgresql://user:pass@localhost/landmark_db")
+
+engine = create_engine(DATABASE_URL, echo=False)
+
+def get_db():
+    return engine.connect()
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    cursor = conn.cursor()
-
-    # =========================
-    # SQLite Performance Mode
-    # =========================
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute("PRAGMA temp_store=MEMORY;")
+    conn = get_db()
 
     # =====================================================
     # USERS TABLE
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             phone TEXT UNIQUE,
             name TEXT,
-            role TEXT DEFAULT 'user',          
-            plan TEXT DEFAULT 'free',          
+            role TEXT DEFAULT 'user',
+            plan TEXT DEFAULT 'free',
             business_limit INTEGER DEFAULT 0,
-            extra_businesses_purchased INTEGER DEFAULT 0,  
+            extra_businesses_purchased INTEGER DEFAULT 0,
             subscription_expiry TEXT,
             device_id TEXT,
             ip_address TEXT,
             referral_rewarded INTEGER DEFAULT 0,
             referral_code TEXT UNIQUE,
-            referred_by INTEGER,
+            referred_by INTEGER REFERENCES users(id),
             first_sub_commission_paid INTEGER DEFAULT 0,
             wallet_balance REAL DEFAULT 0,
             latitude REAL,
@@ -45,288 +47,240 @@ def init_db():
             language TEXT DEFAULT 'en',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """))
 
-    # Indexes for fast lookup
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)")
-    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_code ON users(referral_code)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_first_sub_commission ON users(first_sub_commission_paid)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_grid ON users(lat_grid,lng_grid)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_active ON users(is_active)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_location ON users(latitude,longitude)")
-    
+    # Indexes for users table
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)"))
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_code ON users(referral_code)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_first_sub_commission ON users(first_sub_commission_paid)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_grid ON users(lat_grid, lng_grid)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_active ON users(is_active)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_location ON users(latitude, longitude)"))
+
     # =====================================================
-    # wallet_balance TABLE
+    # WALLET_BALANCE TABLE
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS wallet_balance (
-            user_id INTEGER PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
             balance REAL DEFAULT 0,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """) 
-                                           
+    """))
+
     # =====================================================
     # SUBSCRIPTIONS TABLE
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
             plan_name TEXT,
             amount REAL,
             status TEXT,
-            next_billing_date DATETIME,
+            next_billing_date TIMESTAMP,
             razorpay_subscription_id TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sub_user ON subscriptions(user_id)")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sub_user ON subscriptions(user_id)"))
 
     # =====================================================
     # WALLET TRANSACTIONS
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS wallet_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
             amount REAL,
             type TEXT CHECK(type IN ('credit','debit','lock')),
             source TEXT,
             reference_id TEXT,
             status TEXT DEFAULT 'locked',
-            unlock_at DATETIME,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            unlock_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """))
 
     # =====================================================
-    # Businesses table
+    # BUSINESSES TABLE (legacy)
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS businesses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
             business_name TEXT,
             plan TEXT,
             category TEXT,
             description TEXT,
             phone TEXT,
             location TEXT,
-
             image TEXT,
             whatsapp TEXT,
             city TEXT,
             state TEXT,
-
             is_active INTEGER DEFAULT 1,
-
             featured INTEGER DEFAULT 0,
             premium INTEGER DEFAULT 0,
             verified INTEGER DEFAULT 0,
             rating REAL DEFAULT 4.0,
-
             latitude REAL DEFAULT 0,
             longitude REAL DEFAULT 0,
-
             address TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    """)
-    # =====================================================
-    # REFERRAL TRANSACTIONS
-    # =====================================================
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS referral_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER,
-            referred_user_id INTEGER,
-            plan_type TEXT,       
-            reward_amount REAL,
-            payment_id TEXT,       
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """))
 
-    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_referrer ON referral_transactions(referrer_id)
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_referred_user ON referral_transactions(referred_user_id)")    
-    
+    # =====================================================
+    # REFERRAL TRANSACTIONS
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS referral_transactions (
+            id SERIAL PRIMARY KEY,
+            referrer_id INTEGER REFERENCES users(id),
+            referred_user_id INTEGER REFERENCES users(id),
+            plan_type TEXT,
+            reward_amount REAL,
+            payment_id TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_referrer ON referral_transactions(referrer_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_referred_user ON referral_transactions(referred_user_id)"))
+
     # =====================================================
     # WITHDRAW REQUESTS
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS withdraw_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            user_id INTEGER NOT NULL,
-
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
             amount REAL NOT NULL,
-
-            status TEXT DEFAULT 'pending'
-            CHECK(status IN ('pending','approved','rejected','paid')),
-
+            status TEXT DEFAULT 'pending',
             payment_method TEXT,
-
             upi_id TEXT,
-
             reference_id TEXT,
-
             admin_note TEXT,
-
-            processed_at DATETIME,
-
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            processed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT status_check CHECK (status IN ('pending','approved','rejected','paid'))
         )
-    """)
-
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_withdraw_user ON withdraw_requests(user_id)")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_withdraw_user ON withdraw_requests(user_id)"))
 
     # =====================================================
-    # LISTINGS TABLE (PRODUCTION READY)
+    # LISTINGS TABLE
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS listings (
-
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            user_id INTEGER,
-                   
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
             listing_type TEXT CHECK(listing_type IN ('business','service')),
-
             business_name TEXT NOT NULL,
-
             slug TEXT UNIQUE,
-
             category TEXT,
-
             address TEXT,
             city TEXT,
             state TEXT,
-
             latitude REAL NOT NULL,
             longitude REAL NOT NULL,
-
             lat_grid INTEGER,
             lng_grid INTEGER,
-
             description TEXT,
-
             user_phone TEXT,
             whatsapp TEXT,
             email TEXT,
             website TEXT,
-
             image TEXT,
             video TEXT,
-                                     
             logo_url TEXT,
             image_url TEXT,
-
             opening_hours TEXT,
             price_range TEXT,
-
             rating REAL DEFAULT 0,
-            rating_count INTEGER DEFAULT 0,       
+            rating_count INTEGER DEFAULT 0,
             total_reviews INTEGER DEFAULT 0,
-
             is_active INTEGER DEFAULT 1,
             is_verified INTEGER DEFAULT 0,
             is_premium INTEGER DEFAULT 0,
             is_sponsored INTEGER DEFAULT 0,
             is_featured INTEGER DEFAULT 0,
-                   
             views INTEGER DEFAULT 0,
             clicks INTEGER DEFAULT 0,
             whatsapp_clicks INTEGER DEFAULT 0,
             status TEXT DEFAULT 'pending',
-            
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP
         )
-    """)
+    """))
 
-    # Geo search indexes
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lat_lng ON listings(latitude, longitude)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_grid ON listings(lat_grid, lng_grid)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_listings_location ON listings(latitude, longitude)")
-    # Search indexes
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_city ON listings(city)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_category ON listings(category)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_listing_type ON listings(listing_type)")
+    # Indexes for listings
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lat_lng ON listings(latitude, longitude)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_grid ON listings(lat_grid, lng_grid)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_listings_location ON listings(latitude, longitude)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_city ON listings(city)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_category ON listings(category)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_listing_type ON listings(listing_type)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_active_listings ON listings(is_active)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_category_active ON listings(category, is_active)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_listings ON listings(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_premium ON listings(is_premium)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_verified ON listings(is_verified)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_active_grid ON listings(is_active, lat_grid, lng_grid)"))
 
-    # Status indexes
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_active_listings ON listings(is_active)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_category_active ON listings(category, is_active)")
-
-    # User listings
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_listings ON listings(user_id)")
-
-    # Premium search
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_premium ON listings(is_premium)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_verified ON listings(is_verified)")
-
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_active_grid ON listings(is_active, lat_grid, lng_grid)"
-    )
     # =====================================================
-    # listing_images TABLE
+    # LISTING_IMAGES
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS listing_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            listing_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            listing_id INTEGER REFERENCES listings(id),
             image_url TEXT,
             image_type TEXT CHECK(image_type IN ('logo','shop','service')),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id)")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_listing_images ON listing_images(listing_id)"))
+
     # =====================================================
-    # business_media  TABLE
+    # BUSINESS_MEDIA
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS business_media (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER REFERENCES businesses(id),
             file_url TEXT,
             media_type TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(business_id) REFERENCES businesses(id)
-        );
-    """)                
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+
     # =====================================================
     # PAYMENTS TABLE
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            order_id TEXT,       
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            order_id TEXT,
             user_phone TEXT,
             payment_id TEXT UNIQUE,
             amount REAL,
             status TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+        )
+    """))
+    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_id ON payments(payment_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)"))
 
-    # Index for fast duplicate check
-    cursor.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_id ON payments(payment_id)""")
-
-    # Index for fast user payment history
-    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)""")
-    
     # =====================================================
-    # PAYMENT TRANSACTIONS for Razorpay (upgrade tracking)
+    # PAYMENT TRANSACTIONS (Razorpay)
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS payment_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             razorpay_order_id TEXT NOT NULL,
             razorpay_payment_id TEXT NOT NULL,
@@ -334,51 +288,47 @@ def init_db():
             status TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_user ON payment_transactions(user_id)")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payment_transactions_user ON payment_transactions(user_id)"))
 
     # =====================================================
-    # sponsored_ads TABLE
+    # SPONSORED_ADS
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS sponsored_ads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            listing_id INTEGER NOT NULL,
-            plan TEXT,                 -- e.g., 'top_7_days','top_30_days'
+            id SERIAL PRIMARY KEY,
+            listing_id INTEGER NOT NULL REFERENCES listings(id),
+            plan TEXT,
             amount REAL,
             start_date TIMESTAMP,
             end_date TIMESTAMP,
             is_active INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_sponsored_listing ON sponsored_ads(listing_id)""")
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sponsored_listing ON sponsored_ads(listing_id)"))
 
     # =====================================================
-    # reviews TABLE
+    # REVIEWS
     # =====================================================
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS reviews (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            listing_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            listing_id INTEGER REFERENCES listings(id),
             user_phone TEXT,
             rating INTEGER CHECK(rating BETWEEN 1 AND 5),
             review TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)""")
-    
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)"))
 
     # =====================================================
     # BUSINESS LEADS
     # =====================================================
-
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS business_leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             business_name TEXT,
             phone TEXT,
             category TEXT,
@@ -391,17 +341,15 @@ def init_db():
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-
-    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_leads_grid ON business_leads(lat_grid,lng_grid)""")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_leads_grid ON business_leads(lat_grid, lng_grid)"))
 
     # =====================================================
     # CITIES TABLE
     # =====================================================
-
-    cursor.execute("""
+    conn.execute(text("""
         CREATE TABLE IF NOT EXISTS cities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             city_name TEXT UNIQUE,
             state TEXT,
             is_active INTEGER DEFAULT 1,
@@ -409,26 +357,59 @@ def init_db():
             total_businesses INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-        # Index for faster city lookup
-    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_city_active ON cities(city_name, is_active)""")
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_city_active ON cities(city_name, is_active)"))
+
+    # =====================================================
+    # ADMIN AUDIT LOG (for admin panel)
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS admin_audit_log (
+            id SERIAL PRIMARY KEY,
+            admin_id INTEGER,
+            admin_phone TEXT,
+            action TEXT,
+            target_type TEXT,
+            target_id TEXT,
+            details TEXT,
+            ip_address TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_admin ON admin_audit_log(admin_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_log(created_at)"))
+
+    # =====================================================
+    # ADMIN SETTINGS (key-value store)
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+
+    # Insert default settings if not present
+    defaults = [
+        ('commission_rate', '10'),
+        ('withdrawal_min_amount', '100'),
+        ('withdrawal_max_amount', '50000'),
+        ('referral_bonus_percent', '10'),
+        ('recurring_commission_percent', '5'),
+        ('sponsor_price', '999'),
+        ('verify_price', '499')
+    ]
+    for key, val in defaults:
+        conn.execute(text("""
+            INSERT INTO admin_settings (key, value)
+            VALUES (:key, :val)
+            ON CONFLICT (key) DO NOTHING
+        """), {"key": key, "val": val})
 
     conn.commit()
-    conn.close()    
-# Run once when app starts
-init_db()
+    conn.close()
 
-# -------- Per‑request connection management ----------
-def get_db():
-    """Return the database connection for the current request."""
-    if 'db' not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")   # optional but recommended
-    return g.db
-
-def close_db(e=None):
-    """Close the database connection at the end of the request."""
-    db = g.pop('db', None)
-    if db is not None:
-        db.close()
+if __name__ == "__main__":
+    init_db()
+    print("✅ PostgreSQL tables created with all indexes and default settings.")

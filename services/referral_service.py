@@ -2,9 +2,10 @@ import os
 from datetime import datetime, timedelta
 import qrcode
 from PIL import Image
+from sqlalchemy import text
 
 from config.payment_config import BASE_URL
-from database.init_db import get_db         # canonical shared helper
+from database.init_db import get_db
 
 PLAN_REWARDS = {
     "service": 25,
@@ -15,18 +16,18 @@ PLAN_REWARDS = {
 
 def get_referral_info(user_id):
     conn = get_db()
-    row = conn.execute("""
+    row = conn.execute(text("""
         SELECT referral_code, wallet_balance
         FROM users
-        WHERE id = ?
-    """, (user_id,)).fetchone()
+        WHERE id = :uid
+    """), {"uid": user_id}).fetchone()
 
     if not row:
         return None
 
     return {
-        "referral_code": row["referral_code"],
-        "wallet_balance": row["wallet_balance"]
+        "referral_code": row._mapping["referral_code"],
+        "wallet_balance": row._mapping["wallet_balance"]
     }
 
 
@@ -35,13 +36,14 @@ def process_referral_reward(user_id, plan_type, payment_id):
 
     # Find referrer
     referral_row = conn.execute(
-        "SELECT referred_by FROM users WHERE id = ?", (user_id,)
+        text("SELECT referred_by FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
 
-    if not referral_row or not referral_row["referred_by"]:
+    if not referral_row or not referral_row._mapping["referred_by"]:
         return
 
-    referrer_id = referral_row["referred_by"]
+    referrer_id = referral_row._mapping["referred_by"]
 
     # Prevent self-referral
     if referrer_id == user_id:
@@ -51,38 +53,55 @@ def process_referral_reward(user_id, plan_type, payment_id):
     if reward == 0:
         return
 
-    # Prevent duplicate reward
+    # Prevent duplicate reward for the same payment
     existing = conn.execute(
-        "SELECT id FROM referral_transactions WHERE payment_id = ?", (payment_id,)
+        text("SELECT id FROM referral_transactions WHERE payment_id = :pid"),
+        {"pid": payment_id}
     ).fetchone()
     if existing:
         return
 
-    # Ensure wallet row exists
-    conn.execute("INSERT OR IGNORE INTO wallet_balance (user_id, balance) VALUES (?, 0)", (referrer_id,))
+    # Upsert wallet_balance row: insert if not exists, else update
+    # Use PostgreSQL's ON CONFLICT ... DO NOTHING or DO UPDATE.
+    # First, ensure a row exists (INSERT ... ON CONFLICT DO NOTHING, then update)
+    conn.execute(text("""
+        INSERT INTO wallet_balance (user_id, balance)
+        VALUES (:uid, 0)
+        ON CONFLICT (user_id) DO NOTHING
+    """), {"uid": referrer_id})
 
     # Update wallet balance
-    conn.execute(
-        "UPDATE wallet_balance SET balance = balance + ? WHERE user_id = ?",
-        (reward, referrer_id)
-    )
+    conn.execute(text("""
+        UPDATE wallet_balance
+        SET balance = balance + :reward
+        WHERE user_id = :uid
+    """), {"reward": reward, "uid": referrer_id})
 
     # Compute unlock date (7 days from now)
     unlock_date = datetime.utcnow() + timedelta(days=7)
 
     # Record wallet transaction (locked until unlock_date)
-    conn.execute("""
+    conn.execute(text("""
         INSERT INTO wallet_transactions
         (user_id, amount, type, source, reference_id, status, unlock_at)
-        VALUES (?, ?, ?, ?, ?, 'locked', ?)
-    """, (referrer_id, reward, 'credit', 'referral_reward', payment_id, unlock_date))
+        VALUES (:uid, :amount, 'credit', 'referral_reward', :ref_id, 'locked', :unlock)
+    """), {
+        "uid": referrer_id,
+        "amount": reward,
+        "ref_id": payment_id,
+        "unlock": unlock_date
+    })
 
     # Record referral transaction
-    conn.execute("""
+    conn.execute(text("""
         INSERT INTO referral_transactions
         (referrer_id, referred_user_id, reward_amount, status)
-        VALUES (?, ?, ?, 'completed')
-    """, (referrer_id, user_id, reward))
+        VALUES (:referrer, :referred, :reward, 'completed')
+    """), {
+        "referrer": referrer_id,
+        "referred": user_id,
+        "reward": reward
+    })
 
     conn.commit()
 

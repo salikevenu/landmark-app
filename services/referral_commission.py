@@ -1,5 +1,6 @@
 # services/referral_commission.py
 from datetime import datetime, timedelta
+from sqlalchemy import text
 from database.init_db import get_db
 
 def next_saturday_6pm_ist():
@@ -18,33 +19,45 @@ def next_saturday_6pm_ist():
 def process_referral_commission(referred_user_id, payment_amount):
     """Queue 10% first-bonus and 5% recurring commission for the referrer."""
     conn = get_db()
-    user = conn.execute("SELECT referred_by, first_sub_commission_paid FROM users WHERE id = ?",
-                        (referred_user_id,)).fetchone()
-    if not user or not user["referred_by"]:
+    user = conn.execute(
+        text("SELECT referred_by, first_sub_commission_paid FROM users WHERE id = :uid"),
+        {"uid": referred_user_id}
+    ).fetchone()
+    if not user or not user._mapping["referred_by"]:
         return  # no referrer
 
-    referrer_id = user["referred_by"]
+    referrer_id = user._mapping["referred_by"]
     unlock_at = next_saturday_6pm_ist().strftime("%Y-%m-%d %H:%M:%S")
 
     # 10% one-time bonus
-    if not user["first_sub_commission_paid"]:
+    if not user._mapping["first_sub_commission_paid"]:
         bonus = round(payment_amount * 0.10, 2)
         if bonus > 0:
-            conn.execute("""
+            conn.execute(text("""
                 INSERT INTO wallet_transactions
                 (user_id, amount, type, source, reference_id, status, unlock_at, created_at)
-                VALUES (?, ?, 'credit', '5%_base_+_5%_activation', ?, 'locked', ?, datetime('now'))
-            """, (referrer_id, bonus, f"user_{referred_user_id}", unlock_at))
-            conn.execute("UPDATE users SET first_sub_commission_paid = 1 WHERE id = ?",
-                         (referred_user_id,))
+                VALUES (:referrer_id, :bonus, 'credit', '5%_base_+_5%_activation', :ref_id, 'locked', :unlock_at, CURRENT_TIMESTAMP)
+            """), {
+                "referrer_id": referrer_id,
+                "bonus": bonus,
+                "ref_id": f"user_{referred_user_id}",
+                "unlock_at": unlock_at
+            })
+            conn.execute(text("UPDATE users SET first_sub_commission_paid = 1 WHERE id = :uid"),
+                         {"uid": referred_user_id})
 
     # 5% recurring commission
     recurring = round(payment_amount * 0.05, 2)
     if recurring > 0:
-        conn.execute("""
+        conn.execute(text("""
             INSERT INTO wallet_transactions
             (user_id, amount, type, source, reference_id, status, unlock_at, created_at)
-            VALUES (?, ?, 'credit', 'referral_recurring', ?, 'locked', ?, datetime('now'))
-        """, (referrer_id, recurring, f"user_{referred_user_id}", unlock_at))
+            VALUES (:referrer_id, :recurring, 'credit', 'referral_recurring', :ref_id, 'locked', :unlock_at, CURRENT_TIMESTAMP)
+        """), {
+            "referrer_id": referrer_id,
+            "recurring": recurring,
+            "ref_id": f"user_{referred_user_id}",
+            "unlock_at": unlock_at
+        })
 
     conn.commit()

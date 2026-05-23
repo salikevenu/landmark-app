@@ -3,13 +3,14 @@ from datetime import datetime, timedelta
 import random
 import re
 import string
- 
+from sqlalchemy import text
+
 from database.init_db import get_db
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
-    set_access_cookies,          
-    set_refresh_cookies, 
+    set_access_cookies,
+    set_refresh_cookies,
     jwt_required,
     get_jwt_identity,
 )
@@ -53,21 +54,28 @@ def register():
             return jsonify({"error": "Phone and name required"}), 400
 
         conn = get_db()
-        existing = conn.execute("SELECT id FROM users WHERE phone = ?", (phone,)).fetchone()
+        existing = conn.execute(
+            text("SELECT id FROM users WHERE phone = :phone"),
+            {"phone": phone}
+        ).fetchone()
         if existing:
             return jsonify({"error": "Phone already registered"}), 409
 
-        # Insert new user (add referral_code if present)
+        # Insert new user with RETURNING id
         referral_code = data.get("referral_code")
-        conn.execute(
-            "INSERT INTO users (phone, name, role, plan, business_limit, referral_code) VALUES (?, ?, 'free', 'free', 0, ?)",
-            (phone, name, referral_code)
-        )
-        user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        result = conn.execute(text("""
+            INSERT INTO users (phone, name, role, plan, business_limit, referral_code)
+            VALUES (:phone, :name, 'free', 'free', 0, :referral_code)
+            RETURNING id
+        """), {
+            "phone": phone,
+            "name": name,
+            "referral_code": referral_code
+        })
+        user_id = result.fetchone()[0]
         conn.commit()
 
         # Generate tokens
-        from flask_jwt_extended import create_access_token, create_refresh_token
         access_token = create_access_token(
             identity=str(user_id),
             additional_claims={"role": "free", "phone": phone}
@@ -84,6 +92,7 @@ def register():
     except Exception as e:
         print("🔥 REGISTER ERROR:", e)
         return jsonify({"error": "Internal server error"}), 500
+
 
 # =================================
 # SEND OTP
@@ -118,8 +127,6 @@ def send_otp():
 # =================================
 # VERIFY OTP & LOGIN/REGISTER
 # =================================
-from flask import current_app   # make sure this is imported at the top
-
 @auth_bp.route("/verify-otp", methods=["POST"])
 def verify_otp():
     data = request.get_json() or {}
@@ -149,24 +156,30 @@ def verify_otp():
     # ---------- Find or create user ----------
     conn = get_db()
     user = conn.execute(
-        "SELECT id, name, role, referral_code FROM users WHERE phone = ?", (phone,)
+        text("SELECT id, name, role, referral_code FROM users WHERE phone = :phone"),
+        {"phone": phone}
     ).fetchone()
 
     if user:
-        user_id = user["id"]
-        role = user["role"]
-        referral_code = user["referral_code"]
+        user_id = user._mapping["id"]
+        role = user._mapping["role"]
+        referral_code = user._mapping["referral_code"]
     else:
         referral_code = generate_referral_code()
-        cur = conn.execute(
-            "INSERT INTO users (phone, name, role, referral_code, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
-            (phone, name, "free", referral_code)
-        )
-        user_id = cur.lastrowid
+        result = conn.execute(text("""
+            INSERT INTO users (phone, name, role, referral_code, created_at)
+            VALUES (:phone, :name, 'free', :referral_code, CURRENT_TIMESTAMP)
+            RETURNING id
+        """), {
+            "phone": phone,
+            "name": name,
+            "referral_code": referral_code
+        })
+        user_id = result.fetchone()[0]
         conn.commit()
         role = "free"
 
-        # ---------- Create JWT ----------
+    # ---------- Create JWT ----------
     access_token = create_access_token(
         identity=str(user_id),
         additional_claims={"role": role, "phone": phone}
@@ -186,11 +199,12 @@ def verify_otp():
         }
     })
 
-    # Attach tokens as secure cookies (browser will send them automatically)
+    # Attach tokens as secure cookies
     set_access_cookies(response, access_token)
     set_refresh_cookies(response, refresh_token)
 
     return response, 200
+
 
 # =================================
 # LOGOUT (stateless)
@@ -210,14 +224,14 @@ def get_current_user():
     user_id = get_jwt_identity()
     conn = get_db()
     user = conn.execute(
-        "SELECT id, phone, name, role, referral_code FROM users WHERE id = ?",
-        (user_id,)
+        text("SELECT id, phone, name, role, referral_code FROM users WHERE id = :uid"),
+        {"uid": user_id}
     ).fetchone()
 
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    return jsonify(dict(user)), 200
+    return jsonify(dict(user._mapping)), 200
 
 
 # =================================

@@ -1,6 +1,7 @@
 # language_routes.py
 from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import text
 from database.init_db import get_db
 
 lang_bp = Blueprint("language", __name__)
@@ -17,18 +18,18 @@ def set_language():
     user_id = get_jwt_identity()
     if user_id:
         conn = get_db()
-        conn.execute("UPDATE users SET language = ? WHERE id = ?", (lang, user_id))
+        conn.execute(text("UPDATE users SET language = :lang WHERE id = :uid"), {"lang": lang, "uid": user_id})
         conn.commit()
 
     # Set a cookie so it persists even for anonymous users
     resp = make_response(jsonify({"message": "Language updated"}))
     resp.set_cookie(
-        "lang",                   # cookie name
+        "lang",
         lang,
-        max_age=60*60*24*365,     # 1 year
+        max_age=60*60*24*365,
         path="/",
         samesite="Lax",
-        httponly=True,            # prevent JS access (optional)
-        secure=False              # set True if using HTTPS
+        httponly=True,
+        secure=False
     )
     return resp

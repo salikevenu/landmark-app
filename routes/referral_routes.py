@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import text
 from database.init_db import get_db
 from services.referral_service import get_referral_info
 
@@ -12,17 +13,17 @@ referral_bp = Blueprint("referral", __name__)
 def referral_leaderboard():
     try:
         conn = get_db()
-        rows = conn.execute("""
+        rows = conn.execute(text("""
             SELECT users.name,
                    COUNT(referral_transactions.id) AS total_referrals
             FROM referral_transactions
             JOIN users ON users.id = referral_transactions.referrer_id
-            GROUP BY referral_transactions.referrer_id
+            GROUP BY referral_transactions.referrer_id, users.name
             ORDER BY total_referrals DESC
             LIMIT 20
-        """).fetchall()
+        """)).fetchall()
 
-        return jsonify([dict(r) for r in rows])
+        return jsonify([dict(r._mapping) for r in rows])
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -44,15 +45,20 @@ def nearby_leads():
 
     try:
         conn = get_db()
-        rows = conn.execute("""
+        rows = conn.execute(text("""
             SELECT *
             FROM business_leads
-            WHERE lat_grid BETWEEN ? AND ?
-            AND lng_grid BETWEEN ? AND ?
+            WHERE lat_grid BETWEEN :lat_min AND :lat_max
+            AND lng_grid BETWEEN :lng_min AND :lng_max
             LIMIT 50
-        """, (lat_grid-1, lat_grid+1, lng_grid-1, lng_grid+1)).fetchall()
+        """), {
+            "lat_min": lat_grid - 1,
+            "lat_max": lat_grid + 1,
+            "lng_min": lng_grid - 1,
+            "lng_max": lng_grid + 1
+        }).fetchall()
 
-        return jsonify([dict(r) for r in rows])
+        return jsonify([dict(r._mapping) for r in rows])
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -80,35 +86,32 @@ def invite_business():
         return jsonify({"error": "Missing required fields"}), 400
 
     try:
-        user_id = int(get_jwt_identity())   # ✅ already suggested for safety
+        user_id = int(get_jwt_identity())
         conn = get_db()
 
-        # ===================================================
-        # 👇 ADD THE DUPLICATE CHECK RIGHT HERE
-        # ===================================================
+        # Duplicate check
         existing = conn.execute(
-            "SELECT id FROM business_leads WHERE phone = ?", (phone,)
+            text("SELECT id FROM business_leads WHERE phone = :phone"),
+            {"phone": phone}
         ).fetchone()
-
         if existing:
             return jsonify({"error": "Business already invited"}), 409
-        # ===================================================
 
-        conn.execute("""
+        conn.execute(text("""
             INSERT INTO business_leads
             (business_name, phone, category, city, latitude, longitude, lat_grid, lng_grid, invited_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            business_name,
-            phone,
-            category,
-            city,
-            latitude,
-            longitude,
-            int(latitude * 100),
-            int(longitude * 100),
-            user_id
-        ))
+            VALUES (:bname, :phone, :cat, :city, :lat, :lng, :lat_grid, :lng_grid, :invited_by)
+        """), {
+            "bname": business_name,
+            "phone": phone,
+            "cat": category,
+            "city": city,
+            "lat": latitude,
+            "lng": longitude,
+            "lat_grid": int(latitude * 100),
+            "lng_grid": int(longitude * 100),
+            "invited_by": user_id
+        })
         conn.commit()
 
         return jsonify({
@@ -118,6 +121,7 @@ def invite_business():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 # =========================
 # REFERRAL INFO (public)

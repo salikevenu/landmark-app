@@ -1,20 +1,27 @@
-import sqlite3
-from database.init_db import DB_PATH
+# migrate_add_status_column.py
+from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
+from database.init_db import get_db
 
 def migrate_add_status_column():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = get_db()
     try:
-        cursor.execute("ALTER TABLE listings ADD COLUMN status TEXT DEFAULT 'pending'")
-        print("✅ Column 'status' added to listings table.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column" in str(e):
+        # Check if column already exists
+        column_exists = conn.execute(text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'listings' AND column_name = 'status'
+        """)).fetchone()
+
+        if column_exists:
             print("ℹ️ Column 'status' already exists.")
         else:
-            print(f"⚠️ Error: {e}")
-    finally:
-        conn.commit()
-        conn.close()
+            conn.execute(text("ALTER TABLE listings ADD COLUMN status TEXT DEFAULT 'pending'"))
+            conn.commit()
+            print("✅ Column 'status' added to listings table.")
+    except ProgrammingError as e:
+        # Catch any unexpected error (e.g., table doesn't exist)
+        print(f"⚠️ Error: {e}")
+    # No need to close connection; Flask's teardown handles it
 
 if __name__ == "__main__":
     migrate_add_status_column()

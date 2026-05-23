@@ -1,7 +1,8 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
-from database.init_db import get_db          # use the canonical get_db
+from sqlalchemy import text
+from database.init_db import get_db
 
 withdraw_bp = Blueprint("withdraw", __name__)
 
@@ -28,20 +29,27 @@ def request_withdraw():
 
         # Check wallet balance
         wallet = conn.execute(
-            "SELECT balance FROM wallet_balance WHERE user_id = ?", (user_id,)
+            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            {"uid": user_id}
         ).fetchone()
 
         if not wallet:
             return jsonify({"error": "Wallet not found"}), 404
-        if wallet["balance"] < amount:
+        if wallet._mapping["balance"] < amount:
             return jsonify({"error": "Insufficient wallet balance"}), 400
 
         # Create withdraw request
-        conn.execute("""
+        conn.execute(text("""
             INSERT INTO withdraw_requests
             (user_id, amount, payment_method, upi_id, status, created_at)
-            VALUES (?, ?, ?, ?, 'pending', ?)
-        """, (user_id, amount, payment_method, upi_id, datetime.utcnow()))
+            VALUES (:uid, :amount, :payment_method, :upi_id, 'pending', :created_at)
+        """), {
+            "uid": user_id,
+            "amount": amount,
+            "payment_method": payment_method,
+            "upi_id": upi_id,
+            "created_at": datetime.utcnow()
+        })
         conn.commit()
 
         return jsonify({"message": "Withdrawal request submitted", "status": "pending"}), 200
@@ -59,20 +67,20 @@ def withdraw_history():
     try:
         user_id = get_jwt_identity()
         conn = get_db()
-        rows = conn.execute("""
+        rows = conn.execute(text("""
             SELECT id, amount, status, payment_method, upi_id, created_at
             FROM withdraw_requests
-            WHERE user_id = ?
+            WHERE user_id = :uid
             ORDER BY created_at DESC
-        """, (user_id,)).fetchall()
+        """), {"uid": user_id}).fetchall()
 
         withdrawals = [{
-            "id": row["id"],
-            "amount": row["amount"],
-            "status": row["status"],
-            "payment_method": row["payment_method"],
-            "upi_id": row["upi_id"],
-            "created_at": row["created_at"]
+            "id": row._mapping["id"],
+            "amount": row._mapping["amount"],
+            "status": row._mapping["status"],
+            "payment_method": row._mapping["payment_method"],
+            "upi_id": row._mapping["upi_id"],
+            "created_at": row._mapping["created_at"]
         } for row in rows]
         return jsonify(withdrawals)
 
@@ -92,8 +100,8 @@ def admin_withdraw_requests():
 
     try:
         conn = get_db()
-        rows = conn.execute("SELECT * FROM withdraw_requests ORDER BY created_at DESC").fetchall()
-        return jsonify([dict(row) for row in rows])
+        rows = conn.execute(text("SELECT * FROM withdraw_requests ORDER BY created_at DESC")).fetchall()
+        return jsonify([dict(row._mapping) for row in rows])
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -111,23 +119,35 @@ def approve_withdraw(withdraw_id):
 
     try:
         conn = get_db()
-        req = conn.execute("SELECT * FROM withdraw_requests WHERE id = ?", (withdraw_id,)).fetchone()
+        req = conn.execute(
+            text("SELECT * FROM withdraw_requests WHERE id = :wid"),
+            {"wid": withdraw_id}
+        ).fetchone()
         if not req:
             return jsonify({"error": "Withdraw request not found"}), 404
-        if req["status"] != "pending":
+        if req._mapping["status"] != "pending":
             return jsonify({"error": "Already processed"}), 400
 
-        user_id = req["user_id"]
-        amount = req["amount"]
+        user_id = req._mapping["user_id"]
+        amount = req._mapping["amount"]
 
-        # Check current balance again (avoid race condition)
-        wallet = conn.execute("SELECT balance FROM wallet_balance WHERE user_id = ?", (user_id,)).fetchone()
-        if not wallet or wallet["balance"] < amount:
+        # Check current balance
+        wallet = conn.execute(
+            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        if not wallet or wallet._mapping["balance"] < amount:
             return jsonify({"error": "Insufficient balance now"}), 400
 
-        # Deduct wallet balance and update withdraw status in one transaction
-        conn.execute("UPDATE wallet_balance SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-        conn.execute("UPDATE withdraw_requests SET status = 'approved' WHERE id = ?", (withdraw_id,))
+        # Deduct and update status (transactionally)
+        conn.execute(
+            text("UPDATE wallet_balance SET balance = balance - :amount WHERE user_id = :uid"),
+            {"amount": amount, "uid": user_id}
+        )
+        conn.execute(
+            text("UPDATE withdraw_requests SET status = 'approved' WHERE id = :wid"),
+            {"wid": withdraw_id}
+        )
         conn.commit()
 
         return jsonify({"message": "Withdrawal approved"})
@@ -148,11 +168,11 @@ def reject_withdraw(withdraw_id):
 
     try:
         conn = get_db()
-        conn.execute("""
+        conn.execute(text("""
             UPDATE withdraw_requests
             SET status = 'rejected'
-            WHERE id = ? AND status = 'pending'
-        """, (withdraw_id,))
+            WHERE id = :wid AND status = 'pending'
+        """), {"wid": withdraw_id})
         conn.commit()
 
         return jsonify({"message": "Withdrawal rejected"})
