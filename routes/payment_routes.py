@@ -6,7 +6,7 @@ import hashlib
 import os
 from sqlalchemy import text
 
-from extensions import razor_client
+from extensions import get_razorpay_client
 from config.payment_config import PLAN_PRICES, RAZORPAY_KEY_ID
 from services.payment_service import verify_payment_service
 from database.init_db import get_db
@@ -29,7 +29,8 @@ def create_order():
 
     amount = PLAN_PRICES[plan]
 
-    order = razor_client.order.create({
+    client = get_razorpay_client()
+    order = client.order.create({
         "amount": amount,
         "currency": "INR",
         "payment_capture": 1

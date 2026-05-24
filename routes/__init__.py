@@ -10,6 +10,7 @@ from .promotions_routes import promo_bp
 from .analytics_routes import analytics_bp
 from .review_routes import review_bp
 from .transaction_routes import transaction_bp
+from .wallet_routes import wallet_bp
 
 def register_routes(app):
 
@@ -25,3 +26,4 @@ def register_routes(app):
     app.register_blueprint(analytics_bp)        # url_prefix='/analytics'
     app.register_blueprint(review_bp)           # url_prefix='/reviews'
     app.register_blueprint(transaction_bp)      # url_prefix='/transactions'
+    app.register_blueprint(wallet_bp)   # no url_prefix

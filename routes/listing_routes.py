@@ -46,7 +46,7 @@ def is_subscription_active(user_row):
 # =========================
 # CREATE LISTING API
 # =========================
-@listing_bp.route("/api/create-listing", methods=["POST"])
+@listing_bp.route("/create-listing", methods=["POST"])
 @jwt_required()
 def api_create_listing():
     try:
@@ -377,7 +377,7 @@ def browse_page():
 # =========================
 # BROWSE API (JSON) – public
 # =========================
-@listing_bp.route("/api/browse")
+@listing_bp.route("/data/browse")
 def browse_api():
     try:
         search = request.args.get("search", "").strip()
@@ -392,27 +392,31 @@ def browse_api():
 
         conn = get_db()
 
-        # Base query with Haversine distance
+        # Use a CTE to calculate distance once, then filter and order
         query = text("""
-            SELECT l.*,
-                (6371 * acos(
-                    cos(radians(:lat)) *
-                    cos(radians(l.latitude)) *
-                    cos(radians(l.longitude) - radians(:lng)) +
-                    sin(radians(:lat)) *
-                    sin(radians(l.latitude))
-                )) AS distance,
-                COALESCE(l.verified, 0) as verified,
-                COALESCE(l.premium, 0) as premium,
-                COALESCE(l.featured, 0) as featured,
-                (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as main_image
-            FROM listings l
-            WHERE l.status = 'approved'
-            AND (:search = '' OR l.business_name ILIKE :search)
-            AND (:category = '' OR l.category = :category)
-            AND (:location = '' OR l.city ILIKE :location)
-            HAVING (:distance IS NULL OR distance <= :distance)
-            ORDER BY l.featured DESC, l.premium DESC, l.verified DESC, distance ASC, l.rating DESC
+            WITH dist AS (
+                SELECT l.*,
+                    (6371 * acos(
+                        cos(radians(:lat)) *
+                        cos(radians(l.latitude)) *
+                        cos(radians(l.longitude) - radians(:lng)) +
+                        sin(radians(:lat)) *
+                        sin(radians(l.latitude))
+                    )) AS distance,
+                    COALESCE(l.is_verified, 0) as verified,
+                    COALESCE(l.is_premium, 0) as premium,
+                    COALESCE(l.is_featured, 0) as featured,
+                    (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as main_image
+                FROM listings l
+                WHERE l.status = 'approved'
+                  AND (:search = '' OR l.business_name ILIKE :search)
+                  AND (:category = '' OR l.category = :category)
+                  AND (:location = '' OR l.city ILIKE :location)
+            )
+            SELECT *
+            FROM dist
+            WHERE (:distance IS NULL OR distance <= :distance)
+            ORDER BY featured DESC, premium DESC, verified DESC, distance ASC, rating DESC
             LIMIT :limit OFFSET :offset
         """)
 
@@ -452,10 +456,11 @@ def browse_api():
             })
         return jsonify({"listings": listings, "page": page, "count": len(listings)})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print("BROWSE API ERROR:", e)
-        return jsonify({"error": "Server error"}), 500
-
-
+        return jsonify({"error": str(e)}), 500
+    
 # =========================
 # ADD REVIEW (auth required)
 # =========================

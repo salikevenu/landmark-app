@@ -26,6 +26,59 @@
     </div>
   </div>
 
+<div class="card mt-4">
+    <div class="card-header">
+        <h5>Referral Payout</h5>
+    </div>
+    <div class="card-body">
+        <button id="runPayoutBtn" class="btn btn-warning">
+            <i class="fas fa-sync-alt"></i> Run Saturday Payout Now
+        </button>
+        <div id="payoutResult" class="mt-3"></div>
+    </div>
+</div>
+
+<script>
+document.getElementById('runPayoutBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('runPayoutBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running...';
+
+    try {
+        const res = await fetch('/api/admin/trigger-payout', {
+            method: 'POST',
+            // cookies are sent automatically, no header needed
+        });
+
+        const text = await res.text(); // read as text first
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch {
+            // not JSON – show raw text
+            document.getElementById('payoutResult').innerHTML = 
+                `<div class="alert alert-warning">Unexpected response: ${text}</div>`;
+            return;
+        }
+
+        if (data.error) {
+            document.getElementById('payoutResult').innerHTML = 
+                `<div class="alert alert-danger">${data.error}</div>`;
+        } else {
+            const count = data.released ?? 0;
+            document.getElementById('payoutResult').innerHTML = 
+                `<div class="alert alert-success">Payout executed – ${count} referral(s) released.</div>`;
+        }
+    } catch (err) {
+        document.getElementById('payoutResult').innerHTML = 
+            `<div class="alert alert-danger">Network error: ${err.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Run Saturday Payout Now';
+    }
+});
+</script>
+
   <!-- ========== ROW 2: Manual Activation + Recent Users side by side ========== -->
   <div class="bottom-row">
     <!-- Manual Activation (compact horizontal) -->

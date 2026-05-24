@@ -20,3 +20,11 @@ def init_extensions(app):
     ))
 
     return limiter, razor_client
+
+import razorpay, os
+
+def get_razorpay_client():
+    return razorpay.Client(auth=(
+        os.getenv("RAZORPAY_KEY_ID"),
+        os.getenv("RAZORPAY_KEY_SECRET")
+    ))

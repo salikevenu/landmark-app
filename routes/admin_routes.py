@@ -376,6 +376,13 @@ def approve_payment_legacy():
     result = approve_payment_admin(payment_id, admin_id, admin_phone, ip)
     return jsonify(result)
 
+@admin_bp.route("/api/admin/trigger-payout", methods=["POST"])
+@admin_required
+def admin_trigger_payout():
+    from app import _execute_payout
+    released = _execute_payout()
+    return jsonify({"released": released})
+
 @admin_bp.route("/api/admin/users/<int:user_id>/impersonate", methods=["POST"])
 @admin_required
 def impersonate_user(user_id):

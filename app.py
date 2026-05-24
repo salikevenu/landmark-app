@@ -33,8 +33,8 @@ app.config.update(
     JWT_ACCESS_TOKEN_EXPIRES=timedelta(days=1),
     JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=30),
     JWT_TOKEN_LOCATION=["cookies", "headers"],
-    JWT_COOKIE_SECURE=False,
-    JWT_COOKIE_CSRF_PROTECT=False,
+    JWT_COOKIE_SECURE=True,
+    JWT_COOKIE_CSRF_PROTECT=True,
     JWT_ACCESS_COOKIE_PATH="/",
     JWT_ACCESS_COOKIE_NAME="access_token",
     JWT_REFRESH_COOKIE_NAME="refresh_token",
@@ -95,6 +95,43 @@ def get_translation(lang):
         }
     }
     return translations.get(lang, translations["en"])
+
+def _execute_payout():
+    conn = get_db()
+    # Use NOW() in the query – no parameter needed
+    locked = conn.execute(text("""
+        SELECT id, user_id, amount
+        FROM wallet_transactions
+        WHERE type = 'credit'
+          AND source IN ('referral_first_bonus', 'referral_recurring')
+          AND status = 'locked'
+          AND unlock_at <= NOW()
+    """)).fetchall()
+
+    released_count = 0
+    for row in locked:
+        uid = row._mapping["user_id"]
+        amt = row._mapping["amount"]
+        tid = row._mapping["id"]
+
+        conn.execute(text("""
+            INSERT INTO wallet_balance (user_id, balance, updated_at)
+            VALUES (:uid, :amt, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET balance = wallet_balance.balance + :amt2,
+                updated_at = NOW()
+        """), {"uid": uid, "amt": amt, "amt2": amt})
+
+        conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"),
+                     {"amt": amt, "uid": uid})
+
+        conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"),
+                     {"tid": tid})
+
+        released_count += 1
+
+    conn.commit()
+    return released_count
 
 @app.before_request
 def log_every_request():
@@ -233,54 +270,29 @@ def api_add_business():
     )
     return jsonify({"message": "Business added successfully"}), 201
 
+@app.route("/api/wallet/overview")
+@jwt_required()
+def wallet_overview():
+    from services.wallet_service import get_wallet_balance
+    from services.referral_commission import next_saturday_6pm_ist
+    user_id = get_jwt_identity()
+    conn = get_db()
+    wallet = conn.execute(text("SELECT balance FROM wallet_balance WHERE user_id = :uid"), {"uid": user_id}).fetchone()
+    available = wallet._mapping["balance"] if wallet else 0.0
+    pending = conn.execute(text("SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id = :uid AND status = 'locked' AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')"), {"uid": user_id}).scalar()
+    next_payout = next_saturday_6pm_ist().strftime("%Y-%m-%d %H:%M IST") if next_saturday_6pm_ist else ""
+    return jsonify({"available_balance": available, "pending_unlock": round(pending,2), "next_payout_ist": next_payout})
 # ------------------------------
 # Internal Saturday Payout (PostgreSQL)
 # ------------------------------
 @app.route('/internal/saturday-payout', methods=['POST'])
 def saturday_payout():
     token = request.headers.get('Authorization')
-    if token != 'Bearer YOUR_LONG_SECRET_KEY':
+    if token != f"Bearer {os.getenv('SATURDAY_PAYOUT_SECRET')}":
         return jsonify({"error": "Unauthorized"}), 403
 
-    conn = get_db()
-    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-    locked = conn.execute(text("""
-        SELECT id, user_id, amount
-        FROM wallet_transactions
-        WHERE type = 'credit'
-          AND source IN ('referral_first_bonus', 'referral_recurring')
-          AND status = 'locked'
-          AND unlock_at <= :now
-    """), {"now": now_utc}).fetchall()
-
-    released_count = 0
-    for row in locked:
-        uid = row._mapping["user_id"]
-        amt = row._mapping["amount"]
-        tid = row._mapping["id"]
-
-        # Upsert wallet_balance: add amount
-        conn.execute(text("""
-            INSERT INTO wallet_balance (user_id, balance, updated_at)
-            VALUES (:uid, :amt, NOW())
-            ON CONFLICT (user_id) DO UPDATE
-            SET balance = wallet_balance.balance + :amt2,
-                updated_at = NOW()
-        """), {"uid": uid, "amt": amt, "amt2": amt})
-
-        # Update users.wallet_balance for quick display
-        conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"),
-                     {"amt": amt, "uid": uid})
-
-        # Mark transaction as released
-        conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"),
-                     {"tid": tid})
-
-        released_count += 1
-
-    conn.commit()
-    return jsonify({"released": released_count}), 200
+    released = _execute_payout()
+    return jsonify({"released": released}), 200
 
 # ------------------------------
 # Static / Favicon / Well‑known
@@ -340,6 +352,7 @@ def temp_token():
         expires_delta=timedelta(days=30)
     )
     return {"token": token}
+
 
 # ------------------------------
 # Run the app
