@@ -429,5 +429,7 @@ def temp_token():
 # Run the app
 # ------------------------------
 if __name__ == "__main__":
-    debug_mode = os.getenv("FLASK_DEBUG", "True").lower() == "true"
-    app.run(host="0.0.0.0", port=8000, debug=debug_mode)
+    # Only used for local development
+    debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"   # Default to False
+    port = int(os.getenv("PORT", 8000))   # Use PORT env var with fallback 8000 for local
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)

@@ -11,3 +11,4 @@ razorpay
 requests
 Werkzeug
 sqlalchemy
+psycopg2-binary
