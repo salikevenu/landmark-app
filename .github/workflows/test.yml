@@ -11,23 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
+
+    # Cache pip packages to speed up future runs
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt || true
-        pip install Flask-Limiter limits qrcode pillow python-dotenv Flask Flask-JWT-Extended Flask-Cors gunicorn razorpay requests Werkzeug
-    
-    - name: Lint with flake8 (optional)
-      run: |
-        pip install flake8
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
-    
-    - name: Run basic import test (force error in annotations)
+        pip install -r requirements.txt
+
+    - name: Verify app import
       env:
         DATABASE_URL: sqlite:///test.db
         SECRET_KEY: test-secret
@@ -42,13 +43,12 @@ jobs:
             print('SUCCESS: App imports OK')
         except Exception:
             error_msg = traceback.format_exc()
+            print('FAILED:', file=sys.stderr)
             print(f'::error::{error_msg}', file=sys.stderr)
             sys.exit(1)
         "
-    
-    - name: Upload error log on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: import-error-log
-        path: error.log
+
+    - name: Lint with flake8 (optional)
+      run: |
+        pip install flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
