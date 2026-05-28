@@ -12,7 +12,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
+static/downloads/.apk
 # ============================================
 # Virtual Environments
 # ============================================
