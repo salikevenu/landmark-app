@@ -1,6 +1,6 @@
 {% extends "layouts/layout_public.html" %}
 
-{% block title %}LANDMARK | Home{% endblock %}
+{% block title %}{{ _('brand_name') }} | {{ _('hero_title') }}{% endblock %}
 
 {% block content %}
 
@@ -20,7 +20,7 @@
   }
 
   .logo-img {
-    height: 40px;                 /* small left logo */
+    height: 40px;
     width: auto;
   }
 
@@ -44,7 +44,6 @@
     font-weight: 500;
   }
 
-  /* ---------- REST (unchanged) ---------- */
   .home-container {
     display: flex;
     flex-direction: column;
@@ -144,10 +143,10 @@
   }
 </style>
 
-<!-- ======== HEADER BAR ======== -->
+<!-- HEADER BAR -->
 <div class="header-bar">
-  <img src="{{ url_for('static', filename='images/landmark-logo.png') }}" class="logo-img" alt="LANDMARK">
-  <div class="header-title">LANDMARK</div>
+  <img src="{{ url_for('static', filename='images/landmark-logo.png') }}" class="logo-img" alt="{{ _('brand_name') }}">
+  <div class="header-title">{{ _('brand_name') }}</div>
   <select class="lang-select" onchange="changeLanguage(this.value)">
     <option value="en" {% if session.get('lang', 'en') == 'en' %}selected{% endif %}>EN</option>
     <option value="te" {% if session.get('lang') == 'te' %}selected{% endif %}>TE</option>
@@ -157,42 +156,47 @@
   </select>
 </div>
 
-<!-- ======== MAIN CONTENT ======== -->
 <div class="home-container">
-
-  <!-- HERO (without the big LANDMARK word – now in header) -->
   <div class="hero">
-    <p class="hero-tagline">CONNECT → GROW</p>
-    <h1>Discover Nearby Businesses</h1>
-    <p class="hero-subtitle">Earn money through finds & referrals</p>
-
+    <p class="hero-tagline">{{ _('hero_tagline') or 'CONNECT → GROW' }}</p>
+    <h1>{{ _('hero_title') }}</h1>
+    <p class="hero-subtitle">{{ _('hero_subtitle') }}</p>
     <div style="margin-top: 20px;">
-      <a href="/api/auth/register" class="btn btn-primary">Get Started</a>
-      <a href="/api/auth/public/login" class="btn btn-secondary">Login</a>
+      <a href="/api/auth/register" class="btn btn-primary">{{ _('get_started') }}</a>
+      <a href="/api/auth/public/login" class="btn btn-secondary">{{ _('login') }}</a>
     </div>
   </div>
 
-  <!-- WHY CARDS -->
   <div class="why-section">
     <div class="why-card">
-      <h3>📍 Discover</h3>
-      <p>Find nearby opportunities</p>
+      <h3>{{ _('discover') or '📍 Discover' }}</h3>
+      <p>{{ _('discover_text') or 'Find nearby opportunities' }}</p>
     </div>
     <div class="why-card">
-      <h3>💰 Earn</h3>
-      <p>Earn from your network</p>
+      <h3>{{ _('earn') or '💰 Earn' }}</h3>
+      <p>{{ _('earn_text') or 'Earn from your network' }}</p>
     </div>
     <div class="why-card">
-      <h3>⚡ Simple</h3>
-      <p>Easy to use platform</p>
+      <h3>{{ _('simple') or '⚡ Simple' }}</h3>
+      <p>{{ _('simple_text') or 'Easy to use platform' }}</p>
     </div>
   </div>
 
-  <!-- FOOTER -->
   <div class="footer">
-    <p style="font-size: 0.9rem;">Start Earning Today</p>
-    <a href="/api/auth/register" class="btn btn-primary">Get Started</a>
-    <p style="font-size: 0.7rem; margin-top: 10px;">© 2026 LANDMARK</p>
+    <p style="font-size: 0.9rem;">{{ _('footer_tagline') or 'Start Earning Today' }}</p>
+    <a href="/api/auth/register" class="btn btn-primary">{{ _('get_started') }}</a>
+    <p style="font-size: 0.7rem; margin-top: 10px;">© 2026 {{ _('brand_name') }}</p>
   </div>
 </div>
+
+<script>
+function changeLanguage(lang) {
+    fetch("/set-language", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lang: lang })
+    }).then(() => location.reload());
+}
+</script>
+
 {% endblock %}

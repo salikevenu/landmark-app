@@ -1,14 +1,20 @@
 {
   "name": "LANDMARK App",
   "short_name": "LANDMARK",
+  "description": "LANDMARK – Business directory platform",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1f4ed8",
   "theme_color": "#1f4ed8",
   "icons": [
     {
-      "src": "/static/images/landmark-logo.png",
+      "src": "/static/images/icon-192.png",
       "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/images/icon-512.png",
+      "sizes": "512x512",
       "type": "image/png"
     }
   ]

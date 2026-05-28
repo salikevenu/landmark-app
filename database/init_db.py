@@ -1,18 +1,23 @@
 import os
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Read DATABASE_URL from environment (e.g., set in .env for local development)
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    # Fallback to SQLite only if not set – but we want PostgreSQL now
-    # For local development, you must set DATABASE_URL.
-    raise ValueError("DATABASE_URL environment variable is not set. Example: postgresql://user:pass@localhost/landmark_db")
+# Read DATABASE_URL from environment
 
-engine = create_engine(DATABASE_URL, echo=False)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = None
+
+# Create engine only if DATABASE_URL exists
+
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL, echo=False)
 
 def get_db():
+    if engine is None:
+        raise Exception("DATABASE_URL is not configured")
     return engine.connect()
 
 def init_db():

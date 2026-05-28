@@ -317,10 +317,10 @@
             <!-- Language selector (with session pre‑selection) -->
             <select class="lang-select" id="langSelect">
                 <option value="en" {% if session.get('lang', 'en') == 'en' %}selected{% endif %}>EN</option>
-                <option value="te" {% if session.get('lang') == 'te' %}selected{% endif %}>TE</option>
-                <option value="hi" {% if session.get('lang') == 'hi' %}selected{% endif %}>HI</option>
-                <option value="ta" {% if session.get('lang') == 'ta' %}selected{% endif %}>TA</option>
-                <option value="kn" {% if session.get('lang') == 'kn' %}selected{% endif %}>KN</option>
+                <option value="te" {% if session.get('lang') == 'te' %}selected{% endif %}>తెలుగు</option>
+                <option value="hi" {% if session.get('lang') == 'hi' %}selected{% endif %}>हिन्दी</option>
+                <option value="ta" {% if session.get('lang') == 'ta' %}selected{% endif %}>தமிழ்</option>
+                <option value="kn" {% if session.get('lang') == 'kn' %}selected{% endif %}></ಕನ್ನಡoption>
             </select>
         </div>
     </header>
@@ -329,20 +329,20 @@
     <div class="app-layout">
         <!-- SIDEBAR -->
         <aside class="sidebar" id="sidebar">
-            <a href="/dashboard" title="Dashboard">📊 Dashboard</a>
-            <a href="/wallet" title="Wallet">💰 Wallet</a>
-            <a href="/api/user/browse" title="Search Nearby">🔍 Search Nearby</a>
-            <a href="/api/user/create-listing" title="Add Business">➕ Add Business</a>
-            <a href="/service/add" title="Add Service">🛠️ Add Service</a>
-            <a href="/promotions" title="Promotions">📢 Promotions</a>
-            <a href="/my-listings" title="My Listings">💼 My Listings</a>
-            <a href="/analytics" title="Analytics">📊 Analytics</a>
-            <a href="/api/user/invite" title="Referrals">👥 Referrals</a>
-            <a href="/reviews" title="Reviews">⭐ Reviews</a>
-            <a href="/api/user/profile" title="Profile">👤 Profile</a>
-            <a href="/transactions" title="Transactions">🧾 Transactions</a>
-            <a href="/pricing" title="Upgrade">⭐ Upgrade</a>
-            <a href="#" id="logoutLink" title="Logout">🚪 Logout</a>
+            <a href="/dashboard" title="{{ _('dashboard') }}">📊 {{ _('dashboard') }}</a>
+            <a href="/wallet" title="{{ _('wallet') }}">💰 {{ _('wallet') }}</a>
+            <a href="/api/user/browse" title="{{ _('search_nearby') }}">🔍 {{ _('search_nearby') }}</a>
+            <a href="/api/user/create-listing" title="{{ _('add_business') }}">➕ {{ _('add_business') }}</a>
+            <a href="/service/add" title="{{ _('add_service') }}">🛠️ {{ _('add_service') }}</a>
+            <a href="/promotions" title="{{ _('promotions') }}">📢 {{ _('promotions') }}</a>
+            <a href="/my-listings" title="{{ _('my_listings') }}">💼 {{ _('my_listings') }}</a>
+            <a href="/analytics" title="{{ _('analytics') }}">📊 {{ _('analytics') }}</a>
+            <a href="/api/user/invite" title="{{ _('referrals') }}">👥 {{ _('referrals') }}</a>
+            <a href="/reviews" title="{{ _('reviews') }}">⭐ {{ _('reviews') }}</a>
+            <a href="/api/user/profile" title="{{ _('profile') }}">👤 {{ _('profile') }}</a>
+            <a href="/transactions" title="{{ _('transactions') }}">🧾 {{ _('transactions') }}</a>
+            <a href="/pricing" title="{{ _('upgrade') }}">⭐ {{ _('upgrade') }}</a>
+            <a href="#" id="logoutLink" title="{{ _('logout') }}">🚪 {{ _('logout') }}</a>
         </aside>
 
         <!-- MAIN CONTENT -->

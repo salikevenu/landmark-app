@@ -3,11 +3,14 @@ import os
 import traceback
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
-from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory, make_response
+from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory, send_file, make_response
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies, verify_jwt_in_request
 from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 from sqlalchemy import text
+from functools import lru_cache
+
+from language.translations import TRANSLATIONS
 
 # Load environment variables
 load_dotenv()
@@ -51,6 +54,43 @@ os.makedirs("static/uploads", exist_ok=True)
 os.makedirs("static/images/listings", exist_ok=True)
 os.makedirs("static/qrcodes", exist_ok=True)
 
+# app.py – after app initialization, before routes
+
+from functools import lru_cache
+
+@lru_cache(maxsize=10)   # cache translations for each language
+def get_translations(lang):
+    return TRANSLATIONS.get(lang, TRANSLATIONS["en"])
+
+@app.context_processor
+def inject_language():
+    lang = request.cookies.get("lang")
+    if not lang:
+        try:
+            verify_jwt_in_request(optional=True)
+            user_id = get_jwt_identity()
+            if user_id:
+                conn = get_db()
+                row = conn.execute(
+                    text("SELECT language FROM users WHERE id = :uid"),
+                    {"uid": user_id}
+                ).fetchone()
+                if row and row._mapping["language"]:
+                    lang = row._mapping["language"]
+        except Exception:
+            pass
+    if not lang:
+        lang = "en"
+    
+    # Use the FULL translations (imported from language.translations)
+    t = get_translations(lang)   # note the 's' – cached version using full TRANSLATIONS
+    print(f"🌐 Language selected: {lang}")
+    return dict(
+        t=t,
+        current_lang=lang,
+        _=lambda key: t.get(key, key)
+    )
+
 # ------------------------------
 # Database helper (wrapper using text())
 # ------------------------------
@@ -81,20 +121,6 @@ def is_subscription_active(user_dict):
         return expiry_date >= datetime.utcnow()
     except:
         return False
-
-# ------------------------------
-# Translations (simple)
-# ------------------------------
-def get_translation(lang):
-    translations = {
-        "en": {
-            "hero_title": "Discover Nearby Businesses",
-            "hero_subtitle": "Earn money through finds & referrals",
-            "get_started": "Get Started",
-            "login": "Login",
-        }
-    }
-    return translations.get(lang, translations["en"])
 
 def _execute_payout():
     conn = get_db()
@@ -134,30 +160,15 @@ def _execute_payout():
     return released_count
 
 @app.before_request
-def log_every_request():
+def before_request_actions():
+    # 1. Logging (your existing code)
     print(f"🔷 {request.method} {request.path}")
-
-@app.context_processor
-def inject_language():
-    lang = request.cookies.get("lang")
-    if not lang:
-        try:
-            verify_jwt_in_request(optional=True)
-            user_id = get_jwt_identity()
-            if user_id:
-                conn = get_db()
-                row = conn.execute(
-                    text("SELECT language FROM users WHERE id = :uid"),
-                    {"uid": user_id}
-                ).fetchone()
-                if row and row._mapping["language"]:
-                    lang = row._mapping["language"]
-        except Exception:
-            pass
-    if not lang:
-        lang = "en"
-    t = get_translation(lang)
-    return dict(t=t, current_lang=lang)
+    
+    # 2. Load language from cookie into session (if not already set)
+    if 'lang' not in session and request.cookies.get('language'):
+        lang_cookie = request.cookies.get('language')
+        if lang_cookie in TRANSLATIONS:   # use your TRANSLATIONS dict keys
+            session['lang'] = lang_cookie
 
 # ------------------------------
 # Web Routes (public)
@@ -165,12 +176,19 @@ def inject_language():
 @app.route("/")
 def index():
     lang = session.get("lang", "en")
-    t = get_translation(lang)
+    t = get_translations(lang)
     return render_template("public/index.html", t=t)
 
 @app.route("/dashboard")
 def redirect_dashboard():
     return redirect("/api/user/dashboard")
+
+from flask import send_from_directory
+
+@app.route('/download/android')
+def download_apk():
+    directory = os.path.join(app.root_path, 'static', 'downloads')
+    return send_from_directory(directory, 'LANDMARK.apk', as_attachment=True)
 
 @app.route("/browse")
 def browse():
@@ -206,11 +224,41 @@ def logout_page():
     unset_jwt_cookies(response)
     return response
 
-@app.route("/set-language", methods=["POST"])
+@app.route('/set-language', methods=['POST'])
 def set_language():
-    data = request.get_json()
-    session["lang"] = data.get("lang", "en")
-    return {"status": "ok"}
+    raw_data = request.get_data(as_text=True)
+    import json
+    try:
+        data = json.loads(raw_data)
+    except:
+        return jsonify({'error': 'Invalid JSON'}), 400
+    
+    lang = data.get('lang') if data else None
+    if not lang or lang not in TRANSLATIONS:
+        return jsonify({'error': f'Unsupported language: {lang}'}), 400
+    
+    # ✅ Update session (so dropdown selected works)
+    session['lang'] = lang
+    
+    # Set cookie for persistence across browser sessions
+    resp = jsonify({'status': 'ok'})
+    resp.set_cookie('lang', lang, max_age=31536000, httponly=False, samesite='Lax')
+    
+    # Update DB if user logged in
+    try:
+        verify_jwt_in_request(optional=True)
+        user_id = get_jwt_identity()
+        if user_id:
+            conn = get_db()
+            conn.execute(
+                text("UPDATE users SET language = :lang WHERE id = :uid"),
+                {"lang": lang, "uid": user_id}
+            )
+            conn.commit()
+    except Exception:
+        pass
+    
+    return resp
 
 # ------------------------------
 # API Routes (JWT‑protected)
@@ -225,6 +273,30 @@ def refresh():
     current_user_id = get_jwt_identity()
     new_access_token = create_access_token(identity=current_user_id)
     return jsonify(access_token=new_access_token)
+
+from flask import send_from_directory
+
+@app.route('/download-app')
+def download_app():
+    ref = request.args.get('ref')
+    if ref:
+        # Optional: log download to a new table 'referral_downloads' for analytics
+        # We'll skip logging for now, but you can add later.
+        pass
+    apk_path = os.path.join(app.root_path, 'static', 'app')
+    return send_from_directory(apk_path, 'landmark.apk', as_attachment=True)
+
+import qrcode
+from io import BytesIO
+
+@app.route('/qr/<referral_code>')
+def generate_qr(referral_code):
+    download_url = request.host_url.rstrip('/') + f'/download-app?ref={referral_code}'
+    qr = qrcode.make(download_url)
+    img_io = BytesIO()
+    qr.save(img_io, 'PNG')
+    img_io.seek(0)
+    return send_file(img_io, mimetype='image/png')
 
 @app.route("/api/add-business", methods=["POST"])
 @jwt_required()
@@ -352,7 +424,6 @@ def temp_token():
         expires_delta=timedelta(days=30)
     )
     return {"token": token}
-
 
 # ------------------------------
 # Run the app

@@ -4,7 +4,7 @@ import random
 import re
 import string
 from sqlalchemy import text
-
+import secrets
 from database.init_db import get_db
 from flask_jwt_extended import (
     create_access_token,
@@ -49,11 +49,14 @@ def register():
         data = request.get_json()
         phone = data.get("phone")
         name = data.get("name")
+        ref_code = data.get("ref_code")  # referrer's referral code
 
         if not phone or not name:
             return jsonify({"error": "Phone and name required"}), 400
 
         conn = get_db()
+
+        # Check if phone already exists
         existing = conn.execute(
             text("SELECT id FROM users WHERE phone = :phone"),
             {"phone": phone}
@@ -61,21 +64,37 @@ def register():
         if existing:
             return jsonify({"error": "Phone already registered"}), 409
 
-        # Insert new user with RETURNING id
-        referral_code = data.get("referral_code")
+        # Generate a unique referral code for the new user
+        new_referral_code = secrets.token_urlsafe(6).upper()
+        # Ensure uniqueness (simple loop, though probability of collision is low)
+        while conn.execute(text("SELECT id FROM users WHERE referral_code = :code"), {"code": new_referral_code}).fetchone():
+            new_referral_code = secrets.token_urlsafe(6).upper()
+
+        # Find referrer ID if a valid ref_code was provided
+        referrer_id = None
+        if ref_code:
+            referrer = conn.execute(
+                text("SELECT id FROM users WHERE referral_code = :ref_code"),
+                {"ref_code": ref_code}
+            ).fetchone()
+            if referrer:
+                referrer_id = referrer[0]
+
+        # Insert new user
         result = conn.execute(text("""
-            INSERT INTO users (phone, name, role, plan, business_limit, referral_code)
-            VALUES (:phone, :name, 'free', 'free', 0, :referral_code)
+            INSERT INTO users (phone, name, role, plan, business_limit, referral_code, referred_by)
+            VALUES (:phone, :name, 'free', 'free', 0, :new_code, :referred_by)
             RETURNING id
         """), {
             "phone": phone,
             "name": name,
-            "referral_code": referral_code
+            "new_code": new_referral_code,
+            "referred_by": referrer_id
         })
         user_id = result.fetchone()[0]
         conn.commit()
 
-        # Generate tokens
+        # Generate JWT tokens
         access_token = create_access_token(
             identity=str(user_id),
             additional_claims={"role": "free", "phone": phone}
@@ -86,14 +105,20 @@ def register():
             "message": "User created successfully",
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "user": {"id": user_id, "phone": phone, "role": "free"}
+            "user": {
+                "id": user_id,
+                "phone": phone,
+                "role": "free",
+                "referral_code": new_referral_code
+            }
         }), 201
 
     except Exception as e:
         print("🔥 REGISTER ERROR:", e)
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": "Internal server error"}), 500
-
-
+    
 # =================================
 # SEND OTP
 # =================================

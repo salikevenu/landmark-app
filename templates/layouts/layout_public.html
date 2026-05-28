@@ -5,6 +5,9 @@
 <title>{% block title %}LANDMARK{% endblock %}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+<meta name="theme-color" content="#1f4ed8">
+<link rel="manifest" href="/static/manifest.json">
+
 <!-- GLOBAL STYLES (your custom dark theme) -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 
@@ -86,7 +89,7 @@ input::placeholder {
 </head>
 <body>
 
-<!-- MAIN CONTENT -->
+<!-- MAIN CONTENT BLOCK – child templates will insert here -->
 {% block content %}
 {% endblock %}
 
@@ -108,5 +111,10 @@ function changeLanguage(lang) {
 }
 </script>
 
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js');
+  }
+</script>
 </body>
 </html>

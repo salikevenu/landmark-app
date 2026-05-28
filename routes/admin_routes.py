@@ -6,7 +6,7 @@ from database.init_db import get_db
 from functools import wraps
 from datetime import timedelta, datetime
 from sqlalchemy import text
-
+from services.audit_service import log_admin_action
 from services.admin_service import (
     get_admin_stats, get_admin_users, ban_user, unban_user, change_user_role, reset_user_subscription,
     get_admin_listings, approve_listing_admin, disable_listing_admin, verify_listing_admin,
@@ -126,6 +126,9 @@ def api_ban_user(user_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = ban_user(user_id, admin_id, admin_phone, ip)
+    # Log it
+    log_admin_action(admin_id, admin_phone, "ban_user", "user", user_id,
+                     details="User banned", ip_address=ip)
     return jsonify(result)
 
 @admin_bp.route("/api/admin/users/<int:user_id>/unban", methods=["POST"])
@@ -448,3 +451,22 @@ def admin_chart_data():
         "listings": listing_counts,
         "revenue": revenue_daily
     })
+
+@admin_bp.route("/api/admin/audit-log")
+@admin_required
+def api_audit_log():
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 50, type=int)
+    offset = (page - 1) * limit
+
+    conn = get_db()
+    rows = conn.execute(text("""
+        SELECT * FROM admin_audit_log
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), {"limit": limit, "offset": offset}).fetchall()
+
+    total = conn.execute(text("SELECT COUNT(*) FROM admin_audit_log")).scalar()
+
+    logs = [dict(r._mapping) for r in rows]
+    return jsonify({"logs": logs, "total": total, "page": page})
