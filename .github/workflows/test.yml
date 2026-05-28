@@ -26,6 +26,12 @@ jobs:
       run: |
         pip install flake8
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+    
     - name: Run basic import test
+      env:
+        DATABASE_URL: sqlite:///test.db
+        SECRET_KEY: test-secret
+        JWT_SECRET_KEY: test-jwt-secret
       run: |
-        python -c "from app import app; print('✅ App imports OK')"
+        python -c "from app import app; print('App imports OK')"
+    
