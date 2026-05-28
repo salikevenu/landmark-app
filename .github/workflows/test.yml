@@ -27,8 +27,7 @@ jobs:
         pip install flake8
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
     
-    - name: Run import test with full traceback
-      id: import_test
+    - name: Run basic import test (force error in annotations)
       env:
         DATABASE_URL: sqlite:///test.db
         SECRET_KEY: test-secret
@@ -41,12 +40,11 @@ jobs:
         try:
             from app import app
             print('SUCCESS: App imports OK')
-        except Exception as e:
-            print('FAILED:', file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        except Exception:
+            error_msg = traceback.format_exc()
+            print(f'::error::{error_msg}', file=sys.stderr)
             sys.exit(1)
-        " 2>&1 | tee error.log
-        exit ${PIPESTATUS[0]}
+        "
     
     - name: Upload error log on failure
       if: failure()
