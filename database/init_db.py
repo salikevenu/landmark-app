@@ -20,7 +20,6 @@ def get_db():
         raise Exception("DATABASE_URL is not configured")
     return engine.connect()
 
-web: gunicorn app:app
 def init_db():
     conn = get_db()
 
