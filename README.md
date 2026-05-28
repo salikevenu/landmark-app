@@ -49,3 +49,4 @@ LANDMARK Backend/
 ```bash
 git clone https://github.com/salikevenu/landmark-app.git
 cd landmark-app
+test
