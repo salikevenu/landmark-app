@@ -40,10 +40,6 @@ def get_redis_client():
         _redis_client = redis.from_url(url)
     return _redis_client
 
-# Optional: allow `from app import redis_client` to work via __getattr__
-# But it's better to explicitly use get_redis_client() in your routes.
-# We'll keep the function approach.
-
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
 
