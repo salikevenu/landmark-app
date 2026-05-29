@@ -35,6 +35,7 @@ jobs:
         JWT_SECRET_KEY: test-jwt-secret
         JWT_TOKEN_LOCATION: headers
         LIMITER_STORAGE_URI: memory://
+        REDIS_URL: redis://localhost:6379/0
       run: |
         python -c "
         import sys, traceback
@@ -58,3 +59,13 @@ jobs:
         REDIS_URL: redis://localhost:6379/0
       run: |
         python -c "import app"    
+    
+    - name: Debug app.py
+      run: |
+        echo "===== APP.PY ====="
+        nl -ba app.py | head -60 
+        
+    - name: Show commit
+      run: |
+        git rev-parse HEAD
+        git log --oneline -1    
