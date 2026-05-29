@@ -102,17 +102,6 @@ os.makedirs("static/qrcodes", exist_ok=True)
 
 from functools import lru_cache
 
-
-def get_redis_client():
-    """Lazy initializer for Redis client. Raises RuntimeError only when first used."""
-    global _redis_client
-    if _redis_client is None:
-        url = os.getenv("REDIS_URL")
-        if not url:
-            raise RuntimeError("REDIS_URL environment variable not set. Please configure it before using OTP endpoints.")
-        _redis_client = redis.from_url(url)
-    return _redis_client
-
 from routes import register_routes
 
 # Optional: provide a module-level proxy that throws when accessed
