@@ -5,6 +5,7 @@
 {% block content %}
 
 <style>
+/* ----- GLOBAL NEON THEME ----- */
 .login-wrapper {
     text-align: center;
     width: 100%;
@@ -15,17 +16,20 @@
     border: 1px solid rgba(0, 255, 255, 0.3);
     border-radius: 32px;
     padding: 32px 28px;
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
 }
 
 .login-title {
     font-size: 2rem;
     font-weight: 700;
     color: #0ff;
+    text-shadow: 0 0 5px #0ff;
 }
 
 .page-subtitle {
     color: #8aaee0;
     margin-bottom: 20px;
+    font-size: 0.95rem;
 }
 
 input {
@@ -36,6 +40,13 @@ input {
     border: 1px solid #2a4c7a;
     background: #000;
     color: white;
+    transition: 0.2s;
+}
+
+input:focus {
+    outline: none;
+    border-color: #0ff;
+    box-shadow: 0 0 8px #0ff;
 }
 
 .btn-primary {
@@ -45,11 +56,71 @@ input {
     background: #0ff;
     border: none;
     cursor: pointer;
+    font-weight: bold;
+    transition: 0.2s;
+}
+
+.btn-primary:hover {
+    background: #0fa;
+    box-shadow: 0 0 12px #0ff;
 }
 
 .status-text {
     min-height: 30px;
     margin-top: 10px;
+}
+
+/* ----- NEON CUSTOM CHECKBOX (Remember Me) ----- */
+#rememberMe {
+    display: none;
+}
+
+label[for="rememberMe"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: #ccf;
+    transition: 0.2s;
+    margin: 12px 0;
+}
+
+label[for="rememberMe"]::before {
+    content: "";
+    width: 18px;
+    height: 18px;
+    border: 1px solid #0ff;
+    border-radius: 4px;
+    background: rgba(0, 20, 40, 0.8);
+    display: inline-block;
+    transition: 0.2s;
+    box-shadow: 0 0 2px #0ff;
+}
+
+#rememberMe:checked + label::before {
+    background: #0ff;
+    box-shadow: 0 0 8px #0ff;
+    content: "✓";
+    color: #000;
+    text-align: center;
+    line-height: 18px;
+    font-weight: bold;
+}
+
+label[for="rememberMe"]:hover::before {
+    border-color: #0fa;
+    box-shadow: 0 0 6px #0fa;
+}
+
+label[for="rememberMe"]:hover {
+    text-shadow: 0 0 4px #0ff;
+    color: #fff;
+}
+
+#rememberMe:focus + label::before {
+    outline: 2px solid #0ff;
+    outline-offset: 2px;
 }
 </style>
 
@@ -62,12 +133,15 @@ input {
 
         <div id="otpGroup" style="display:none;">
             <input type="text" id="otp" placeholder="Enter OTP" maxlength="6">
+            <!-- NEON CHECKBOX -->
+            <input type="checkbox" id="rememberMe">
+            <label for="rememberMe">Remember me (stay logged in until you logout)</label>
         </div>
 
-        <button id="actionBtn">Send OTP</button>
+        <button class="btn-primary" id="actionBtn">Send OTP</button>
 
-        <p id="statusMessage"></p>
-    </div>  <!-- only one closing div -->
+        <p id="statusMessage" class="status-text"></p>
+    </div>
 </div>
 
 <script>
@@ -80,10 +154,11 @@ const otpGroup = document.getElementById("otpGroup");
 const actionBtn = document.getElementById("actionBtn");
 const statusMsg = document.getElementById("statusMessage");
 const stepLabel = document.getElementById("stepLabel");
+const rememberMeCheckbox = document.getElementById("rememberMe");
 
-function setStatus(text, isError=false) {
+function setStatus(text, isError = false) {
     statusMsg.innerText = text;
-    statusMsg.style.color = isError ? "red" : "lightgreen";
+    statusMsg.style.color = isError ? "#ff6b6b" : "#6eff8e";
 }
 
 function isValidPhone(phone) {
@@ -94,8 +169,8 @@ async function sendOTP(phone) {
     try {
         const res = await fetch("/api/auth/send-otp", {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({phone})
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ phone })
         });
         const data = await res.json();
         if (res.ok && data.status === "success") {
@@ -111,19 +186,19 @@ async function sendOTP(phone) {
 }
 
 async function verifyOTP(phone, otp) {
+    const rememberMe = rememberMeCheckbox ? rememberMeCheckbox.checked : false;
+
     try {
         const res = await fetch("/api/auth/verify-otp", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ phone, otp })
+            body: JSON.stringify({ phone, otp, remember_me: rememberMe })
         });
         const data = await res.json();
         if (res.ok) {
-            // ✅ Standardised keys (used across all pages)
-            localStorage.setItem("access_token", data.access_token);
-            if (data.refresh_token) {
-                localStorage.setItem("refresh_token", data.refresh_token);
-            }
+            // Store tokens (optional – you can rely only on cookies)
+            if (data.access_token) localStorage.setItem("access_token", data.access_token);
+            if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
             window.location.href = "/api/user/dashboard";
         } else {
             setStatus(data.error || "Invalid OTP", true);
@@ -146,7 +221,10 @@ actionBtn.addEventListener("click", async () => {
             currentStep = "otp";
             otpGroup.style.display = "block";
             actionBtn.innerText = "Verify OTP";
-            stepLabel.innerText = "Enter OTP";
+            stepLabel.innerText = "Enter 6‑digit OTP";
+            // Clear any previous OTP and checkbox state
+            otpInput.value = "";
+            if (rememberMeCheckbox) rememberMeCheckbox.checked = false;
         }
     } else {
         const otp = otpInput.value.trim();

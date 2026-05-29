@@ -44,6 +44,11 @@ app.config.update(
     JWT_REFRESH_COOKIE_PATH="/token/refresh",
 )
 
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365 * 10)  # 10 years
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True    # Ensure HTTPS in production
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
 # Initialize JWT manager
 jwt = JWTManager(app)
 

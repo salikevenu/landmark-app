@@ -158,13 +158,13 @@ def verify_otp():
     phone = data.get("phone")
     otp = str(data.get("otp"))
     name = data.get("name", "")
+    remember_me = data.get("remember_me", False)   # <--- new flag
 
     if not phone or not otp:
         return jsonify({"error": "Phone and OTP required"}), 400
 
-    # ---------- OTP validation ----------
+    # ---------- OTP validation  ----------
     if current_app.config['DEBUG'] and otp == "000000":
-        # Test bypass – skip all OTP checks
         pass
     else:
         stored = otp_storage.get(phone)
@@ -175,10 +175,9 @@ def verify_otp():
             return jsonify({"error": "OTP expired"}), 400
         if stored["code"] != otp:
             return jsonify({"error": "Invalid OTP"}), 400
-        # OTP valid → delete it
         del otp_storage[phone]
 
-    # ---------- Find or create user ----------
+    # ---------- Find or create user  ----------
     conn = get_db()
     user = conn.execute(
         text("SELECT id, name, role, referral_code FROM users WHERE phone = :phone"),
@@ -204,12 +203,25 @@ def verify_otp():
         conn.commit()
         role = "free"
 
-    # ---------- Create JWT ----------
+    # ---------- JWT expiry based on remember_me ----------
+    if remember_me:
+        # Long‑lived: 1 year for refresh, 30 days for access (or whatever you prefer)
+        access_expires = timedelta(days=30)
+        refresh_expires = timedelta(days=365)
+    else:
+        # Standard short expiry (tune to your needs)
+        access_expires = timedelta(minutes=15)
+        refresh_expires = timedelta(days=7)
+
     access_token = create_access_token(
         identity=str(user_id),
-        additional_claims={"role": role, "phone": phone}
+        additional_claims={"role": role, "phone": phone},
+        expires_delta=access_expires          # <--- custom expiry
     )
-    refresh_token = create_refresh_token(identity=str(user_id))
+    refresh_token = create_refresh_token(
+        identity=str(user_id),
+        expires_delta=refresh_expires         # <--- custom expiry
+    )
 
     # Build response
     response = jsonify({
@@ -224,20 +236,23 @@ def verify_otp():
         }
     })
 
-    # Attach tokens as secure cookies
-    set_access_cookies(response, access_token)
-    set_refresh_cookies(response, refresh_token)
+    # Attach tokens as secure cookies with matching max_age
+    set_access_cookies(response, access_token, max_age=access_expires)
+    set_refresh_cookies(response, refresh_token, max_age=refresh_expires)
 
     return response, 200
-
 
 # =================================
 # LOGOUT (stateless)
 # =================================
+from flask_jwt_extended import unset_access_cookies, unset_refresh_cookies
+
 @auth_bp.route("/logout", methods=["POST"])
 def logout():
-    # JWT is stateless – client must delete tokens
-    return jsonify({"message": "Logged out successfully"}), 200
+    response = jsonify({"message": "Logged out successfully"})
+    unset_access_cookies(response)
+    unset_refresh_cookies(response)
+    return response, 200
 
 
 # =================================
