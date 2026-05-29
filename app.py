@@ -1,19 +1,37 @@
 # app.py
-import os
+import os, requests, secrets, redis
 import traceback
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
 from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory, send_file, make_response
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies, verify_jwt_in_request
-from werkzeug.exceptions import HTTPException
-from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from sqlalchemy import text
 from functools import lru_cache
+from flask_cors import CORS
+from flask_jwt_extended import (
+    JWTManager, 
+    create_access_token, 
+    create_refresh_token,
+    get_jwt_identity, 
+    jwt_required, 
+    verify_jwt_in_request,
+    set_access_cookies,
+    set_refresh_cookies,
+    unset_jwt_cookies
+)
+from werkzeug.exceptions import HTTPException
 
 from language.translations import TRANSLATIONS
 
 # Load environment variables
 load_dotenv()
+
+# Redis client for OTP storage
+redis_url = os.getenv("REDIS_URL")
+if not redis_url:
+    raise ValueError("REDIS_URL environment variable not set")
+redis_client = redis.from_url(redis_url)
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
@@ -23,8 +41,20 @@ from routes import register_routes
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+
+CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
+
+# Rate Limiting to protect your endpoints from abuse
+limiter = Limiter(
+    get_remote_address,  # first positional argument is key_func
+    app=app,
+    storage_uri=os.getenv("REDIS_URL"),
+    default_limits=["200 per day", "50 per hour"]
+)
+
+# Redis Connection for storing OTPs
+redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 # ------------------------------
 # Configuration (JWT & uploads)
@@ -33,8 +63,8 @@ app.config.update(
     MAX_CONTENT_LENGTH=20 * 1024 * 1024,
     UPLOAD_FOLDER="static/uploads",
     JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "your-secure-jwt-secret-key"),
-    JWT_ACCESS_TOKEN_EXPIRES=timedelta(days=1),
-    JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=30),
+    JWT_ACCESS_TOKEN_EXPIRES=timedelta(minutes=15),
+    JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=7),
     JWT_TOKEN_LOCATION=["cookies", "headers"],
     JWT_COOKIE_SECURE=True,
     JWT_COOKIE_CSRF_PROTECT=True,
@@ -96,6 +126,42 @@ def inject_language():
         _=lambda key: t.get(key, key)
     )
 
+# --- Helper Function to Get a New Token from Message Central ---
+def get_message_central_token():
+    """
+    Fetches a fresh authentication token from Message Central.
+    The token is valid for 24 hours.
+    """
+    url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
+    
+    # These are the required query parameters for the token call
+    params = {
+        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
+        "key": os.getenv("MESSAGE_CENTRAL_API_KEY"),  # This is your base64-encoded key
+        "scope": "NEW",
+        "country": "91"  # Defaulting to India, change as needed
+    }
+    
+    try:
+        # The token endpoint requires a GET request with specific headers
+        response = requests.get(url, headers={"accept": "*/*"}, params=params, timeout=10)
+        response.raise_for_status()  # Raise an error for bad status codes (4xx or 5xx)
+
+        data = response.json()
+        # The API returns the token in the response body
+        token = data.get("token")
+        
+        if token:
+            app.logger.info("Message Central token generated successfully.")
+            return token
+        else:
+            app.logger.error(f"Token not found in response: {data}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        app.logger.exception(f"Error getting Message Central token: {e}")
+        return None
+    
 # ------------------------------
 # Database helper (wrapper using text())
 # ------------------------------

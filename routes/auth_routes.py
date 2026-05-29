@@ -1,10 +1,15 @@
-from flask import Blueprint, request, jsonify, render_template, current_app
+import os
+import secrets
+import requests
+import redis
 from datetime import datetime, timedelta
+from functools import wraps
+from flask import Blueprint, request, jsonify, render_template, current_app
 import random
 import re
 import string
 from sqlalchemy import text
-import secrets
+
 from database.init_db import get_db
 from flask_jwt_extended import (
     create_access_token,
@@ -17,10 +22,36 @@ from flask_jwt_extended import (
 
 auth_bp = Blueprint("auth", __name__)
 
-# In-memory OTP storage (for demo; use Redis in production)
-otp_storage = {}  # {phone: {"code": "123456", "expires": timestamp}}
+# Redis client (assumes you set it up in your app factory or here)
+# For simplicity, we'll initialize it here using env var
+redis_client = redis.from_url(os.getenv("REDIS_URL"))
 
-
+# =================================
+# HELPER: Get Message Central Token
+# =================================
+def get_message_central_token():
+    """Fetch a fresh token from Message Central (valid for 24 hours)."""
+    url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
+    params = {
+        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
+        "key": os.getenv("MESSAGE_CENTRAL_API_KEY"),
+        "scope": "NEW",
+        "country": "91"
+    }
+    try:
+        response = requests.get(url, headers={"accept": "*/*"}, params=params, timeout=10)
+        response.raise_for_status()
+        token = response.json().get("token")
+        if token:
+            current_app.logger.info("Message Central token acquired")
+            return token
+        else:
+            current_app.logger.error("No token in response")
+            return None
+    except Exception as e:
+        current_app.logger.exception(f"Token fetch failed: {e}")
+        return None
+    
 # =================================
 # HELPER: Generate unique referral code
 # =================================
@@ -133,22 +164,54 @@ def send_otp():
     if not validate_phone(phone):
         return jsonify({"error": "Invalid phone number"}), 400
 
-    otp_code = str(random.randint(100000, 999999))
-    otp_storage[phone] = {
-        "code": otp_code,
-        "expires": datetime.utcnow() + timedelta(minutes=5)
+    # 1. Generate a secure 6-digit OTP
+    otp_code = f"{secrets.randbelow(1000000):06d}"
+
+    # 2. Store OTP and expiry in Redis (5 minutes)
+    redis_key = f"otp:{phone}"
+    redis_client.setex(redis_key, 300, otp_code)  # 300 seconds = 5 minutes
+
+    # 3. Get authentication token from Message Central
+    auth_token = get_message_central_token()
+    if not auth_token:
+        # If token fails, delete the stored OTP to avoid inconsistency
+        redis_client.delete(redis_key)
+        return jsonify({"error": "OTP service authentication failed"}), 500
+
+    # 4. Send OTP via Message Central VerifyNow API (v3)
+    send_url = "https://cpaas.messagecentral.com/verification/v3/send"
+    headers = {"authToken": auth_token}
+    params = {
+        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
+        "countryCode": "91",
+        "mobileNumber": phone,
+        "flowType": "SMS",
+        "otpLength": 6
     }
 
-    # DEV MODE: print OTP in terminal
-    print(f"🔥 TEST OTP for {phone}: {otp_code}")
+    try:
+        response = requests.post(send_url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        resp_data = response.json()
+        verification_id = resp_data.get("verificationId")
 
-    return jsonify({
-        "status": "success",
-        "message": "OTP generated (check terminal)",
-        "otp": otp_code   # for frontend testing only – remove in production
-    }), 200
+        # Store verification ID for later use (optional, but good for debugging)
+        redis_client.setex(f"verification:{phone}", 300, verification_id)
 
+        current_app.logger.info(f"OTP sent to {phone} via Message Central. Verification ID: {verification_id}")
 
+        # Success – do NOT return OTP in response (security)
+        return jsonify({
+            "status": "success",
+            "message": "OTP sent successfully"
+        }), 200
+
+    except requests.exceptions.RequestException as e:
+        current_app.logger.exception(f"Message Central send failed: {e}")
+        # Clean up stored OTP since sending failed
+        redis_client.delete(redis_key)
+        return jsonify({"error": "Failed to send OTP, please try again"}), 500
+	
 # =================================
 # VERIFY OTP & LOGIN/REGISTER
 # =================================
@@ -158,26 +221,28 @@ def verify_otp():
     phone = data.get("phone")
     otp = str(data.get("otp"))
     name = data.get("name", "")
-    remember_me = data.get("remember_me", False)   # <--- new flag
+    remember_me = data.get("remember_me", False)
 
     if not phone or not otp:
         return jsonify({"error": "Phone and OTP required"}), 400
 
-    # ---------- OTP validation  ----------
-    if current_app.config['DEBUG'] and otp == "000000":
+    # ---------- OTP validation using Redis ----------
+    redis_key = f"otp:{phone}"
+    stored_otp = redis_client.get(redis_key)
+
+    # Allow a debug master OTP only if DEBUG is True (optional, remove in production)
+    if current_app.config.get('DEBUG') and otp == "000000":
+        # bypass OTP check
         pass
     else:
-        stored = otp_storage.get(phone)
-        if not stored:
-            return jsonify({"error": "No OTP requested"}), 400
-        if datetime.utcnow() > stored["expires"]:
-            del otp_storage[phone]
-            return jsonify({"error": "OTP expired"}), 400
-        if stored["code"] != otp:
+        if not stored_otp:
+            return jsonify({"error": "No OTP requested or OTP expired"}), 400
+        if stored_otp.decode('utf-8') != otp:
             return jsonify({"error": "Invalid OTP"}), 400
-        del otp_storage[phone]
+        # OTP is correct – delete it immediately (one‑time use)
+        redis_client.delete(redis_key)
 
-    # ---------- Find or create user  ----------
+    # ---------- Find or create user ----------
     conn = get_db()
     user = conn.execute(
         text("SELECT id, name, role, referral_code FROM users WHERE phone = :phone"),
@@ -205,25 +270,22 @@ def verify_otp():
 
     # ---------- JWT expiry based on remember_me ----------
     if remember_me:
-        # Long‑lived: 1 year for refresh, 30 days for access (or whatever you prefer)
         access_expires = timedelta(days=30)
         refresh_expires = timedelta(days=365)
     else:
-        # Standard short expiry (tune to your needs)
         access_expires = timedelta(minutes=15)
         refresh_expires = timedelta(days=7)
 
     access_token = create_access_token(
         identity=str(user_id),
         additional_claims={"role": role, "phone": phone},
-        expires_delta=access_expires          # <--- custom expiry
+        expires_delta=access_expires
     )
     refresh_token = create_refresh_token(
         identity=str(user_id),
-        expires_delta=refresh_expires         # <--- custom expiry
+        expires_delta=refresh_expires
     )
 
-    # Build response
     response = jsonify({
         "status": "success",
         "access_token": access_token,

@@ -77,3 +77,7 @@ static/uploads/*
 static/images/listings/*
 static/qrcodes/*
 *.sqbpro          # SQLite browser project filecheck_db.py
+
+# Redis dump (if local)
+dump.rdb
+

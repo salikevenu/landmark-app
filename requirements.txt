@@ -3,6 +3,7 @@ Flask-Cors
 Flask-JWT-Extended
 Flask-Limiter
 limits
+redis
 qrcode
 pillow
 python-dotenv
