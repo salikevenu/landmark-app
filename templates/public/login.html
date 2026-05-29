@@ -196,10 +196,22 @@ async function verifyOTP(phone, otp) {
         });
         const data = await res.json();
         if (res.ok) {
-            // Store tokens (optional – you can rely only on cookies)
+            // Store tokens
             if (data.access_token) localStorage.setItem("access_token", data.access_token);
             if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-            window.location.href = "/api/user/dashboard";
+
+            // 👇 Get current user info to check role
+            const meRes = await fetch("/api/auth/me", {
+                headers: { "Authorization": "Bearer " + data.access_token }
+            });
+            const userData = await meRes.json();
+
+            // Redirect based on role
+            if (userData.role === "admin") {
+                window.location.href = "/admin/dashboard";
+            } else {
+                window.location.href = "/api/user/dashboard";
+            }
         } else {
             setStatus(data.error || "Invalid OTP", true);
         }
