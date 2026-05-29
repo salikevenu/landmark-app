@@ -23,10 +23,6 @@ from flask_jwt_extended import (
 
 auth_bp = Blueprint("auth", __name__)
 
-# Redis client (assumes you set it up in your app factory or here)
-# For simplicity, we'll initialize it here using env var
-redis_client = redis.from_url(os.getenv("REDIS_URL"))
-
 # =================================
 # HELPER: Get Message Central Token
 # =================================

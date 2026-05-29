@@ -27,19 +27,22 @@ from language.translations import TRANSLATIONS
 # Load environment variables
 load_dotenv()
 
-if not os.getenv("REDIS_URL"):
-    # In production, this should be set. For CI tests, set a dummy.
-    if os.getenv("CI") == "true":
-        os.environ["REDIS_URL"] = "redis://localhost:6379/0"
-    else:
-        raise ValueError("REDIS_URL environment variable not set")
-    
+# ---------- Redis client (lazy initialization for tests/production) ----------
 _redis_client = None
-# Redis client for OTP storage
-#redis_url = os.getenv("REDIS_URL")
-#if not redis_url:
-#   raise ValueError("REDIS_URL environment variable not set")
-#redis_client = redis.from_url(redis_url)
+
+def get_redis_client():
+    """Lazy initializer for Redis client. Raises RuntimeError only when first used."""
+    global _redis_client
+    if _redis_client is None:
+        url = os.getenv("REDIS_URL")
+        if not url:
+            raise RuntimeError("REDIS_URL environment variable not set. Please configure it before using OTP endpoints.")
+        _redis_client = redis.from_url(url)
+    return _redis_client
+
+# Optional: allow `from app import redis_client` to work via __getattr__
+# But it's better to explicitly use get_redis_client() in your routes.
+# We'll keep the function approach.
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
@@ -53,16 +56,18 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
-# Rate Limiting to protect your endpoints from abuse
+# Rate Limiting – use the same Redis URL (but lazy load may not be available yet)
+# For rate limiting, we need a URL at startup; provide a fallback for CI.
+redis_url_for_limiter = os.getenv("REDIS_URL")
+if not redis_url_for_limiter and os.getenv("CI") == "true":
+    redis_url_for_limiter = "redis://localhost:6379/0"
+
 limiter = Limiter(
-    get_remote_address,  # first positional argument is key_func
+    get_remote_address,
     app=app,
-    storage_uri=os.getenv("REDIS_URL"),
+    storage_uri=redis_url_for_limiter,
     default_limits=["200 per day", "50 per hour"]
 )
-
-# Redis Connection for storing OTPs
-redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"))
 
 # ------------------------------
 # Configuration (JWT & uploads)
@@ -111,6 +116,8 @@ def get_redis_client():
             raise RuntimeError("REDIS_URL environment variable not set. Please configure it before using OTP endpoints.")
         _redis_client = redis.from_url(url)
     return _redis_client
+
+from routes import register_routes
 
 # Optional: provide a module-level proxy that throws when accessed
 def __getattr__(name):
