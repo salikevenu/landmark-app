@@ -27,11 +27,19 @@ from language.translations import TRANSLATIONS
 # Load environment variables
 load_dotenv()
 
+if not os.getenv("REDIS_URL"):
+    # In production, this should be set. For CI tests, set a dummy.
+    if os.getenv("CI") == "true":
+        os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+    else:
+        raise ValueError("REDIS_URL environment variable not set")
+    
+_redis_client = None
 # Redis client for OTP storage
-redis_url = os.getenv("REDIS_URL")
-if not redis_url:
-    raise ValueError("REDIS_URL environment variable not set")
-redis_client = redis.from_url(redis_url)
+#redis_url = os.getenv("REDIS_URL")
+#if not redis_url:
+#   raise ValueError("REDIS_URL environment variable not set")
+#redis_client = redis.from_url(redis_url)
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
@@ -93,6 +101,22 @@ os.makedirs("static/qrcodes", exist_ok=True)
 
 from functools import lru_cache
 
+
+def get_redis_client():
+    """Lazy initializer for Redis client. Raises RuntimeError only when first used."""
+    global _redis_client
+    if _redis_client is None:
+        url = os.getenv("REDIS_URL")
+        if not url:
+            raise RuntimeError("REDIS_URL environment variable not set. Please configure it before using OTP endpoints.")
+        _redis_client = redis.from_url(url)
+    return _redis_client
+
+# Optional: provide a module-level proxy that throws when accessed
+def __getattr__(name):
+    if name == "redis_client":
+        return get_redis_client()
+    raise AttributeError(f"module {__name__} has no attribute {name}")
 @lru_cache(maxsize=10)   # cache translations for each language
 def get_translations(lang):
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"])

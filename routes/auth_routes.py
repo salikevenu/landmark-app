@@ -9,6 +9,7 @@ import random
 import re
 import string
 from sqlalchemy import text
+from app import get_redis_client   # or from your main app module
 
 from database.init_db import get_db
 from flask_jwt_extended import (
@@ -169,6 +170,7 @@ def send_otp():
 
     # 2. Store OTP and expiry in Redis (5 minutes)
     redis_key = f"otp:{phone}"
+    redis_client = get_redis_client()
     redis_client.setex(redis_key, 300, otp_code)  # 300 seconds = 5 minutes
 
     # 3. Get authentication token from Message Central
@@ -227,6 +229,7 @@ def verify_otp():
         return jsonify({"error": "Phone and OTP required"}), 400
 
     # ---------- OTP validation using Redis ----------
+    redis_client = get_redis_client()
     redis_key = f"otp:{phone}"
     stored_otp = redis_client.get(redis_key)
 
