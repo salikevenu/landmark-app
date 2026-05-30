@@ -17,7 +17,6 @@ jobs:
       with:
         python-version: '3.11'
 
-    # Cache pip packages to speed up future runs
     - uses: actions/cache@v4
       with:
         path: ~/.cache/pip
@@ -28,7 +27,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Verify app import
+    - name: Verify app import with env vars
       env:
         DATABASE_URL: sqlite:///test.db
         SECRET_KEY: test-secret
@@ -49,23 +48,7 @@ jobs:
             sys.exit(1)
         "
 
-    - name: Lint with flake8 (optional)
+    - name: Lint with flake8 (fail on errors)
       run: |
         pip install flake8
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
-
-    - name: Run tests
-      env:
-        REDIS_URL: redis://localhost:6379/0
-      run: |
-        python -c "import app"    
-    
-    - name: Debug app.py
-      run: |
-        echo "===== APP.PY ====="
-        nl -ba app.py | head -60 
-        
-    - name: Show commit
-      run: |
-        git rev-parse HEAD
-        git log --oneline -1    
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics

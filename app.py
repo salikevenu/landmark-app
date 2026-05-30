@@ -142,42 +142,6 @@ def inject_language():
         _=lambda key: t.get(key, key)
     )
 
-# --- Helper Function to Get a New Token from Message Central ---
-def get_message_central_token():
-    """
-    Fetches a fresh authentication token from Message Central.
-    The token is valid for 24 hours.
-    """
-    url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
-    
-    # These are the required query parameters for the token call
-    params = {
-        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
-        "key": os.getenv("MESSAGE_CENTRAL_API_KEY"),  # This is your base64-encoded key
-        "scope": "NEW",
-        "country": "91"  # Defaulting to India, change as needed
-    }
-    
-    try:
-        # The token endpoint requires a GET request with specific headers
-        response = requests.get(url, headers={"accept": "*/*"}, params=params, timeout=10)
-        response.raise_for_status()  # Raise an error for bad status codes (4xx or 5xx)
-
-        data = response.json()
-        # The API returns the token in the response body
-        token = data.get("token")
-        
-        if token:
-            app.logger.info("Message Central token generated successfully.")
-            return token
-        else:
-            app.logger.error(f"Token not found in response: {data}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        app.logger.exception(f"Error getting Message Central token: {e}")
-        return None
-    
 # ------------------------------
 # Database helper (wrapper using text())
 # ------------------------------
