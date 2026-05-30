@@ -25,14 +25,34 @@ from werkzeug.exceptions import HTTPException
 
 from language.translations import TRANSLATIONS
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Load environment variables
 load_dotenv()
+
+# === PRODUCTION VALIDATION ===
+import os
+
+REQUIRED_ENV_VARS = ["SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"]
+missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+if missing_vars:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+# Redis is strongly recommended for production
+if os.getenv("FLASK_ENV") == "production" and not os.getenv("REDIS_URL"):
+    raise RuntimeError("REDIS_URL is required in production")
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
 
 # Blueprint registration
 from routes import register_routes
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -123,7 +143,7 @@ def inject_language():
     
     # Use the FULL translations (imported from language.translations)
     t = get_translations(lang)   # note the 's' – cached version using full TRANSLATIONS
-    print(f"🌐 Language selected: {lang}")
+    logger.debug(f"Language selected: {lang}")
     return dict(
         t=t,
         current_lang=lang,
@@ -201,7 +221,7 @@ def _execute_payout():
 @app.before_request
 def before_request_actions():
     # 1. Logging (your existing code)
-    print(f"🔷 {request.method} {request.path}")
+    logger.info(f"{request.method} {request.path}")
     
     # 2. Load language from cookie into session (if not already set)
     if 'lang' not in session and request.cookies.get('language'):
@@ -429,7 +449,7 @@ def well_known_ignore(filename):
 def handle_exception(e):
     if isinstance(e, HTTPException):
         return e.get_response()
-    traceback.print_exc()
+    logger.error(traceback.format_exc())
     return jsonify({"error": str(e)}), 500
 
 # ------------------------------

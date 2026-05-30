@@ -40,11 +40,11 @@ jobs:
         import sys, traceback
         try:
             from app import app
-            print('SUCCESS: App imports OK')
+            logger.info('SUCCESS: App imports OK')
         except Exception:
             error_msg = traceback.format_exc()
-            print('FAILED:', file=sys.stderr)
-            print(f'::error::{error_msg}', file=sys.stderr)
+            logger.info('FAILED:', file=sys.stderr)
+            logger.info(f'::error::{error_msg}', file=sys.stderr)
             sys.exit(1)
         "
 

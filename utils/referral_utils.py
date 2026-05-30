@@ -2,6 +2,8 @@ import random
 import string
 import qrcode
 import os
+import logging
+logger = logging.getLogger(__name__)
 from database.init_db import get_db
 from config.payment_config import BASE_URL       # make sure this is defined
 
@@ -32,7 +34,7 @@ def create_referral_assets(user_id, referral_code):
         qr = qrcode.make(referral_link)
         qr.save(qr_path)
     except Exception as e:
-        print(f"Failed to create QR: {e}")
+        logger.info(f"Failed to create QR: {e}")
         return referral_link, None
 
     return referral_link, qr_path

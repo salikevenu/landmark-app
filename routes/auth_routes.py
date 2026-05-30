@@ -2,6 +2,8 @@ import os
 import secrets
 import requests
 import redis
+import logging
+logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify, render_template, current_app
@@ -142,9 +144,9 @@ def register():
         }), 201
 
     except Exception as e:
-        print("🔥 REGISTER ERROR:", e)
+        logger.info("🔥 REGISTER ERROR:", e)
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return jsonify({"error": "Internal server error"}), 500
     
 # =================================

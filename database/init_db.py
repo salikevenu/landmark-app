@@ -1,4 +1,6 @@
 import os
+import logging
+logger = logging.getLogger(__name__)
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
@@ -417,4 +419,4 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
-    print("✅ PostgreSQL tables created with all indexes and default settings.")
+    logger.info("✅ PostgreSQL tables created with all indexes and default settings.")

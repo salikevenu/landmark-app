@@ -11,7 +11,8 @@ from sqlalchemy import text
 
 from database.init_db import get_db
 from services.listing_service import add_review_service, get_reviews_service
-
+import logging
+logger = logging.getLogger(__name__)
 # ---------- Custom role‑required decorator (JWT) ----------
 def role_required(required_roles):
     def decorator(fn):
@@ -156,7 +157,7 @@ def api_create_listing():
         }), 201
 
     except Exception as e:
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return jsonify({"success": False, "error": "Internal Server Error"}), 500
 
 
@@ -457,8 +458,8 @@ def browse_api():
         return jsonify({"listings": listings, "page": page, "count": len(listings)})
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        print("BROWSE API ERROR:", e)
+        logger.error(traceback.format_exc())
+        logger.info("BROWSE API ERROR:", e)
         return jsonify({"error": str(e)}), 500
     
 # =========================

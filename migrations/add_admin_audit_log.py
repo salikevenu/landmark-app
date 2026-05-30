@@ -1,5 +1,7 @@
 import sys
 import os
+import logging
+logger = logging.getLogger(__name__)
 # Add the project root (one level up) to the Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -22,7 +24,7 @@ def create_audit_table():
         )
     """))
     conn.commit()
-    print("✅ admin_audit_log table ready.")
+    logger.info("✅ admin_audit_log table ready.")
 
 if __name__ == "__main__":
     create_audit_table()

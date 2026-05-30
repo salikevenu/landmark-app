@@ -1,4 +1,6 @@
 import math
+import logging
+logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.init_db import get_db
@@ -234,7 +236,7 @@ def browse_listings(location, category, page):
             "listings": listings
         }
     except Exception as e:
-        print("BROWSE SERVICE ERROR:", e)
+        logger.info("BROWSE SERVICE ERROR:", e)
         return {"status": "error", "message": "Server error"}
 
 

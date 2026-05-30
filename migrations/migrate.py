@@ -2,6 +2,8 @@
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from database.init_db import get_db
+import logging
+logger = logging.getLogger(__name__)
 
 def migrate_add_status_column():
     conn = get_db()
@@ -13,14 +15,14 @@ def migrate_add_status_column():
         """)).fetchone()
 
         if column_exists:
-            print("ℹ️ Column 'status' already exists.")
+            logger.info("ℹ️ Column 'status' already exists.")
         else:
             conn.execute(text("ALTER TABLE listings ADD COLUMN status TEXT DEFAULT 'pending'"))
             conn.commit()
-            print("✅ Column 'status' added to listings table.")
+            logger.info("✅ Column 'status' added to listings table.")
     except ProgrammingError as e:
         # Catch any unexpected error (e.g., table doesn't exist)
-        print(f"⚠️ Error: {e}")
+        logger.info(f"⚠️ Error: {e}")
     # No need to close connection; Flask's teardown handles it
 
 if __name__ == "__main__":

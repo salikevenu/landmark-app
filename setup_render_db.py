@@ -1,5 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
+import logging
+logger = logging.getLogger(__name__)
 
 # Use the External Database URL from Render
 DATABASE_URL = "postgresql://..."  # Paste your External URL here
@@ -49,7 +51,7 @@ def run_migrations():
         """))
 
         conn.commit()
-        print("✅ Database initialized and admin user created.")
+        logger.info("✅ Database initialized and admin user created.")
 
 if __name__ == "__main__":
     run_migrations()

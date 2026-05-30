@@ -3,6 +3,8 @@ import jwt
 import datetime
 import os
 from sqlalchemy import create_engine, text
+import logging
+logger = logging.getLogger(__name__)
 
 # Use the same PostgreSQL URL as in database/init_db.py
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/landmark")
@@ -28,7 +30,7 @@ def setup_admin():
         admin_role = None
 
         if not admin:
-            print("No admin found. Creating one...")
+            logger.info("No admin found. Creating one...")
             phone = "admin@example.com"
             name = "Super Admin"
             role = "admin"
@@ -51,27 +53,27 @@ def setup_admin():
                     # Fetch the updated row
                     updated = conn.execute(text("SELECT id, phone, role FROM users WHERE phone = :phone"), {"phone": phone}).fetchone()
                     admin_id, admin_phone, admin_role = updated
-                print(f"✅ Admin user created with phone: {admin_phone}")
+                logger.info(f"✅ Admin user created with phone: {admin_phone}")
             except Exception as e:
-                print(f"Error creating admin: {e}")
+                logger.info(f"Error creating admin: {e}")
                 return None
         else:
             admin_id, admin_phone, admin_role = admin._mapping["id"], admin._mapping["phone"], admin._mapping["role"]
-            print(f"Admin already exists: {admin_phone} (role={admin_role})")
+            logger.info(f"Admin already exists: {admin_phone} (role={admin_role})")
 
     # IMPORTANT: Use the SAME JWT_SECRET_KEY as your Flask app
     secret_key = os.environ.get('JWT_SECRET_KEY', 'hlecFd2cJQY0UCyXcq5Fpo1UCLyBERNEu2hUiv_kM60')
 
     token = create_jwt_token(admin_id, admin_role, secret_key)
 
-    print("\n" + "="*60)
-    print("✅ ADMIN ACCESS TOKEN (use this in Authorization header):")
-    print(token)
-    print("="*60)
-    print("\n📌 Test with curl:")
-    print(f'curl -H "Authorization: Bearer {token}" http://localhost:8000/api/admin/stats')
-    print("\n📌 Or in Python requests:")
-    print(f'requests.get("http://localhost:8000/api/admin/stats", headers={{"Authorization": f"Bearer {token}"}})')
+    logger.info("\n" + "="*60)
+    logger.info("✅ ADMIN ACCESS TOKEN (use this in Authorization header):")
+    logger.info(token)
+    logger.info("="*60)
+    logger.info("\n📌 Test with curl:")
+    logger.info(f'curl -H "Authorization: Bearer {token}" http://localhost:8000/api/admin/stats')
+    logger.info("\n📌 Or in Python requests:")
+    logger.info(f'requests.get("http://localhost:8000/api/admin/stats", headers={{"Authorization": f"Bearer {token}"}})')
     return token
 
 if __name__ == "__main__":

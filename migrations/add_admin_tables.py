@@ -1,6 +1,8 @@
 # migrations/add_admin_tables.py
 from sqlalchemy import text
 from database.init_db import get_db
+import logging
+logger = logging.getLogger(__name__)
 
 def add_admin_tables():
     conn = get_db()
@@ -65,7 +67,7 @@ def add_admin_tables():
         conn.execute(text("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0"))
 
     conn.commit()
-    print("Admin tables and columns added successfully.")
+    logger.info("Admin tables and columns added successfully.")
 
 if __name__ == "__main__":
     add_admin_tables()
