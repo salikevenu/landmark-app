@@ -9,7 +9,7 @@ import random
 import re
 import string
 from sqlalchemy import text
-from app import get_redis_client   # or from your main app module
+from redis_client import get_redis_client
 
 from database.init_db import get_db
 from flask_jwt_extended import (

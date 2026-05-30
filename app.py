@@ -8,6 +8,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from sqlalchemy import text
 from functools import lru_cache
+from redis_client import get_redis_client
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager, 
@@ -26,19 +27,6 @@ from language.translations import TRANSLATIONS
 
 # Load environment variables
 load_dotenv()
-
-# ---------- Redis client (lazy initialization for tests/production) ----------
-_redis_client = None
-
-def get_redis_client():
-    """Lazy initializer for Redis client. Raises RuntimeError only when first used."""
-    global _redis_client
-    if _redis_client is None:
-        url = os.getenv("REDIS_URL")
-        if not url:
-            raise RuntimeError("REDIS_URL environment variable not set. Please configure it before using OTP endpoints.")
-        _redis_client = redis.from_url(url)
-    return _redis_client
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
