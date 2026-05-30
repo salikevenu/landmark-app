@@ -50,3 +50,5 @@ LANDMARK Backend/
 git clone https://github.com/salikevenu/landmark-app.git
 cd landmark-app
 test
+
+[![Python application test](https://github.com/salikevenu/landmark-app/actions/workflows/test.yml/badge.svg)](https://github.com/salikevenu/landmark-app/actions/workflows/test.yml)
