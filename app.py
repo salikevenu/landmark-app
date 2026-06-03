@@ -57,25 +57,31 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
-# Determine Redis URL for rate limiting
-redis_url = os.getenv("REDIS_URL")
-if not redis_url:
-    if os.getenv("CI") == "true":
-        redis_url = "redis://localhost:6379/0"   # CI fallback
-    elif os.getenv("FLASK_ENV") == "production":
-        # In production, Redis is mandatory – fail early
-        raise RuntimeError("REDIS_URL environment variable is required in production")
+# ---- Rate Limiting Configuration ----
+_redis_url = os.getenv("REDIS_URL")
+_storage_uri = None
+
+if _redis_url:
+    # Use the URL directly without any prefix
+    _storage_uri = _redis_url
+    logger.info(f"✅ Using Redis for rate limiting: {_storage_uri}")
+elif os.getenv("CI") == "true":
+    _storage_uri = "redis://localhost:6379/0"
+    logger.warning("🔧 CI mode: using localhost Redis for rate limiting.")
+else:
+    _storage_uri = "memory://"
+    if os.getenv("FLASK_ENV") == "production":
+        logger.error("🚨 REDIS_URL is not set in production. Rate limiting will use memory storage, which is NOT suitable for multiple processes.")
     else:
-        # Development / testing without Redis – use memory storage
-        redis_url = "memory://"
-        logger.warning("REDIS_URL not set – using in‑memory rate limiting (not suitable for production)")
+        logger.warning("⚠️ REDIS_URL not set. Falling back to memory storage for rate limiting.")
 
 limiter = Limiter(
     get_remote_address,
     app=app,
-    storage_uri=redis_url,
+    storage_uri=_storage_uri,  # This must be a clean URL like "rediss://..."
     default_limits=["200 per day", "50 per hour"]
 )
+
 
 # ------------------------------
 # Configuration (JWT & uploads)
