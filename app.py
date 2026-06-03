@@ -43,14 +43,6 @@ missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
 if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
-# Redis is strongly recommended for production
-if os.getenv("FLASK_ENV") == "production" and not os.getenv("REDIS_URL"):
-    raise RuntimeError("REDIS_URL is required in production")
-
-logger.info("===== ENVIRONMENT VARIABLES CHECK =====")
-logger.info(f"FLASK_ENV = {os.getenv('FLASK_ENV')}")
-logger.info(f"REDIS_URL is set: {bool(os.getenv('REDIS_URL'))}")
-logger.info(f"REDIS_URL first 20 chars: {str(os.getenv('REDIS_URL'))[:20] if os.getenv('REDIS_URL') else 'None'}")
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
@@ -65,16 +57,23 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
-# Rate Limiting – use the same Redis URL (but lazy load may not be available yet)
-# For rate limiting, we need a URL at startup; provide a fallback for CI.
-redis_url_for_limiter = os.getenv("REDIS_URL")
-if not redis_url_for_limiter and os.getenv("CI") == "true":
-    redis_url_for_limiter = "redis://localhost:6379/0"
+# Determine Redis URL for rate limiting
+redis_url = os.getenv("REDIS_URL")
+if not redis_url:
+    if os.getenv("CI") == "true":
+        redis_url = "redis://localhost:6379/0"   # CI fallback
+    elif os.getenv("FLASK_ENV") == "production":
+        # In production, Redis is mandatory – fail early
+        raise RuntimeError("REDIS_URL environment variable is required in production")
+    else:
+        # Development / testing without Redis – use memory storage
+        redis_url = "memory://"
+        logger.warning("REDIS_URL not set – using in‑memory rate limiting (not suitable for production)")
 
 limiter = Limiter(
     get_remote_address,
     app=app,
-    storage_uri=redis_url_for_limiter,
+    storage_uri=redis_url,
     default_limits=["200 per day", "50 per hour"]
 )
 
