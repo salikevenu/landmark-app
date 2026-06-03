@@ -47,7 +47,7 @@ if missing_vars:
 
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
-
+from sqlalchemy import text
 # Blueprint registration
 from routes import register_routes
 
@@ -336,6 +336,25 @@ def set_language():
 @app.route("/api/health")
 def api_health():
     return {"status": "ok"}
+
+@app.route('/api/readiness')
+def readiness():
+    try:
+        # Check database connection
+        get_db().execute(text("SELECT 1"))
+
+        # Optionally, check Redis connection if you're using it
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            r = get_redis_client()
+            if r:
+                r.ping()
+
+        return {"status": "ready"}, 200
+    except Exception as e:
+        # Log the specific error for debugging (consider using the logger module)
+        # print(f"Readiness check failed: {e}")
+        return {"status": "not ready", "error": str(e)}, 503
 
 @app.route("/api/refresh", methods=["POST"])
 @jwt_required(refresh=True)
