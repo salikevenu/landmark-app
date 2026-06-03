@@ -47,6 +47,11 @@ if missing_vars:
 if os.getenv("FLASK_ENV") == "production" and not os.getenv("REDIS_URL"):
     raise RuntimeError("REDIS_URL is required in production")
 
+logger.info("===== ENVIRONMENT VARIABLES CHECK =====")
+logger.info(f"FLASK_ENV = {os.getenv('FLASK_ENV')}")
+logger.info(f"REDIS_URL is set: {bool(os.getenv('REDIS_URL'))}")
+logger.info(f"REDIS_URL first 20 chars: {str(os.getenv('REDIS_URL'))[:20] if os.getenv('REDIS_URL') else 'None'}")
+
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db
 
