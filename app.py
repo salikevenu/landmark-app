@@ -474,7 +474,6 @@ add_security_headers(app)
 # ------------------------------
 from extensions import init_extensions
 limiter, razor_client = init_extensions(app)
-register_routes(app)
 
 @app.route("/privacy")
 def privacy_policy():

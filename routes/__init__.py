@@ -14,7 +14,7 @@ from .wallet_routes import wallet_bp
 
 def register_routes(app):
 
-    app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(auth_bp, url_prefix="/api/auth", name="main_auth")
     app.register_blueprint(listing_bp, url_prefix="/api/listing")
     app.register_blueprint(nearby_bp, url_prefix="/api/nearby")
     app.register_blueprint(payment_bp, url_prefix="/api/payment")
