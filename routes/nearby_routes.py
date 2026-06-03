@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from services.nearby_service import find_nearby_listings
-from extensions import limiter
+from app import limiter
 from services.geo_service import find_nearby_friends
 from flask_jwt_extended import jwt_required
 
