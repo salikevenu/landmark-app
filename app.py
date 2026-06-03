@@ -25,6 +25,8 @@ from werkzeug.exceptions import HTTPException
 
 from language.translations import TRANSLATIONS
 
+from extensions import init_extensions, limiter, get_razorpay_client   # but note limiter is None initially
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +38,6 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # === PRODUCTION VALIDATION ===
-import os
 
 REQUIRED_ENV_VARS = ["SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"]
 missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
@@ -78,6 +79,12 @@ else:
     )
     logger.warning("⚠️ REDIS_URL not set. Falling back to in-memory rate limiting. NOT FOR PRODUCTION!")
 
+# Initialize extensions (this will set the global limiter)
+init_extensions(app)
+
+# Now you can import routes (after extensions are initialized)
+from routes import register_routes
+register_routes(app)
 
 # ------------------------------
 # Configuration (JWT & uploads)
@@ -115,8 +122,6 @@ os.makedirs("static/qrcodes", exist_ok=True)
 # app.py – after app initialization, before routes
 
 from functools import lru_cache
-
-from routes import register_routes
 
 # Optional: provide a module-level proxy that throws when accessed
 def __getattr__(name):

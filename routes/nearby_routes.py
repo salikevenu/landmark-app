@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from services.nearby_service import find_nearby_listings
-from app import limiter
+from extensions import limiter
 from services.geo_service import find_nearby_friends
 from flask_jwt_extended import jwt_required
 
@@ -13,7 +13,6 @@ def safe_limit(limit_value):
             return limiter.limit(limit_value)(f)
         return f
     return decorator
-
 
 @nearby_bp.route("/nearby", methods=["GET"])
 @jwt_required()
