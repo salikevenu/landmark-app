@@ -9,6 +9,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Add Redis service (required for production validation)
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s
+
     steps:
     - uses: actions/checkout@v4
 
@@ -27,24 +36,23 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Verify app import with env vars
+    - name: Verify app import with production‑like env vars
       env:
-        DATABASE_URL: sqlite:///test.db
-        SECRET_KEY: test-secret
-        JWT_SECRET_KEY: test-jwt-secret
-        JWT_TOKEN_LOCATION: headers
-        LIMITER_STORAGE_URI: memory://
+        FLASK_ENV: production                # 👈 real production config
+        SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+        DATABASE_URL: sqlite:///test.db      # or use PostgreSQL service
         REDIS_URL: redis://localhost:6379/0
+        JWT_TOKEN_LOCATION: headers
+        LIMITER_STORAGE_URI: redis://localhost:6379/0   # match Redis
       run: |
         python -c "
         import sys, traceback
         try:
             from app import app
-            logger.info('SUCCESS: App imports OK')
+            print('SUCCESS: App imports OK with production config')
         except Exception:
-            error_msg = traceback.format_exc()
-            logger.info('FAILED:', file=sys.stderr)
-            logger.info(f'::error::{error_msg}', file=sys.stderr)
+            traceback.print_exc()
             sys.exit(1)
         "
 
