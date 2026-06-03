@@ -59,19 +59,19 @@ app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
 # ---------- Rate Limiting (production Redis) ----------
 redis_url = os.getenv("REDIS_URL")
-if not redis_url:
-    if os.getenv("CI") == "true":
-        redis_url = "redis://localhost:6379/0"
-    elif os.getenv("FLASK_ENV") == "production":
-        raise RuntimeError("REDIS_URL environment variable is required in production")
-    else:
-        redis_url = "memory://"
-        logger.warning("Using memory rate limiting – not suitable for production")
+if not redis_url and os.getenv("CI") == "true":
+    redis_url = "redis://localhost:6379/0"
+elif not redis_url and os.getenv("FLASK_ENV") == "production":
+    raise RuntimeError("REDIS_URL environment variable is required in production")
+elif not redis_url:
+    redis_url = "memory://"
+    logger.warning("Falling back to memory rate limiting – NOT for production")
 
+# Force the storage URI – must be a clean URL
 limiter = Limiter(
     get_remote_address,
     app=app,
-    storage_uri=redis_url,           # must be a clean URL (no extra text)
+    storage_uri=redis_url,          # <-- this line must be present
     default_limits=["200 per day", "50 per hour"]
 )
 
