@@ -1,27 +1,17 @@
 # extensions.py
-
 import os
 import razorpay
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 
-# ✅ GLOBAL VARIABLES
-limiter = Limiter(key_func=get_remote_address)
-razor_client = None   # ✅ ADD THIS
+razor_client = None
 
 def init_extensions(app):
     global razor_client
-
-    limiter.init_app(app)
-
     razor_client = razorpay.Client(auth=(
         os.getenv("RAZORPAY_KEY_ID"),
         os.getenv("RAZORPAY_KEY_SECRET")
     ))
-
-    return limiter, razor_client
-
-import razorpay, os
+    # Return only the razor client (limiter is now in app.py)
+    return razor_client
 
 def get_razorpay_client():
     return razorpay.Client(auth=(
