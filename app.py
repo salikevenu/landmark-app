@@ -57,23 +57,26 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
-# ---------- Rate Limiting (production Redis) ----------
+# Use `getenv` to safely get the URL; it will be `None` if the variable isn't set.
 redis_url = os.getenv("REDIS_URL")
-if not redis_url and os.getenv("CI") == "true":
-    redis_url = "redis://localhost:6379/0"
-elif not redis_url and os.getenv("FLASK_ENV") == "production":
-    raise RuntimeError("REDIS_URL environment variable is required in production")
-elif not redis_url:
-    redis_url = "memory://"
-    logger.warning("Falling back to memory rate limiting – NOT for production")
 
-# Force the storage URI – must be a clean URL
-limiter = Limiter(
-    get_remote_address,
-    app=app,
-    storage_uri=redis_url,          # <-- this line must be present
-    default_limits=["200 per day", "50 per hour"]
-)
+# This is the correct way to configure a production Redis backend:
+if redis_url:
+    limiter = Limiter(
+        get_remote_address,
+        app=app,
+        storage_uri=redis_url, # 👈 'storage_uri' is the correct parameter
+        default_limits=["200 per day", "50 per hour"]
+    )
+    logger.info("🚀 Production rate limiting with Redis configured.")
+else:
+    # Fallback only for development. In production, this should not happen.
+    limiter = Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["200 per day", "50 per hour"]
+    )
+    logger.warning("⚠️ REDIS_URL not set. Falling back to in-memory rate limiting. NOT FOR PRODUCTION!")
 
 
 # ------------------------------
