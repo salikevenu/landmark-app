@@ -76,3 +76,8 @@ def process_referral_commission(referred_user_id, payment_amount):
         })
 
     conn.commit()
+
+# For backward compatibility with existing imports
+def next_saturday_6pm_ist():
+    """Legacy wrapper – returns next Saturday 6pm IST as UTC."""
+    return get_unlock_utc(datetime.utcnow())    
