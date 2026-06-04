@@ -308,13 +308,12 @@ def verify_otp():
 # =================================
 # LOGOUT (stateless)
 # =================================
-from flask_jwt_extended import unset_access_cookies, unset_refresh_cookies
+from flask_jwt_extended import unset_jwt_cookies
 
 @auth_bp.route("/logout", methods=["POST"])
 def logout():
     response = jsonify({"message": "Logged out successfully"})
-    unset_access_cookies(response)
-    unset_refresh_cookies(response)
+    unset_jwt_cookies(response)
     return response, 200
 
 
