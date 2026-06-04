@@ -32,27 +32,30 @@ auth_bp = Blueprint("auth", __name__)
 def get_message_central_token():
     """Fetch a fresh token from Message Central (valid for 24 hours)."""
     url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
-    
+
     customer_id = os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID")
-    api_key = os.getenv("MESSAGE_CENTRAL_API_KEY")
     email = os.getenv("MESSAGE_CENTRAL_EMAIL")
-    
-    if not all([customer_id, api_key, email]):
-        current_app.logger.error("Missing Message Central credentials (customerId/apiKey/email)")
+    password = os.getenv("MESSAGE_CENTRAL_PASSWORD")  # Use your account password
+
+    if not all([customer_id, email, password]):
+        current_app.logger.error("Missing Message Central credentials")
         return None
-    
-    # Base64 encode the API key
-    encoded_key = base64.b64encode(api_key.encode('utf-8')).decode('utf-8')
-    
+
+    # Base64 encode the account password
+    base64_encoded_password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
+
+    # Construct the correct URL with all required parameters
     params = {
+        "country": "IN",          # Use 'IN' for the country code
         "customerId": customer_id,
-        "key": encoded_key,
-        "scope": "NEW",
-        "country": "91",
-        "email": email
+        "email": email,
+        "key": base64_encoded_password, # The encoded password
+        "scope": "NEW"
     }
+
     try:
-        response = requests.get(url, headers={"accept": "*/*"}, params=params, timeout=10)
+        # The API documentation indicates this should be a POST request
+        response = requests.post(url, params=params, timeout=10)
         response.raise_for_status()
         token = response.json().get("token")
         if token:
