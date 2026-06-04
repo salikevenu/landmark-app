@@ -3,6 +3,7 @@ import secrets
 import requests
 import redis
 import logging
+import base64  # <-- added
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from functools import wraps
@@ -31,11 +32,24 @@ auth_bp = Blueprint("auth", __name__)
 def get_message_central_token():
     """Fetch a fresh token from Message Central (valid for 24 hours)."""
     url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
+    
+    customer_id = os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID")
+    api_key = os.getenv("MESSAGE_CENTRAL_API_KEY")
+    email = os.getenv("MESSAGE_CENTRAL_EMAIL")
+    
+    if not all([customer_id, api_key, email]):
+        current_app.logger.error("Missing Message Central credentials (customerId/apiKey/email)")
+        return None
+    
+    # Base64 encode the API key
+    encoded_key = base64.b64encode(api_key.encode('utf-8')).decode('utf-8')
+    
     params = {
-        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
-        "key": os.getenv("MESSAGE_CENTRAL_API_KEY"),
+        "customerId": customer_id,
+        "key": encoded_key,
         "scope": "NEW",
-        "country": "91"
+        "country": "91",
+        "email": email
     }
     try:
         response = requests.get(url, headers={"accept": "*/*"}, params=params, timeout=10)
@@ -50,7 +64,7 @@ def get_message_central_token():
     except Exception as e:
         current_app.logger.exception(f"Token fetch failed: {e}")
         return None
-    
+
 # =================================
 # HELPER: Generate unique referral code
 # =================================
@@ -148,7 +162,7 @@ def register():
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": "Internal server error"}), 500
-    
+
 # =================================
 # SEND OTP
 # =================================
@@ -211,7 +225,7 @@ def send_otp():
         # Clean up stored OTP since sending failed
         redis_client.delete(redis_key)
         return jsonify({"error": "Failed to send OTP, please try again"}), 500
-	
+
 # =================================
 # VERIFY OTP & LOGIN/REGISTER
 # =================================
