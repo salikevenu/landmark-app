@@ -27,54 +27,11 @@ from flask_jwt_extended import (
 auth_bp = Blueprint("auth", __name__)
 
 # =================================
-# HELPER: Get Message Central Token
-# =================================
-def get_message_central_token():
-    """Fetch a fresh token from Message Central (valid for 24 hours)."""
-    url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
-
-    customer_id = os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID")
-    email = os.getenv("MESSAGE_CENTRAL_EMAIL")
-    password = os.getenv("MESSAGE_CENTRAL_PASSWORD")  # Use your account password
-
-    if not all([customer_id, email, password]):
-        current_app.logger.error("Missing Message Central credentials")
-        return None
-
-    # Base64 encode the account password
-    base64_encoded_password = base64.b64encode(password.encode('utf-8')).decode('utf-8')
-
-    # Construct the correct URL with all required parameters
-    params = {
-        "country": "IN",          # Use 'IN' for the country code
-        "customerId": customer_id,
-        "email": email,
-        "key": base64_encoded_password, # The encoded password
-        "scope": "NEW"
-    }
-
-    try:
-        # The API documentation indicates this should be a POST request
-        response = requests.post(url, params=params, timeout=10)
-        response.raise_for_status()
-        token = response.json().get("token")
-        if token:
-            current_app.logger.info("Message Central token acquired")
-            return token
-        else:
-            current_app.logger.error("No token in response")
-            return None
-    except Exception as e:
-        current_app.logger.exception(f"Token fetch failed: {e}")
-        return None
-
-# =================================
 # HELPER: Generate unique referral code
 # =================================
 def generate_referral_code():
     """Generate a random 8-character alphanumeric code"""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-
 
 # =================================
 # HELPER: Validate phone number
@@ -82,7 +39,6 @@ def generate_referral_code():
 def validate_phone(phone):
     """Basic Indian phone number validation (10 digits, starts with 6-9)"""
     return bool(re.match(r'^[6-9]\d{9}$', phone))
-
 
 # =========================
 # REGISTER (GET = page, POST = API)
@@ -188,12 +144,12 @@ def send_otp():
     redis_client = get_redis_client()
     redis_client.setex(redis_key, 300, otp_code)  # 300 seconds = 5 minutes
 
-    # 3. Get authentication token from Message Central
-    auth_token = get_message_central_token()
+    # 3. Get the static authentication token from environment
+    auth_token = os.getenv("MESSAGE_CENTRAL_AUTH_TOKEN")
     if not auth_token:
-        # If token fails, delete the stored OTP to avoid inconsistency
+        current_app.logger.error("MESSAGE_CENTRAL_AUTH_TOKEN not set in environment")
         redis_client.delete(redis_key)
-        return jsonify({"error": "OTP service authentication failed"}), 500
+        return jsonify({"error": "OTP service configuration error"}), 500
 
     # 4. Send OTP via Message Central VerifyNow API (v3)
     send_url = "https://cpaas.messagecentral.com/verification/v3/send"
@@ -208,6 +164,10 @@ def send_otp():
 
     try:
         response = requests.post(send_url, headers=headers, params=params, timeout=15)
+        # Log the response for debugging (place before raise_for_status to see error details)
+        current_app.logger.info(f"Message Central response status: {response.status_code}")
+        current_app.logger.info(f"Message Central response body: {response.text}")
+
         response.raise_for_status()
         resp_data = response.json()
         verification_id = resp_data.get("verificationId")
@@ -222,15 +182,12 @@ def send_otp():
             "status": "success",
             "message": "OTP sent successfully"
         }), 200
-        # After response = requests.post(...)
-        current_app.logger.info(f"Message Central response status: {response.status_code}")
-        current_app.logger.info(f"Message Central response body: {response.text}")
+
     except requests.exceptions.RequestException as e:
         current_app.logger.exception(f"Message Central send failed: {e}")
         # Clean up stored OTP since sending failed
         redis_client.delete(redis_key)
         return jsonify({"error": "Failed to send OTP, please try again"}), 500
-
 # =================================
 # VERIFY OTP & LOGIN/REGISTER
 # =================================
