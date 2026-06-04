@@ -494,17 +494,6 @@ def privacy_policy():
 def terms_of_service():
     return render_template("terms.html")
 
-@app.route('/temp-token')
-def temp_token():
-    if os.getenv("FLASK_ENV") != "development":
-        return {"error": "Not allowed"}, 404
-    token = create_access_token(
-        identity='9959543954',
-        additional_claims={"role": "admin"},
-        expires_delta=timedelta(days=30)
-    )
-    return {"token": token}
-
 # ------------------------------
 # Run the app
 # ------------------------------
