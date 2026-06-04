@@ -222,7 +222,9 @@ def send_otp():
             "status": "success",
             "message": "OTP sent successfully"
         }), 200
-
+        # After response = requests.post(...)
+        current_app.logger.info(f"Message Central response status: {response.status_code}")
+        current_app.logger.info(f"Message Central response body: {response.text}")
     except requests.exceptions.RequestException as e:
         current_app.logger.exception(f"Message Central send failed: {e}")
         # Clean up stored OTP since sending failed
