@@ -1,30 +1,19 @@
-# services/referral_commission.py
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.init_db import get_db
 
 def get_unlock_utc(referral_utc: datetime):
-    """
-    Return the UTC datetime when this referral commission should be unlocked.
-    - Normal window (Saturday 6pm IST to Friday 6pm IST): unlock on next Saturday 6pm IST.
-    - Freeze window (Friday 6pm IST to Saturday 6pm IST): unlock on Saturday after next (skip one week).
-    """
-    # Convert referral UTC to IST (UTC+5:30)
+    """Return UTC unlock datetime for a referral commission."""
     ist = referral_utc + timedelta(hours=5, minutes=30)
-    
-    # Find the next Saturday at 18:00 IST
-    days_until_saturday = (5 - ist.weekday()) % 7   # Monday=0, Saturday=5
+    days_until_saturday = (5 - ist.weekday()) % 7
     next_saturday_ist = ist + timedelta(days=days_until_saturday)
     next_saturday_ist = next_saturday_ist.replace(hour=18, minute=0, second=0, microsecond=0)
-    
-    # Check freeze window: Friday after 6pm OR Saturday before 6pm
+
     is_friday_after_6pm = (ist.weekday() == 4 and ist.hour >= 18)
     is_saturday_before_6pm = (ist.weekday() == 5 and ist.hour < 18)
     if is_friday_after_6pm or is_saturday_before_6pm:
-        # Freeze: add one extra week
         next_saturday_ist += timedelta(days=7)
-    
-    # Convert back to UTC
+
     return next_saturday_ist - timedelta(hours=5, minutes=30)
 
 def process_referral_commission(referred_user_id, payment_amount):
@@ -38,13 +27,10 @@ def process_referral_commission(referred_user_id, payment_amount):
         return
 
     referrer_id = user._mapping["referred_by"]
-    
-    # Use current UTC time as the referral commission creation time
     referral_time = datetime.utcnow()
     unlock_utc = get_unlock_utc(referral_time)
     unlock_at_str = unlock_utc.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 10% one-time bonus (if not already paid)
     if not user._mapping["first_sub_commission_paid"]:
         bonus = round(payment_amount * 0.10, 2)
         if bonus > 0:
@@ -61,7 +47,6 @@ def process_referral_commission(referred_user_id, payment_amount):
             conn.execute(text("UPDATE users SET first_sub_commission_paid = 1 WHERE id = :uid"),
                          {"uid": referred_user_id})
 
-    # 5% recurring commission
     recurring = round(payment_amount * 0.05, 2)
     if recurring > 0:
         conn.execute(text("""
@@ -77,7 +62,7 @@ def process_referral_commission(referred_user_id, payment_amount):
 
     conn.commit()
 
-# For backward compatibility with existing imports
+# ----- LEGACY WRAPPER for wallet_routes.py -----
 def next_saturday_6pm_ist():
-    """Legacy wrapper – returns next Saturday 6pm IST as UTC."""
-    return get_unlock_utc(datetime.utcnow())    
+    """Return next Saturday 6pm IST (as UTC datetime)."""
+    return get_unlock_utc(datetime.utcnow())
