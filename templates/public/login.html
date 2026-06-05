@@ -138,123 +138,147 @@ label[for="rememberMe"]:hover {
             <label for="rememberMe">Remember me (stay logged in until you logout)</label>
         </div>
 
+        <!-- Invisible reCAPTCHA container (Firebase requirement) -->
+        <div id="recaptcha-container"></div>
+
         <button class="btn-primary" id="actionBtn">Send OTP</button>
 
         <p id="statusMessage" class="status-text"></p>
     </div>
 </div>
 
-<script>
-let currentStep = "phone";
-let phoneNumber = "";
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getAuth, signInWithPhoneNumber, RecaptchaVerifier } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
-const phoneInput = document.getElementById("phone");
-const otpInput = document.getElementById("otp");
-const otpGroup = document.getElementById("otpGroup");
-const actionBtn = document.getElementById("actionBtn");
-const statusMsg = document.getElementById("statusMessage");
-const stepLabel = document.getElementById("stepLabel");
-const rememberMeCheckbox = document.getElementById("rememberMe");
+  // ========== FIREBASE CONFIGURATION (replace with your own) ==========
+  // You can get this from Firebase Console → Project Settings → General → Your apps
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "landmark-dde55.firebaseapp.com",
+    projectId: "landmark-dde55",
+    storageBucket: "landmark-dde55.firebasestorage.app",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID",
+    measurementId: "YOUR_MEASUREMENT_ID"
+  };
+  // ====================================================================
 
-function setStatus(text, isError = false) {
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+
+  let currentStep = "phone";
+  let confirmationResult = null;
+
+  const phoneInput = document.getElementById("phone");
+  const otpGroup = document.getElementById("otpGroup");
+  const otpInput = document.getElementById("otp");
+  const actionBtn = document.getElementById("actionBtn");
+  const statusMsg = document.getElementById("statusMessage");
+  const stepLabel = document.getElementById("stepLabel");
+  const rememberMeCheckbox = document.getElementById("rememberMe");
+
+  function setStatus(text, isError = false) {
     statusMsg.innerText = text;
     statusMsg.style.color = isError ? "#ff6b6b" : "#6eff8e";
-}
+  }
 
-function isValidPhone(phone) {
+  function isValidPhone(phone) {
     return /^[6-9]\d{9}$/.test(phone);
-}
+  }
 
-async function sendOTP(phone) {
+  async function sendOTPFirebase(phone) {
+    const fullPhone = "+91" + phone;
     try {
-        const res = await fetch("/api/auth/send-otp", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ phone })
-        });
-        const data = await res.json();
-        if (res.ok && data.status === "success") {
-            return true;
+      // Create invisible reCAPTCHA (no user interaction)
+      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
+        size: "invisible"
+      });
+      confirmationResult = await signInWithPhoneNumber(auth, fullPhone, recaptcha);
+      setStatus("OTP sent! Check your phone.");
+      return true;
+    } catch (err) {
+      console.error(err);
+      setStatus(err.message || "Failed to send OTP", true);
+      return false;
+    }
+  }
+
+  async function verifyOTPFirebase(otp, phone, rememberMe) {
+    if (!confirmationResult) {
+      setStatus("No OTP request found. Please try again.", true);
+      return false;
+    }
+    try {
+      const result = await confirmationResult.confirm(otp);
+      const idToken = await result.user.getIdToken();
+
+      // Call your backend /firebase-login endpoint
+      const res = await fetch("/api/auth/firebase-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken, phone, remember_me: rememberMe })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.status === "success") {
+        // Store tokens (optional, but used in some parts of your app)
+        if (data.access_token) localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+
+        // Redirect based on role
+        if (data.user.role === "admin") {
+          window.location.href = "/admin/dashboard";
         } else {
-            setStatus(data.error || "Failed to send OTP", true);
-            return false;
+          window.location.href = "/api/user/dashboard";
         }
-    } catch {
-        setStatus("Network error", true);
+        return true;
+      } else {
+        setStatus(data.error || "Login failed", true);
         return false;
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus("Invalid OTP or expired", true);
+      return false;
     }
-}
+  }
 
-async function verifyOTP(phone, otp) {
-    const rememberMe = rememberMeCheckbox ? rememberMeCheckbox.checked : false;
-
-    try {
-        const res = await fetch("/api/auth/verify-otp", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ phone, otp, remember_me: rememberMe })
-        });
-        const data = await res.json();
-        if (res.ok) {
-            // Store tokens
-            if (data.access_token) localStorage.setItem("access_token", data.access_token);
-            if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-
-            // 👇 Get current user info to check role
-            const meRes = await fetch("/api/auth/me", {
-                headers: { "Authorization": "Bearer " + data.access_token }
-            });
-            const userData = await meRes.json();
-
-            // Redirect based on role
-            if (userData.role === "admin") {
-                window.location.href = "/admin/dashboard";
-            } else {
-                window.location.href = "/api/user/dashboard";
-            }
-        } else {
-            setStatus(data.error || "Invalid OTP", true);
-        }
-    } catch {
-        setStatus("Network error", true);
-    }
-}
-
-actionBtn.addEventListener("click", async () => {
+  actionBtn.addEventListener("click", async () => {
     if (currentStep === "phone") {
-        const phone = phoneInput.value.trim();
-        if (!isValidPhone(phone)) {
-            setStatus("Enter valid phone number", true);
-            return;
-        }
-        const sent = await sendOTP(phone);
-        if (sent) {
-            phoneNumber = phone;
-            currentStep = "otp";
-            otpGroup.style.display = "block";
-            actionBtn.innerText = "Verify OTP";
-            stepLabel.innerText = "Enter 6‑digit OTP";
-            // Clear any previous OTP and checkbox state
-            otpInput.value = "";
-            if (rememberMeCheckbox) rememberMeCheckbox.checked = false;
-        }
+      const phone = phoneInput.value.trim();
+      if (!isValidPhone(phone)) {
+        setStatus("Enter valid 10‑digit phone number", true);
+        return;
+      }
+      const success = await sendOTPFirebase(phone);
+      if (success) {
+        currentStep = "otp";
+        phoneInput.disabled = true;
+        otpGroup.style.display = "block";
+        actionBtn.innerText = "Verify OTP";
+        stepLabel.innerText = "Enter 6‑digit OTP";
+        otpInput.value = "";
+        if (rememberMeCheckbox) rememberMeCheckbox.checked = false;
+      }
     } else {
-        const otp = otpInput.value.trim();
-        if (otp.length !== 6) {
-            setStatus("Enter valid OTP", true);
-            return;
-        }
-        await verifyOTP(phoneNumber, otp);
+      const otp = otpInput.value.trim();
+      if (otp.length !== 6) {
+        setStatus("Enter valid 6‑digit OTP", true);
+        return;
+      }
+      const rememberMe = rememberMeCheckbox ? rememberMeCheckbox.checked : false;
+      await verifyOTPFirebase(otp, phoneInput.value.trim(), rememberMe);
     }
-});
+  });
 
-// Enter key support
-phoneInput.addEventListener("keypress", e => {
+  // Enter key support
+  phoneInput.addEventListener("keypress", e => {
     if (e.key === "Enter") actionBtn.click();
-});
-otpInput.addEventListener("keypress", e => {
+  });
+  otpInput.addEventListener("keypress", e => {
     if (e.key === "Enter") actionBtn.click();
-});
+  });
 </script>
 
 {% endblock %}
