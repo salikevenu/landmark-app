@@ -68,7 +68,7 @@ node_modules/
 Pipfile.lock
 
 # Firebase / sensitive credentials
-config/serviceAccountKey.json
+config/firebase-service-account.json
 
 # ============================================
 # Uploads & Generated Files (add at the end)
