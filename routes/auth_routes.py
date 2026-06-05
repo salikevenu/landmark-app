@@ -132,22 +132,21 @@ def send_otp():
 
     if not phone:
         return jsonify({"error": "Phone number required"}), 400
-
     if not validate_phone(phone):
         return jsonify({"error": "Invalid phone number"}), 400
 
-    # Generate OTP and store in Redis
+    # Generate your own OTP
     otp_code = f"{secrets.randbelow(1000000):06d}"
     redis_key = f"otp:{phone}"
     redis_client = get_redis_client()
     redis_client.setex(redis_key, 300, otp_code)
 
-    # Get static token from environment
+    # Static token from environment
     auth_token = os.getenv("MESSAGE_CENTRAL_AUTH_TOKEN")
     if not auth_token:
         current_app.logger.error("MESSAGE_CENTRAL_AUTH_TOKEN missing")
         redis_client.delete(redis_key)
-        return jsonify({"error": "OTP service configuration error"}), 500
+        return jsonify({"error": "OTP service config error"}), 500
 
     send_url = "https://cpaas.messagecentral.com/verification/v3/send"
     headers = {"authToken": auth_token}
@@ -156,34 +155,29 @@ def send_otp():
         "countryCode": "91",
         "mobileNumber": phone,
         "flowType": "SMS",
-        "otpLength": 6
+        "otpLength": 6,
+        "otp": otp_code          # <-- KEY FIX: send your OTP
     }
 
     try:
         response = requests.post(send_url, headers=headers, params=params, timeout=15)
-        current_app.logger.info(f"Status: {response.status_code}")
-        current_app.logger.info(f"Response text: {response.text}")
+        current_app.logger.info(f"Send OTP response status: {response.status_code}")
+        current_app.logger.info(f"Send OTP response body: {response.text}")
 
-        # If status is 200, treat as success regardless of body content
         if response.status_code == 200:
-            # Try to parse JSON if available (some responses have it, some don't)
+            # optional: store verificationId if returned
             try:
-                resp_data = response.json()
-                verification_id = resp_data.get("verificationId") if resp_data else None
-                if verification_id:
-                    redis_client.setex(f"verification:{phone}", 300, verification_id)
+                resp_json = response.json()
+                if resp_json and resp_json.get("verificationId"):
+                    redis_client.setex(f"verification:{phone}", 300, resp_json["verificationId"])
             except:
-                pass  # No JSON, ignore
-            current_app.logger.info(f"OTP sent to {phone}")
+                pass
             return jsonify({"status": "success", "message": "OTP sent successfully"}), 200
         else:
-            # Non-200 status -> error
-            current_app.logger.error(f"Message Central error: {response.text}")
             redis_client.delete(redis_key)
-            return jsonify({"error": "Failed to send OTP, please try again"}), 500
-
-    except requests.exceptions.RequestException as e:
-        current_app.logger.exception(f"Request failed: {e}")
+            return jsonify({"error": "Failed to send OTP"}), 500
+    except Exception as e:
+        current_app.logger.exception(f"Send OTP error: {e}")
         redis_client.delete(redis_key)
         return jsonify({"error": "Network error, please try again"}), 500
 # =================================
