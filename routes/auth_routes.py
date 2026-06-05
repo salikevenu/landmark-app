@@ -125,6 +125,9 @@ def register():
 # =================================
 # SEND OTP
 # =================================
+# =================================
+# SEND OTP – using Message Central
+# =================================
 @auth_bp.route("/send-otp", methods=["POST"])
 def send_otp():
     data = request.get_json() or {}
@@ -135,17 +138,17 @@ def send_otp():
     if not validate_phone(phone):
         return jsonify({"error": "Invalid phone number"}), 400
 
-    # Generate your own OTP
-    otp_code = f"{secrets.randbelow(1000000):06d}"
-    redis_key = f"otp:{phone}"
     redis_client = get_redis_client()
-    redis_client.setex(redis_key, 300, otp_code)
+    pending_key = f"otp_pending:{phone}"
 
-    # Static token from environment
+    # Rate limit: allow only one OTP per minute
+    if redis_client.get(pending_key):
+        return jsonify({"error": "OTP already sent. Please wait 60 seconds."}), 429
+
+    # Get static token from environment
     auth_token = os.getenv("MESSAGE_CENTRAL_AUTH_TOKEN")
     if not auth_token:
         current_app.logger.error("MESSAGE_CENTRAL_AUTH_TOKEN missing")
-        redis_client.delete(redis_key)
         return jsonify({"error": "OTP service config error"}), 500
 
     send_url = "https://cpaas.messagecentral.com/verification/v3/send"
@@ -155,33 +158,34 @@ def send_otp():
         "countryCode": "91",
         "mobileNumber": phone,
         "flowType": "SMS",
-        "otpLength": 6,
-        "otp": otp_code          # <-- KEY FIX: send your OTP
+        "otpLength": 6
+        # Do NOT send "otp" parameter – let Message Central generate its own
     }
 
     try:
         response = requests.post(send_url, headers=headers, params=params, timeout=15)
-        current_app.logger.info(f"Send OTP response status: {response.status_code}")
-        current_app.logger.info(f"Send OTP response body: {response.text}")
+        current_app.logger.info(f"Send OTP response: {response.status_code} - {response.text}")
 
         if response.status_code == 200:
-            # optional: store verificationId if returned
+            # Mark that an OTP is pending for this phone (valid for 5 minutes)
+            redis_client.setex(pending_key, 300, "pending")
+            # Also store a reference ID if returned (optional)
             try:
                 resp_json = response.json()
                 if resp_json and resp_json.get("verificationId"):
-                    redis_client.setex(f"verification:{phone}", 300, resp_json["verificationId"])
+                    redis_client.setex(f"verification_id:{phone}", 300, resp_json["verificationId"])
             except:
                 pass
             return jsonify({"status": "success", "message": "OTP sent successfully"}), 200
         else:
-            redis_client.delete(redis_key)
-            return jsonify({"error": "Failed to send OTP"}), 500
+            return jsonify({"error": "Failed to send OTP, please try again"}), 500
     except Exception as e:
         current_app.logger.exception(f"Send OTP error: {e}")
-        redis_client.delete(redis_key)
         return jsonify({"error": "Network error, please try again"}), 500
+
+
 # =================================
-# VERIFY OTP & LOGIN/REGISTER
+# VERIFY OTP – using Message Central
 # =================================
 @auth_bp.route("/verify-otp", methods=["POST"])
 def verify_otp():
@@ -194,85 +198,106 @@ def verify_otp():
     if not phone or not otp:
         return jsonify({"error": "Phone and OTP required"}), 400
 
-    # ---------- OTP validation using Redis ----------
     redis_client = get_redis_client()
-    redis_key = f"otp:{phone}"
-    stored_otp = redis_client.get(redis_key)
+    pending_key = f"otp_pending:{phone}"
 
-    # Allow a debug master OTP only if DEBUG is True (optional, remove in production)
-    if current_app.config.get('DEBUG') and otp == "000000":
-        # bypass OTP check
-        pass
-    else:
-        if not stored_otp:
-            return jsonify({"error": "No OTP requested or OTP expired"}), 400
-        if stored_otp.decode('utf-8') != otp:
-            return jsonify({"error": "Invalid OTP"}), 400
-        # OTP is correct – delete it immediately (one‑time use)
-        redis_client.delete(redis_key)
+    # Check if an OTP was actually requested (prevent brute force)
+    if not redis_client.get(pending_key):
+        return jsonify({"error": "No OTP requested or OTP expired"}), 400
 
-    # ---------- Find or create user ----------
-    conn = get_db()
-    user = conn.execute(
-        text("SELECT id, name, role, referral_code FROM users WHERE phone = :phone"),
-        {"phone": phone}
-    ).fetchone()
+    # Get static token
+    auth_token = os.getenv("MESSAGE_CENTRAL_AUTH_TOKEN")
+    if not auth_token:
+        current_app.logger.error("MESSAGE_CENTRAL_AUTH_TOKEN missing")
+        return jsonify({"error": "OTP service config error"}), 500
 
-    if user:
-        user_id = user._mapping["id"]
-        role = user._mapping["role"]
-        referral_code = user._mapping["referral_code"]
-    else:
-        referral_code = generate_referral_code()
-        result = conn.execute(text("""
-            INSERT INTO users (phone, name, role, referral_code, created_at)
-            VALUES (:phone, :name, 'free', :referral_code, CURRENT_TIMESTAMP)
-            RETURNING id
-        """), {
-            "phone": phone,
-            "name": name,
-            "referral_code": referral_code
-        })
-        user_id = result.fetchone()[0]
-        conn.commit()
-        role = "free"
+    verify_url = "https://cpaas.messagecentral.com/verification/v3/verify"
+    headers = {"authToken": auth_token}
+    params = {
+        "customerId": os.getenv("MESSAGE_CENTRAL_CUSTOMER_ID"),
+        "countryCode": "91",
+        "mobileNumber": phone,
+        "otp": otp
+    }
 
-    # ---------- JWT expiry based on remember_me ----------
-    if remember_me:
-        access_expires = timedelta(days=30)
-        refresh_expires = timedelta(days=365)
-    else:
-        access_expires = timedelta(minutes=15)
-        refresh_expires = timedelta(days=7)
+    try:
+        response = requests.post(verify_url, headers=headers, params=params, timeout=10)
+        current_app.logger.info(f"Verify OTP response: {response.status_code} - {response.text}")
+        resp_json = response.json() if response.text else {}
 
-    access_token = create_access_token(
-        identity=str(user_id),
-        additional_claims={"role": role, "phone": phone},
-        expires_delta=access_expires
-    )
-    refresh_token = create_refresh_token(
-        identity=str(user_id),
-        expires_delta=refresh_expires
-    )
+        if response.status_code == 200 and resp_json.get("isValid") == True:
+            # OTP is valid – delete the pending flag
+            redis_client.delete(pending_key)
 
-    response = jsonify({
-        "status": "success",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "user": {
-            "id": user_id,
-            "phone": phone,
-            "role": role,
-            "referral_code": referral_code
-        }
-    })
+            # ---------- Find or create user ----------
+            conn = get_db()
+            user = conn.execute(
+                text("SELECT id, name, role, referral_code FROM users WHERE phone = :phone"),
+                {"phone": phone}
+            ).fetchone()
 
-    # Attach tokens as secure cookies with matching max_age
-    set_access_cookies(response, access_token, max_age=access_expires)
-    set_refresh_cookies(response, refresh_token, max_age=refresh_expires)
+            if user:
+                user_id = user._mapping["id"]
+                role = user._mapping["role"]
+                referral_code = user._mapping["referral_code"]
+            else:
+                referral_code = generate_referral_code()
+                result = conn.execute(text("""
+                    INSERT INTO users (phone, name, role, referral_code, created_at)
+                    VALUES (:phone, :name, 'free', :referral_code, CURRENT_TIMESTAMP)
+                    RETURNING id
+                """), {
+                    "phone": phone,
+                    "name": name,
+                    "referral_code": referral_code
+                })
+                user_id = result.fetchone()[0]
+                conn.commit()
+                role = "free"
 
-    return response, 200
+            # ---------- JWT expiry based on remember_me ----------
+            if remember_me:
+                access_expires = timedelta(days=30)
+                refresh_expires = timedelta(days=365)
+            else:
+                access_expires = timedelta(minutes=15)
+                refresh_expires = timedelta(days=7)
 
+            access_token = create_access_token(
+                identity=str(user_id),
+                additional_claims={"role": role, "phone": phone},
+                expires_delta=access_expires
+            )
+            refresh_token = create_refresh_token(
+                identity=str(user_id),
+                expires_delta=refresh_expires
+            )
+
+            response_json = jsonify({
+                "status": "success",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "user": {
+                    "id": user_id,
+                    "phone": phone,
+                    "role": role,
+                    "referral_code": referral_code
+                }
+            })
+
+            # Attach tokens as secure cookies
+            set_access_cookies(response_json, access_token, max_age=access_expires)
+            set_refresh_cookies(response_json, refresh_token, max_age=refresh_expires)
+
+            return response_json, 200
+        else:
+            error_msg = resp_json.get("message", "Invalid OTP")
+            return jsonify({"error": error_msg}), 400
+
+    except Exception as e:
+        current_app.logger.exception(f"Verify OTP error: {e}")
+        return jsonify({"error": "Verification failed, please try again"}), 500
+    
 # =================================
 # LOGOUT (stateless)
 # =================================
