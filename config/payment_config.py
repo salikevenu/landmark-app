@@ -2,17 +2,28 @@
 
 import os
 
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+RAZORPAY_MODE = os.getenv("RAZORPAY_MODE", "test").lower()
+
+TEST_KEY_ID = os.getenv("RAZORPAY_TEST_KEY_ID")
+TEST_KEY_SECRET = os.getenv("RAZORPAY_TEST_KEY_SECRET")
+LIVE_KEY_ID = os.getenv("RAZORPAY_LIVE_KEY_ID")
+LIVE_KEY_SECRET = os.getenv("RAZORPAY_LIVE_KEY_SECRET")
+
+if RAZORPAY_MODE == "live":
+    RAZORPAY_KEY_ID = LIVE_KEY_ID
+    RAZORPAY_KEY_SECRET = LIVE_KEY_SECRET
+else:
+    RAZORPAY_KEY_ID = TEST_KEY_ID
+    RAZORPAY_KEY_SECRET = TEST_KEY_SECRET
+
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
-# Plan prices – values are in PAISA (Razorpay requirement)
 PLAN_PRICES = {
-    "service": 49900,   # ₹499
-    "basic":   99900,   # ₹999
-    "premium": 199900   # ₹1999
+    "service": 49900,
+    "basic":   99900,
+    "premium": 199900
 }
 
-# Convenience: same prices in rupees (for display / referral rewards)
 PLAN_PRICES_RUPEES = {
     "service": 499,
     "basic":   999,
@@ -24,5 +35,3 @@ PLAN_REWARDS = {
     "basic":   50,
     "premium": 100
 }
-
-MAX_MONTHLY_REFERRAL_EARNING = 5000
