@@ -16,7 +16,7 @@ else:
     RAZORPAY_KEY_ID = TEST_KEY_ID
     RAZORPAY_KEY_SECRET = TEST_KEY_SECRET
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("BASE_URL", "https://landmarkvts.in")
 
 PLAN_PRICES = {
     "service": 49900,
