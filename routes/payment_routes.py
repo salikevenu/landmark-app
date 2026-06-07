@@ -1,3 +1,4 @@
+# routes/payment.py
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
@@ -52,7 +53,8 @@ def create_order():
     return jsonify({
         "order_id": order["id"],
         "key": RAZORPAY_KEY_ID,
-        "amount": amount
+        "amount": amount,
+        "currency": "INR"
     })
 
 
@@ -89,14 +91,15 @@ def wallet_transactions():
 
 
 # ================================
-# Verify Payment
+# Verify Payment - FIXED
 # ================================
 @payment_bp.route("/verify-payment", methods=["POST"])
 @jwt_required()
 def verify_payment():
+    user_id = get_jwt_identity()  # ← GET USER ID FROM JWT
     data = request.json
-    result = verify_payment_service(data)
-    return result
+    result = verify_payment_service(data, user_id)  # ← PASS USER ID
+    return jsonify(result)  # ← ALWAYS RETURN JSON
 
 
 # ================================

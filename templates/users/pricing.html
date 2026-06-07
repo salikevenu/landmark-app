@@ -108,7 +108,7 @@
 
   async function startPayment(planType) {
     try {
-      const res = await fetch("/api/user/create-order", {
+      const res = await fetch("/api/payment/create-order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -129,7 +129,7 @@
         description: `Upgrade to ${planType}`,
         handler: async function(response) {
           // Verify payment
-          const verifyRes = await fetch("/api/user/verify-payment", {
+          const verifyRes = await fetch("/api/payment/verify-payment", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "include",

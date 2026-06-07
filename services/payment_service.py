@@ -1,3 +1,5 @@
+# services/payment_service.py
+
 import datetime
 from datetime import timedelta
 from sqlalchemy import text
@@ -32,36 +34,40 @@ def activate_subscription(phone, plan, days=30):
 # =========================
 # PROCESS PAYMENT (internal helper)
 # =========================
-def process_payment(user_id, payment_id, amount):
+def process_payment(user_id, payment_id, amount_in_rupees):
     conn = get_db()
     try:
-        # Start transaction
         conn.execute(text("BEGIN"))
+        
         # Check for duplicate payment_id
         existing = conn.execute(
             text("SELECT id FROM payments WHERE payment_id = :payment_id"),
             {"payment_id": payment_id}
         ).fetchone()
+        
         if existing:
             conn.execute(text("ROLLBACK"))
             return {"status": "duplicate"}
 
+        # Insert payment record (amount in rupees)
         conn.execute(text("""
-            INSERT INTO payments (user_id, payment_id, amount, status)
-            VALUES (:user_id, :payment_id, :amount, :status)
+            INSERT INTO payments (user_id, payment_id, amount, status, created_at)
+            VALUES (:user_id, :payment_id, :amount, :status, :created_at)
         """), {
             "user_id": user_id,
             "payment_id": payment_id,
-            "amount": amount,
-            "status": "verified"
+            "amount": amount_in_rupees,
+            "status": "verified",
+            "created_at": datetime.datetime.utcnow()
         })
+        
         conn.execute(text("COMMIT"))
     except Exception as e:
         conn.execute(text("ROLLBACK"))
         return {"error": str(e)}
 
     # Credit wallet after successful payment
-    credit_wallet(user_id, amount, "Razorpay Payment", payment_id)
+    credit_wallet(user_id, amount_in_rupees, "Razorpay Payment", payment_id)
     return {"status": "success"}
 
 
@@ -78,15 +84,16 @@ def verify_payment_service(data, user_id):
     razorpay_signature = data.get("razorpay_signature")
     plan = data.get("plan")
 
-    # 1. Required fields
+    # 1. Required fields validation
     if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, plan]):
-        return {"error": "Missing required fields"}, 400
+        return {"error": "Missing required fields"}
 
     # 2. Plan validation
     if plan not in PLAN_PRICES:
-        return {"error": "Invalid plan selected"}, 400
+        return {"error": "Invalid plan selected"}
 
-    expected_amount = PLAN_PRICES[plan]   # amount in paisa
+    expected_amount_paisa = PLAN_PRICES[plan]  # amount in paisa
+    expected_amount_rupees = expected_amount_paisa / 100
 
     # 3. Signature verification
     try:
@@ -95,21 +102,21 @@ def verify_payment_service(data, user_id):
             "razorpay_payment_id": razorpay_payment_id,
             "razorpay_signature": razorpay_signature
         })
-    except Exception:
-        return {"error": "Payment signature verification failed"}, 400
+    except Exception as e:
+        return {"error": "Payment signature verification failed"}
 
     # 4. Fetch order from Razorpay
     try:
         order = razor_client.order.fetch(razorpay_order_id)
-    except Exception:
-        return {"error": "Unable to fetch order"}, 400
+    except Exception as e:
+        return {"error": "Unable to fetch order"}
 
-    # 5. Amount validation
-    if order["amount"] != expected_amount:
-        return {"error": "Amount mismatch"}, 400
+    # 5. Amount validation (compare in paisa)
+    if order["amount"] != expected_amount_paisa:
+        return {"error": "Amount mismatch"}
 
     if order["status"] != "paid":
-        return {"error": "Order not paid"}, 400
+        return {"error": "Order not paid"}
 
     # 6. Get user phone (for subscription activation)
     conn = get_db()
@@ -117,28 +124,35 @@ def verify_payment_service(data, user_id):
         text("SELECT phone FROM users WHERE id = :user_id"),
         {"user_id": user_id}
     ).fetchone()
+    
     if not user_row:
-        return {"error": "User not found"}, 404
-    phone = user_row._mapping["phone"]   # safe access
+        return {"error": "User not found"}
+    
+    phone = user_row._mapping["phone"]
 
     # 7. Process payment (insert record + credit wallet)
-    result = process_payment(user_id, razorpay_payment_id, expected_amount / 100)
+    result = process_payment(user_id, razorpay_payment_id, expected_amount_rupees)
+    
     if result.get("status") == "duplicate":
-        return {"status": "Payment already processed"}
+        return {"status": "success", "message": "Payment already processed"}
+    
     if result.get("error"):
-        return {"error": result["error"]}, 500
+        return {"error": result["error"]}
 
     # 8. Debit wallet for subscription cost
-    success = debit_wallet(user_id, expected_amount / 100, f"{plan} subscription")
+    success = debit_wallet(user_id, expected_amount_rupees, f"{plan} subscription")
+    
     if not success:
-        return {"error": "Wallet deduction failed"}, 400
+        return {"error": "Wallet deduction failed"}
 
     # 9. Activate subscription
     expiry_date = activate_subscription(phone, plan)
 
-    # 10. Final response
+    # 10. Final success response
     return {
-        "status": "Subscription activated ✅",
+        "status": "success",
+        "message": "Subscription activated ✅",
         "role": plan,
-        "expiry": expiry_date
+        "expiry": expiry_date,
+        "redirect": "/dashboard"
     }
