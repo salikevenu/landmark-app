@@ -488,15 +488,16 @@ add_security_headers(app)
 
 @app.route('/api/debug/razorpay-keys')
 def debug_razorpay():
-    key_id = os.getenv('RAZORPAY_KEY_ID')
-    key_secret = os.getenv('RAZORPAY_KEY_SECRET')
+    key_id = os.environ.get('RAZORPAY_KEY_ID')
+    key_secret = os.environ.get('RAZORPAY_KEY_SECRET')
     return jsonify({
         'key_id_exists': bool(key_id),
         'key_secret_exists': bool(key_secret),
-        'key_id_prefix': key_id[:10] if key_id else None,
-        'is_test_key': key_id and key_id.startswith('rzp_test_') if key_id else False
+        'key_id_value': key_id[:15] + '...' if key_id else None,
+        'is_test_key': key_id and key_id.startswith('rzp_test_') if key_id else False,
+        'message': 'Keys are correct!' if (key_id and key_id.startswith('rzp_test_')) else 'Test keys missing or incorrect'
     })
-    
+
 # ------------------------------
 # Register blueprints (must be after app creation)
 # ------------------------------
