@@ -62,23 +62,55 @@ app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 # Use `getenv` to safely get the URL; it will be `None` if the variable isn't set.
 redis_url = os.getenv("REDIS_URL")
 
-# This is the correct way to configure a production Redis backend:
+import os
+import socket
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+# ============================================
+# RATE LIMITING CONFIGURATION
+# ============================================
+
+# Get configuration from environment
+redis_url = os.getenv("REDIS_URL")
+test_mode = os.getenv("TEST_MODE", "False").lower() == "true"
+environment = os.getenv("ENVIRONMENT", "production")
+
+# Set limits based on environment
+if test_mode or environment == "development":
+    DEFAULT_LIMITS = ["5000 per day", "500 per hour", "10 per second"]
+    print("🧪 Development/Test mode - Using higher rate limits")
+else:
+    DEFAULT_LIMITS = ["200 per day", "50 per hour"]
+    print("🚀 Production mode - Using standard rate limits")
+
+# Configure Redis or fallback
 if redis_url:
     limiter = Limiter(
         get_remote_address,
         app=app,
-        storage_uri=redis_url, # 👈 'storage_uri' is the correct parameter
-        default_limits=["200 per day", "50 per hour"]
+        storage_uri=redis_url,
+        default_limits=DEFAULT_LIMITS,
+        storage_options={"socket_connect_timeout": 30},
+        retry_after="1 hour"
     )
-    logger.info("🚀 Production rate limiting with Redis configured.")
+    print("✅ Rate limiting with Redis configured.")
 else:
-    # Fallback only for development. In production, this should not happen.
     limiter = Limiter(
         get_remote_address,
         app=app,
-        default_limits=["200 per day", "50 per hour"]
+        default_limits=DEFAULT_LIMITS,
+        storage_options={"socket_connect_timeout": 30}
     )
-    logger.warning("⚠️ REDIS_URL not set. Falling back to in-memory rate limiting. NOT FOR PRODUCTION!")
+    print("⚠️ REDIS_URL not set. Rate limits will reset on server restart!")
+
+# Optional: Add rate limit headers to response
+@app.after_request
+def add_rate_limit_headers(response):
+    if hasattr(limiter, '_limiter'):
+        response.headers['X-RateLimit-Limit'] = DEFAULT_LIMITS[1]  # e.g., "50 per hour"
+        # Note: Actual remaining count would require more complex logic
+    return response
 
 # Initialize extensions (this will set the global limiter)
 init_extensions(app)
