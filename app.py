@@ -68,29 +68,22 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 # ============================================
-# RATE LIMITING CONFIGURATION - DISABLED FOR TESTING
+# RATE LIMITING - COMPLETELY DISABLED FOR TESTING
 # ============================================
 
-# Get configuration from environment
-redis_url = os.getenv("REDIS_URL")
-test_mode = os.getenv("TEST_MODE", "False").lower() == "true"
-environment = os.getenv("ENVIRONMENT", "production")
-
-# Set limits based on environment
-if test_mode or environment == "development":
-    DEFAULT_LIMITS = ["5000 per day", "500 per hour", "10 per second"]
-    print("🧪 Development/Test mode - Using higher rate limits")
-else:
-    DEFAULT_LIMITS = ["200 per day", "50 per hour"]
-    print("🚀 Production mode - Using standard rate limits")
-
-# Rate limiting DISABLED for testing - creates dummy limiter that does nothing
+# Create a dummy limiter that does absolutely nothing
 class DummyLimiter:
     def limit(self, *args, **kwargs):
         return lambda x: x
+    
+    def init_app(self, app):
+        pass
 
+# Set limiter as dummy object
 limiter = DummyLimiter()
-print("⚠️ RATE LIMITING DISABLED - Testing mode only!")
+
+# Remove any existing rate limit decorators from the app
+print("⚠️⚠️⚠️ RATE LIMITING COMPLETELY DISABLED - ONLY FOR TESTING ⚠️⚠️⚠️")
 
 # Optional: Add rate limit headers to response
 @app.after_request
@@ -307,7 +300,8 @@ def wallet_page():
 
 @app.route("/pricing")
 def pricing():
-    return render_template("users/pricing.html")
+#    return render_template("users/pricing.html")
+    pass
 
 @app.route("/logout")
 def logout_page():
