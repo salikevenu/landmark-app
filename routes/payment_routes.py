@@ -19,44 +19,116 @@ payment_bp = Blueprint("payment", __name__)
 # Create Razorpay Order
 # ================================
 @payment_bp.route("/create-order", methods=["POST"])
-@jwt_required()
+#@jwt_required(optional=True)  # Make it optional for testing
+user_id = "test-user-123" # Temporary hardcoded ID
 def create_order():
-    user_id = get_jwt_identity()
-    data = request.json
-    plan = data.get("plan")
+    try:
+        # Get user ID (may be None if not authenticated)
+        user_id = get_jwt_identity()
+        
+        # For testing, allow without auth
+        if not user_id:
+            user_id = request.json.get("user_id", "test_user_001")
+            print(f"⚠️ No JWT token, using test user: {user_id}")
+        
+        data = request.json
+        plan = data.get("plan")
+        
+        # Make sure PLAN_PRICES is defined
+        PLAN_PRICES = {
+            "Business Basic": 49900,   # ₹499 in paise
+            "Business Premium": 199900  # ₹1999 in paise
+        }
+        
+        if plan not in PLAN_PRICES:
+            return jsonify({"error": f"Invalid plan: {plan}. Allowed: {list(PLAN_PRICES.keys())}"}), 400
+        
+        amount = PLAN_PRICES[plan]
+        
+        # Get Razorpay client
+        from extensions import get_razorpay_client
+        client = get_razorpay_client()
+        
+        if not client:
+            return jsonify({"error": "Razorpay client not initialized. Check API keys."}), 500
+        
+        # Create order
+        order = client.order.create({
+            "amount": amount,
+            "currency": "INR",
+            "payment_capture": 1
+        })
+        
+        # Save to database
+        from database.init_db import get_db
+        from sqlalchemy import text
+        from datetime import datetime
+        
+        conn = get_db()
+        conn.execute(text("""
+            INSERT INTO payments (user_id, payment_id, amount, status, created_at)
+            VALUES (:user_id, :payment_id, :amount, :status, :created_at)
+        """), {
+            "user_id": user_id,
+            "payment_id": order["id"],
+            "amount": amount,
+            "status": "created",
+            "created_at": datetime.utcnow()
+        })
+        conn.commit()
+        
+        # Get key ID from environment
+        import os
+        razorpay_key_id = os.getenv("RAZORPAY_KEY_ID")
+        
+        return jsonify({
+            "order_id": order["id"],
+            "key": razorpay_key_id,
+            "amount": amount,
+            "currency": "INR"
+        })
+        
+    except Exception as e:
+        print(f"❌ Order creation error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e), "type": type(e).__name__}), 500
 
-    if plan not in PLAN_PRICES:
-        return jsonify({"error": "Invalid plan"}), 400
-
-    amount = PLAN_PRICES[plan]
-
-    client = get_razorpay_client()
-    order = client.order.create({
-        "amount": amount,
-        "currency": "INR",
-        "payment_capture": 1
-    })
-
-    conn = get_db()
-    conn.execute(text("""
-        INSERT INTO payments (user_id, payment_id, amount, status, created_at)
-        VALUES (:user_id, :payment_id, :amount, :status, :created_at)
-    """), {
-        "user_id": user_id,
-        "payment_id": order["id"],
-        "amount": amount,
-        "status": "created",
-        "created_at": datetime.utcnow()
-    })
-    conn.commit()
-
-    return jsonify({
-        "order_id": order["id"],
-        "key": RAZORPAY_KEY_ID,
-        "amount": amount,
-        "currency": "INR"
-    })
-
+@payment_bp.route("/create-order-debug", methods=["POST"])
+def create_order_debug():
+    """Debug endpoint - no JWT required"""
+    try:
+        data = request.json
+        plan = data.get("plan")
+        
+        PLAN_PRICES = {
+            "Business Basic": 49900,
+            "Business Premium": 199900
+        }
+        
+        if plan not in PLAN_PRICES:
+            return jsonify({"error": f"Invalid plan: {plan}"}), 400
+        
+        amount = PLAN_PRICES[plan]
+        
+        client = get_razorpay_client()
+        if not client:
+            return jsonify({"error": "Razorpay client not initialized"}), 500
+        
+        order = client.order.create({
+            "amount": amount,
+            "currency": "INR",
+            "payment_capture": 1
+        })
+        
+        return jsonify({
+            "order_id": order["id"],
+            "key": os.getenv("RAZORPAY_KEY_ID"),
+            "amount": amount,
+            "currency": "INR"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ================================
 # Wallet Balance
