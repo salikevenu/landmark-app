@@ -72,8 +72,10 @@ def create_order():
 
         # Allow testing without JWT
         if not user_id:
-            user_id = request.json.get("user_id", "test_user_001")
-            print(f"⚠️ No JWT token supplied. Using test user: {user_id}")
+            return jsonify({
+                "error": "Authentication required. Please login.",
+                "success": False
+            }), 401
 
         data = request.get_json()
 
