@@ -68,7 +68,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 # ============================================
-# RATE LIMITING CONFIGURATION
+# RATE LIMITING CONFIGURATION - DISABLED FOR TESTING
 # ============================================
 
 # Get configuration from environment
@@ -84,25 +84,13 @@ else:
     DEFAULT_LIMITS = ["200 per day", "50 per hour"]
     print("🚀 Production mode - Using standard rate limits")
 
-# Configure Redis or fallback
-#if redis_url:
-#    limiter = Limiter(
-#        get_remote_address,
-#        app=app,
-#        storage_uri=redis_url,
-#        default_limits=DEFAULT_LIMITS,
-#        storage_options={"socket_connect_timeout": 30},
-#        retry_after="1 hour"
-#    )
-    print("✅ Rate limiting with Redis configured.")
-else:
-    limiter = Limiter(
-        get_remote_address,
-        app=app,
-        default_limits=DEFAULT_LIMITS,
-        storage_options={"socket_connect_timeout": 30}
-    )
-    print("⚠️ REDIS_URL not set. Rate limits will reset on server restart!")
+# Rate limiting DISABLED for testing - creates dummy limiter that does nothing
+class DummyLimiter:
+    def limit(self, *args, **kwargs):
+        return lambda x: x
+
+limiter = DummyLimiter()
+print("⚠️ RATE LIMITING DISABLED - Testing mode only!")
 
 # Optional: Add rate limit headers to response
 @app.after_request
