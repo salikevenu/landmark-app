@@ -447,6 +447,11 @@ def saturday_payout():
     released = _execute_payout()
     return jsonify({"released": released}), 200
 
+@app.route('/api/payment/webhook', methods=['POST'])
+def razorpay_webhook():
+    # Verify signature using webhook secret
+    # Update order status in database
+    return {'status': 'ok'}, 200
 # ------------------------------
 # Static / Favicon / Well‑known
 # ------------------------------
@@ -498,7 +503,21 @@ def terms_of_service():
 # Run the app
 # ------------------------------
 if __name__ == "__main__":
-    # Only used for local development
-    debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"   # Default to False
-    port = int(os.getenv("PORT", 8000))   # Use PORT env var with fallback 8000 for local
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    import sys
+    
+    # Check if running in production mode
+    use_production = os.getenv("PRODUCTION", "False").lower() == "true"
+    
+    if use_production:
+        # Production: Use Waitress
+        from waitress import serve
+        print("🚀 Starting LANDMARK with Waitress production server...")
+        print("📍 Listening on http://0.0.0.0:8000")
+        print("⚠️  Press Ctrl+C to stop")
+        serve(app, host="0.0.0.0", port=8000, threads=4)
+    else:
+        # Development: Use Flask built-in server
+        debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
+        port = int(os.getenv("PORT", 8000))
+        print("🔧 Starting Flask development server...")
+        app.run(host="0.0.0.0", port=port, debug=debug_mode)
