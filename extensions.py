@@ -1,38 +1,40 @@
 # extensions.py
 import os
 import razorpay
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 
-# Global limiter (to be initialized later)
+# Global clients
 limiter = None
 razor_client = None
 
 def init_extensions(app):
     global limiter, razor_client
-
-    # 1. Rate limiter - COMPLETELY DISABLED FOR TESTING
-    # Create a dummy limiter that does nothing
+    
+    # 1. Rate limiter - DISABLED
     class DummyLimiter:
         def limit(self, *args, **kwargs):
             return lambda x: x
-        
         def init_app(self, app):
             pass
     
     limiter = DummyLimiter()
     print("⚠️ Rate limiting DISABLED for testing")
-
-    # 2. Razorpay client
-    razor_client = razorpay.Client(auth=(
-        os.getenv("RAZORPAY_KEY_ID"),
-        os.getenv("RAZORPAY_KEY_SECRET")
-    ))
-
+    
+    # 2. Razorpay client - FIXED
+    key_id = os.getenv('RAZORPAY_KEY_ID')
+    key_secret = os.getenv('RAZORPAY_KEY_SECRET')
+    
+    if key_id and key_secret:
+        razor_client = razorpay.Client(auth=(key_id, key_secret))
+        print(f"✅ Razorpay initialized with key: {key_id[:10]}...")
+    else:
+        razor_client = None
+        print("❌ Razorpay keys not found in environment!")
+    
     return limiter, razor_client
 
 def get_razorpay_client():
-    return razorpay.Client(auth=(
-        os.getenv("RAZORPAY_KEY_ID"),
-        os.getenv("RAZORPAY_KEY_SECRET")
-    ))
+    key_id = os.getenv('RAZORPAY_KEY_ID')
+    key_secret = os.getenv('RAZORPAY_KEY_SECRET')
+    if key_id and key_secret:
+        return razorpay.Client(auth=(key_id, key_secret))
+    return None

@@ -486,6 +486,17 @@ def handle_exception(e):
 from middleware.security_headers import add_security_headers
 add_security_headers(app)
 
+@app.route('/api/debug/razorpay-keys')
+def debug_razorpay():
+    key_id = os.getenv('RAZORPAY_KEY_ID')
+    key_secret = os.getenv('RAZORPAY_KEY_SECRET')
+    return jsonify({
+        'key_id_exists': bool(key_id),
+        'key_secret_exists': bool(key_secret),
+        'key_id_prefix': key_id[:10] if key_id else None,
+        'is_test_key': key_id and key_id.startswith('rzp_test_') if key_id else False
+    })
+    
 # ------------------------------
 # Register blueprints (must be after app creation)
 # ------------------------------
