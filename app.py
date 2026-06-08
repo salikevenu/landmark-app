@@ -85,15 +85,15 @@ else:
     print("🚀 Production mode - Using standard rate limits")
 
 # Configure Redis or fallback
-if redis_url:
-    limiter = Limiter(
-        get_remote_address,
-        app=app,
-        storage_uri=redis_url,
-        default_limits=DEFAULT_LIMITS,
-        storage_options={"socket_connect_timeout": 30},
-        retry_after="1 hour"
-    )
+#if redis_url:
+#    limiter = Limiter(
+#        get_remote_address,
+#        app=app,
+#        storage_uri=redis_url,
+#        default_limits=DEFAULT_LIMITS,
+#        storage_options={"socket_connect_timeout": 30},
+#        retry_after="1 hour"
+#    )
     print("✅ Rate limiting with Redis configured.")
 else:
     limiter = Limiter(
