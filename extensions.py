@@ -20,11 +20,11 @@ def init_extensions(app):
             default_limits=["200 per day", "50 per hour"]
         )
     else:
-        limiter = Limiter(
-            get_remote_address,
-            default_limits=["200 per day", "50 per hour"]
-        )
-    limiter.init_app(app)
+#        limiter = Limiter(
+#            get_remote_address,
+#            default_limits=["200 per day", "50 per hour"]
+#        )
+#    limiter.init_app(app)
 
     # 2. Razorpay
     razor_client = razorpay.Client(auth=(
