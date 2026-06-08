@@ -62,36 +62,23 @@ app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 # Use `getenv` to safely get the URL; it will be `None` if the variable isn't set.
 redis_url = os.getenv("REDIS_URL")
 
-import os
-import socket
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-
 # ============================================
 # RATE LIMITING - COMPLETELY DISABLED FOR TESTING
 # ============================================
 
-# Create a dummy limiter that does absolutely nothing
+# Create a dummy limiter that does nothing
 class DummyLimiter:
     def limit(self, *args, **kwargs):
         return lambda x: x
-    
-    def init_app(self, app):
-        pass
 
-# Set limiter as dummy object
 limiter = DummyLimiter()
 
-# Remove any existing rate limit decorators from the app
-print("⚠️⚠️⚠️ RATE LIMITING COMPLETELY DISABLED - ONLY FOR TESTING ⚠️⚠️⚠️")
-
-# Optional: Add rate limit headers to response
+# Disable rate limit headers
 @app.after_request
 def add_rate_limit_headers(response):
-    if hasattr(limiter, '_limiter'):
-        response.headers['X-RateLimit-Limit'] = DEFAULT_LIMITS[1]  # e.g., "50 per hour"
-        # Note: Actual remaining count would require more complex logic
     return response
+
+print("⚠️⚠️⚠️ RATE LIMITING COMPLETELY DISABLED - FOR TESTING ONLY ⚠️⚠️⚠️")
 
 # Initialize extensions (this will set the global limiter)
 init_extensions(app)
