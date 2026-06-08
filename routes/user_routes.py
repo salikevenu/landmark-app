@@ -83,43 +83,6 @@ PLAN_DETAILS = {
 }
 
 # ------------------------------------------------------------
-# CREATE ORDER
-# ------------------------------------------------------------
-@user_bp.route("/create-order", methods=["POST"])
-@jwt_required()
-def create_order():
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    plan_type = data.get("plan")
-    if plan_type not in PLAN_DETAILS:
-        return jsonify({"error": "Invalid plan"}), 400
-
-    plan_info = PLAN_DETAILS[plan_type]
-    receipt = f"upgrade_{user_id}_{int(datetime.utcnow().timestamp())}"
-    order_data = {
-        "amount": plan_info["amount"],
-        "currency": "INR",
-        "receipt": receipt,
-        "payment_capture": 1,
-        "notes": {
-            "user_id": str(user_id),
-            "plan_type": plan_type,
-            "role": plan_info["role"] or "",
-            "plan": plan_info["plan"]
-        }
-    }
-    try:
-        order = razor_client.order.create(data=order_data)
-        return jsonify({
-            "order_id": order["id"],
-            "amount": order["amount"],
-            "currency": order["currency"],
-            "key": os.getenv("RAZORPAY_KEY_ID")
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ------------------------------------------------------------
 # VERIFY PAYMENT
 # ------------------------------------------------------------
 @user_bp.route("/verify-payment", methods=["POST"])
