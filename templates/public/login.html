@@ -49,6 +49,10 @@ input:focus {
     box-shadow: 0 0 8px #0ff;
 }
 
+input:disabled {
+    opacity: 0.5;
+}
+
 .btn-primary {
     width: 100%;
     padding: 12px;
@@ -74,6 +78,35 @@ input:focus {
 .status-text {
     min-height: 30px;
     margin-top: 10px;
+}
+
+.status-text.error {
+    color: #ff6b6b;
+}
+
+.status-text.success {
+    color: #5dffb0;
+}
+
+.link-row {
+    margin-top: 8px;
+    font-size: 0.85rem;
+}
+
+.link-row button {
+    background: none;
+    border: none;
+    color: #0ff;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 4px 8px;
+}
+
+.link-row button:disabled {
+    color: #557;
+    cursor: not-allowed;
+    text-decoration: none;
 }
 
 /* ----- NEON CUSTOM CHECKBOX (Remember Me) ----- */
@@ -135,10 +168,24 @@ label[for="rememberMe"]:hover {
         <h2 class="login-title">Welcome Back</h2>
         <p class="page-subtitle" id="stepLabel">Enter your phone number</p>
 
-        <input type="tel" id="phone" placeholder="Phone number" maxlength="10">
+        <input
+            type="tel"
+            id="phone"
+            placeholder="Phone number"
+            maxlength="10"
+            autocomplete="tel"
+            inputmode="numeric"
+        >
 
         <div id="otpGroup" style="display:none;">
-            <input type="text" id="otp" placeholder="Enter OTP" maxlength="6">
+            <input
+                type="text"
+                id="otp"
+                placeholder="Enter OTP"
+                maxlength="6"
+                autocomplete="one-time-code"
+                inputmode="numeric"
+            >
             <!-- NEON CHECKBOX -->
             <input type="checkbox" id="rememberMe">
             <label for="rememberMe">Remember me (stay logged in until you logout)</label>
@@ -149,6 +196,12 @@ label[for="rememberMe"]:hover {
 
         <button class="btn-primary" id="actionBtn" type="button">Send OTP</button>
 
+        <div id="otpActions" class="link-row" style="display:none;">
+            <button type="button" id="resendBtn">Resend OTP</button>
+            <span>&middot;</span>
+            <button type="button" id="changeNumberBtn">Change number</button>
+        </div>
+
         <p id="statusMessage" class="status-text"></p>
     </div>
 </div>
@@ -158,6 +211,9 @@ label[for="rememberMe"]:hover {
   import { getAuth, signInWithPhoneNumber, RecaptchaVerifier } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
   // ========== FIREBASE CONFIGURATION ==========
+  // This config is meant to be public (it's shipped to every browser).
+  // Actual protection comes from Firebase Security Rules / App Check,
+  // not from hiding these values.
   const firebaseConfig = {
     apiKey: "AIzaSyDcMnIg7NT2RLnZ1ECTqSu-HVGz4TXxsKE",
     authDomain: "landmark-dde55.firebaseapp.com",
@@ -172,11 +228,15 @@ label[for="rememberMe"]:hover {
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
 
+  // Resend cooldown (seconds) to avoid hammering Firebase / getting rate limited
+  const RESEND_COOLDOWN_SECONDS = 30;
+
   let currentStep = "phone";
   let confirmationResult = null;
   let recaptchaVerifier = null;
   let recaptchaRenderPromise = null;
   let isSubmitting = false;
+  let resendTimer = null;
 
   const phoneInput = document.getElementById("phone");
   const otpGroup = document.getElementById("otpGroup");
@@ -185,6 +245,39 @@ label[for="rememberMe"]:hover {
   const statusMsg = document.getElementById("statusMessage");
   const stepLabel = document.getElementById("stepLabel");
   const rememberMeCheckbox = document.getElementById("rememberMe");
+  const otpActions = document.getElementById("otpActions");
+  const resendBtn = document.getElementById("resendBtn");
+  const changeNumberBtn = document.getElementById("changeNumberBtn");
+
+  // ----- Friendly error messages -----
+  // Firebase error messages can be cryptic or leak internal detail.
+  // Map known codes to plain-language text; fall back to a generic message
+  // for anything unrecognized so we never show raw SDK output to the user.
+  const FRIENDLY_ERRORS = {
+    "auth/invalid-phone-number": "That phone number doesn't look valid.",
+    "auth/missing-phone-number": "Please enter a phone number.",
+    "auth/quota-exceeded": "Too many attempts right now. Please try again later.",
+    "auth/user-disabled": "This account has been disabled. Contact support.",
+    "auth/operation-not-allowed": "Phone sign-in isn't enabled. Contact support.",
+    "auth/too-many-requests": "Too many attempts. Please wait a bit and try again.",
+    "auth/captcha-check-failed": "Security check failed. Please refresh and try again.",
+    "auth/invalid-verification-code": "That code doesn't look right. Check and try again.",
+    "auth/code-expired": "That code has expired. Request a new one.",
+    "auth/network-request-failed": "Network issue — check your connection and try again."
+  };
+
+  function friendlyError(err, fallback) {
+    if (err && err.code && FRIENDLY_ERRORS[err.code]) {
+      return FRIENDLY_ERRORS[err.code];
+    }
+    return fallback;
+  }
+
+  function setStatus(message, type) {
+    statusMsg.innerText = message;
+    statusMsg.classList.remove("error", "success");
+    if (type) statusMsg.classList.add(type);
+  }
 
   // Helper to fully tear down and reset reCAPTCHA after an error
   function resetRecaptcha() {
@@ -201,29 +294,24 @@ label[for="rememberMe"]:hover {
     recaptchaRenderPromise = null;
   }
 
-  // Create the verifier. ✅ CORRECT ORDER FOR FIREBASE v10+
+  // Create the verifier. Correct param order for Firebase v10+:
+  // auth instance, container id, options.
   function initializeRecaptcha() {
     try {
-      // ✅ CORRECT ORDER FOR FIREBASE v10+
       recaptchaVerifier = new RecaptchaVerifier(
-        auth,                     // auth instance (1st param)
-        'recaptcha-container',    // container id (2nd param)
-        {                         // options (3rd param)
+        auth,
+        'recaptcha-container',
+        {
           size: 'invisible',
-          callback: () => {
-            console.log('✅ reCAPTCHA verified');
-          },
+          callback: () => {},
           'expired-callback': () => {
-            console.log('⚠️ reCAPTCHA expired - resetting');
             resetRecaptcha();
           }
         }
       );
-      console.log('✅ RecaptchaVerifier initialized successfully');
       return recaptchaVerifier;
     } catch (error) {
-      console.error('❌ Failed to initialize RecaptchaVerifier:', error);
-      statusMsg.innerText = 'Failed to initialize security verification. Please refresh.';
+      setStatus('Failed to initialize security verification. Please refresh.', 'error');
       return null;
     }
   }
@@ -246,49 +334,80 @@ label[for="rememberMe"]:hover {
     actionBtn.disabled = loading;
   }
 
+  function startResendCooldown() {
+    let remaining = RESEND_COOLDOWN_SECONDS;
+    resendBtn.disabled = true;
+    resendBtn.innerText = `Resend OTP (${remaining}s)`;
+
+    if (resendTimer) clearInterval(resendTimer);
+    resendTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(resendTimer);
+        resendTimer = null;
+        resendBtn.disabled = false;
+        resendBtn.innerText = 'Resend OTP';
+      } else {
+        resendBtn.innerText = `Resend OTP (${remaining}s)`;
+      }
+    }, 1000);
+  }
+
+  async function sendOtp() {
+    const phone = phoneInput.value.trim();
+    if (!phone.match(/^[6-9]\d{9}$/)) {
+      setStatus('Enter a valid 10-digit Indian mobile number', 'error');
+      return false;
+    }
+    const fullPhone = '+91' + phone;
+
+    setLoading(true);
+    setStatus('Sending OTP...', null);
+
+    try {
+      const verifier = await ensureRecaptchaReady();
+      confirmationResult = await signInWithPhoneNumber(auth, fullPhone, verifier);
+      setStatus('OTP sent! Check your phone.', 'success');
+      return true;
+    } catch (err) {
+      setStatus(friendlyError(err, 'Failed to send OTP. Please try again.'), 'error');
+      resetRecaptcha();
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleAction() {
     if (isSubmitting) return;
 
     if (currentStep === 'phone') {
-      const phone = phoneInput.value.trim();
-      if (!phone.match(/^[6-9]\d{9}$/)) {
-        statusMsg.innerText = 'Enter valid 10-digit phone number';
-        return;
-      }
-      const fullPhone = '+91' + phone;
+      const sent = await sendOtp();
+      if (!sent) return;
 
-      setLoading(true);
-      statusMsg.innerText = 'Sending OTP...';
-
-      try {
-        const verifier = await ensureRecaptchaReady();
-        confirmationResult = await signInWithPhoneNumber(auth, fullPhone, verifier);
-        statusMsg.innerText = 'OTP sent! Check your phone.';
-        currentStep = 'otp';
-        otpGroup.style.display = 'block';
-        actionBtn.innerText = 'Verify OTP';
-        phoneInput.disabled = true;
-        stepLabel.innerText = 'Enter OTP sent to your phone';
-      } catch (err) {
-        console.error('Send OTP error:', err);
-        statusMsg.innerText = err.message || 'Failed to send OTP.';
-        resetRecaptcha();
-      } finally {
-        setLoading(false);
-      }
+      currentStep = 'otp';
+      otpGroup.style.display = 'block';
+      otpActions.style.display = 'flex';
+      otpActions.style.justifyContent = 'center';
+      otpActions.style.alignItems = 'center';
+      otpActions.style.gap = '6px';
+      actionBtn.innerText = 'Verify OTP';
+      phoneInput.disabled = true;
+      stepLabel.innerText = 'Enter OTP sent to your phone';
+      startResendCooldown();
     } else {
       const otp = otpInput.value.trim();
       if (!otp) {
-        statusMsg.innerText = 'Please enter OTP';
+        setStatus('Please enter the OTP', 'error');
         return;
       }
-      if (otp.length < 6) {
-        statusMsg.innerText = 'OTP must be 6 digits';
+      if (otp.length !== 6) {
+        setStatus('OTP must be 6 digits', 'error');
         return;
       }
 
       setLoading(true);
-      statusMsg.innerText = 'Verifying...';
+      setStatus('Verifying...', null);
 
       try {
         const result = await confirmationResult.confirm(otp);
@@ -309,26 +428,60 @@ label[for="rememberMe"]:hover {
           localStorage.setItem('access_token', data.access_token);
           if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
           const role = data.user.role;
-          statusMsg.innerText = 'Login successful! Redirecting...';
+          setStatus('Login successful! Redirecting...', 'success');
           if (role === 'admin') {
             window.location.href = '/admin/dashboard';
           } else {
             window.location.href = '/api/user/dashboard';
           }
         } else {
-          statusMsg.innerText = data.error || 'Login failed';
+          setStatus(data.error || 'Login failed. Please try again.', 'error');
         }
       } catch (err) {
-        console.error('Verify OTP error:', err);
-        statusMsg.innerText = 'Invalid OTP. Please try again.';
+        setStatus(friendlyError(err, 'Invalid OTP. Please try again.'), 'error');
       } finally {
         setLoading(false);
       }
     }
   }
 
-  // Wire up the button
+  function resetToPhoneStep() {
+    currentStep = 'phone';
+    confirmationResult = null;
+    otpGroup.style.display = 'none';
+    otpActions.style.display = 'none';
+    otpInput.value = '';
+    actionBtn.innerText = 'Send OTP';
+    phoneInput.disabled = false;
+    stepLabel.innerText = 'Enter your phone number';
+    setStatus('', null);
+    if (resendTimer) {
+      clearInterval(resendTimer);
+      resendTimer = null;
+    }
+    resetRecaptcha();
+    initializeRecaptcha();
+  }
+
+  // Wire up the main button
   actionBtn.addEventListener('click', handleAction);
+
+  // Resend OTP without losing the phone step UI
+  resendBtn.addEventListener('click', async () => {
+    if (isSubmitting || resendBtn.disabled) return;
+    resetRecaptcha();
+    initializeRecaptcha();
+    const sent = await sendOtp();
+    if (sent) {
+      otpInput.value = '';
+      startResendCooldown();
+    }
+  });
+
+  // Let the user go back and fix the phone number
+  changeNumberBtn.addEventListener('click', () => {
+    resetToPhoneStep();
+  });
 
   // Allow Enter key too
   [phoneInput, otpInput].forEach((el) => {
@@ -352,8 +505,6 @@ label[for="rememberMe"]:hover {
 
   // Pre-create (but don't render) the verifier once the DOM is ready.
   initializeRecaptcha();
-
-  console.log('Login page loaded successfully');
 </script>
 
 {% endblock %}
