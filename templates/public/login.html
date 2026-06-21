@@ -204,9 +204,11 @@ label[for="rememberMe"]:hover {
   // Create the verifier. ✅ CORRECT ORDER FOR FIREBASE v10+
   function initializeRecaptcha() {
     try {
+      // ✅ CORRECT ORDER FOR FIREBASE v10+
       recaptchaVerifier = new RecaptchaVerifier(
-        'recaptcha-container',    // container id (1st param) ✅
-        {                         // options (2nd param) ✅
+        auth,                     // auth instance (1st param)
+        'recaptcha-container',    // container id (2nd param)
+        {                         // options (3rd param)
           size: 'invisible',
           callback: () => {
             console.log('✅ reCAPTCHA verified');
@@ -215,8 +217,7 @@ label[for="rememberMe"]:hover {
             console.log('⚠️ reCAPTCHA expired - resetting');
             resetRecaptcha();
           }
-        },
-        auth                      // auth instance (3rd param) ✅
+        }
       );
       console.log('✅ RecaptchaVerifier initialized successfully');
       return recaptchaVerifier;
