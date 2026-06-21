@@ -78,7 +78,7 @@ limiter = DummyLimiter()
 def add_rate_limit_headers(response):
     return response
 
-print("⚠️⚠️⚠️ RATE LIMITING COMPLETELY DISABLED - FOR TESTING ONLY ⚠️⚠️⚠️")
+print("WARNING: RATE LIMITING COMPLETELY DISABLED - FOR TESTING ONLY")
 
 # Initialize extensions (this will set the global limiter)
 init_extensions(app)
@@ -287,8 +287,7 @@ def wallet_page():
 
 @app.route("/pricing")
 def pricing():
-#    return render_template("users/pricing.html")
-    pass
+    return render_template("users/pricing.html")
 
 @app.route("/logout")
 def logout_page():
@@ -524,13 +523,13 @@ if __name__ == "__main__":
     if use_production:
         # Production: Use Waitress
         from waitress import serve
-        print("🚀 Starting LANDMARK with Waitress production server...")
-        print("📍 Listening on http://0.0.0.0:8000")
-        print("⚠️  Press Ctrl+C to stop")
+        print("Starting LANDMARK with Waitress production server...")
+        print("Listening on http://0.0.0.0:8000")
+        print("Press Ctrl+C to stop")
         serve(app, host="0.0.0.0", port=8000, threads=4)
     else:
         # Development: Use Flask built-in server
         debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
         port = int(os.getenv("PORT", 8000))
-        print("🔧 Starting Flask development server...")
+        print("Starting Flask development server...")
         app.run(host="0.0.0.0", port=port, debug=debug_mode)

@@ -17,7 +17,7 @@ def init_extensions(app):
             pass
     
     limiter = DummyLimiter()
-    print("⚠️ Rate limiting DISABLED for testing")
+    print("WARNING: Rate limiting DISABLED for testing")
     
     # 2. Razorpay client - DIRECT INITIALIZATION
     key_id = os.environ.get('RAZORPAY_KEY_ID')
@@ -28,10 +28,10 @@ def init_extensions(app):
     
     if key_id and key_secret:
         razor_client = razorpay.Client(auth=(key_id, key_secret))
-        print(f"✅ Razorpay initialized with key: {key_id[:15]}...")
+        print(f"Razorpay initialized with key: {key_id[:15]}...")
     else:
         razor_client = None
-        print("❌ Razorpay keys missing! Check Render environment variables.")
+        print("ERROR: Razorpay keys missing! Check Render environment variables.")
     
     return limiter, razor_client
 

@@ -65,6 +65,12 @@ input:focus {
     box-shadow: 0 0 12px #0ff;
 }
 
+.btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
 .status-text {
     min-height: 30px;
     margin-top: 10px;
@@ -141,7 +147,7 @@ label[for="rememberMe"]:hover {
         <!-- Invisible reCAPTCHA container (Firebase requirement) -->
         <div id="recaptcha-container"></div>
 
-        <button class="btn-primary" id="actionBtn">Send OTP</button>
+        <button class="btn-primary" id="actionBtn" type="button">Send OTP</button>
 
         <p id="statusMessage" class="status-text"></p>
     </div>
@@ -151,24 +157,26 @@ label[for="rememberMe"]:hover {
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
   import { getAuth, signInWithPhoneNumber, RecaptchaVerifier } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
-  // ========== FIREBASE CONFIGURATION (replace with your own) ==========
-  // You can get this from Firebase Console → Project Settings → General → Your apps
+  // ========== FIREBASE CONFIGURATION ==========
   const firebaseConfig = {
-    apiKey: "AIzaSyAM8ogUkBqaYl1XsYDyvu_UVsexPDT5kTk",
-    authDomain: "landmarkvts.in",
+    apiKey: "AIzaSyBbArHgN6mqg8fVUJe93BDjlUqeCJhaGAY",
+    authDomain: "landmark-dde55.firebaseapp.com",
     projectId: "landmark-dde55",
     storageBucket: "landmark-dde55.firebasestorage.app",
     messagingSenderId: "204601925235",
     appId: "1:204601925235:web:a30963f83189219e681406",
     measurementId: "G-8MEJ5EDX3B"
   };
-  // ====================================================================
+  // ============================================
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
 
   let currentStep = "phone";
   let confirmationResult = null;
+  let recaptchaVerifier = null;
+  let recaptchaRenderPromise = null;
+  let isSubmitting = false;
 
   const phoneInput = document.getElementById("phone");
   const otpGroup = document.getElementById("otpGroup");
@@ -178,107 +186,173 @@ label[for="rememberMe"]:hover {
   const stepLabel = document.getElementById("stepLabel");
   const rememberMeCheckbox = document.getElementById("rememberMe");
 
-  function setStatus(text, isError = false) {
-    statusMsg.innerText = text;
-    statusMsg.style.color = isError ? "#ff6b6b" : "#6eff8e";
-  }
-
-  function isValidPhone(phone) {
-    return /^[6-9]\d{9}$/.test(phone);
-  }
-
-  async function sendOTPFirebase(phone) {
-    const fullPhone = "+91" + phone;
-    try {
-      // Create invisible reCAPTCHA (no user interaction)
-      const recaptcha = new RecaptchaVerifier(auth, "recaptcha-container", {
-        size: "invisible"
-      });
-      confirmationResult = await signInWithPhoneNumber(auth, fullPhone, recaptcha);
-      setStatus("OTP sent! Check your phone.");
-      return true;
-    } catch (err) {
-      console.error(err);
-      setStatus(err.message || "Failed to send OTP", true);
-      return false;
-    }
-  }
-
-  async function verifyOTPFirebase(otp, phone, rememberMe) {
-    if (!confirmationResult) {
-      setStatus("No OTP request found. Please try again.", true);
-      return false;
-    }
-    try {
-      const result = await confirmationResult.confirm(otp);
-      const idToken = await result.user.getIdToken();
-
-      // Call your backend /firebase-login endpoint
-      const res = await fetch("/api/auth/firebase-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idToken, phone, remember_me: rememberMe })
-      });
-      const data = await res.json();
-
-      if (res.ok && data.status === "success") {
-        // Store tokens (optional, but used in some parts of your app)
-        if (data.access_token) localStorage.setItem("access_token", data.access_token);
-        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-
-        // Redirect based on role
-        if (data.user.role === "admin") {
-          window.location.href = "/admin/dashboard";
-        } else {
-          window.location.href = "/api/user/dashboard";
-        }
-        return true;
-      } else {
-        setStatus(data.error || "Login failed", true);
-        return false;
+  // Helper to fully tear down and reset reCAPTCHA after an error
+  function resetRecaptcha() {
+    if (recaptchaVerifier) {
+      try {
+        recaptchaVerifier.clear();
+      } catch (e) {
+        // ignore — clear() can throw if never rendered
       }
-    } catch (err) {
-      console.error(err);
-      setStatus("Invalid OTP or expired", true);
-      return false;
+    }
+    const container = document.getElementById('recaptcha-container');
+    if (container) container.innerHTML = '';
+    recaptchaVerifier = null;
+    recaptchaRenderPromise = null;
+  }
+
+  // Create the verifier. ✅ CORRECT ORDER FOR FIREBASE v10+
+  function initializeRecaptcha() {
+    try {
+      recaptchaVerifier = new RecaptchaVerifier(
+        'recaptcha-container',    // container id (1st param) ✅
+        {                         // options (2nd param) ✅
+          size: 'invisible',
+          callback: () => {
+            console.log('✅ reCAPTCHA verified');
+          },
+          'expired-callback': () => {
+            console.log('⚠️ reCAPTCHA expired - resetting');
+            resetRecaptcha();
+          }
+        },
+        auth                      // auth instance (3rd param) ✅
+      );
+      console.log('✅ RecaptchaVerifier initialized successfully');
+      return recaptchaVerifier;
+    } catch (error) {
+      console.error('❌ Failed to initialize RecaptchaVerifier:', error);
+      statusMsg.innerText = 'Failed to initialize security verification. Please refresh.';
+      return null;
     }
   }
 
-  actionBtn.addEventListener("click", async () => {
-    if (currentStep === "phone") {
+  // Ensure the verifier exists AND has been rendered exactly once.
+  async function ensureRecaptchaReady() {
+    if (!recaptchaVerifier) {
+      const verifier = initializeRecaptcha();
+      if (!verifier) throw new Error('Failed to initialize security verification');
+    }
+    if (!recaptchaRenderPromise) {
+      recaptchaRenderPromise = recaptchaVerifier.render();
+    }
+    await recaptchaRenderPromise;
+    return recaptchaVerifier;
+  }
+
+  function setLoading(loading) {
+    isSubmitting = loading;
+    actionBtn.disabled = loading;
+  }
+
+  async function handleAction() {
+    if (isSubmitting) return;
+
+    if (currentStep === 'phone') {
       const phone = phoneInput.value.trim();
-      if (!isValidPhone(phone)) {
-        setStatus("Enter valid 10‑digit phone number", true);
+      if (!phone.match(/^[6-9]\d{9}$/)) {
+        statusMsg.innerText = 'Enter valid 10-digit phone number';
         return;
       }
-      const success = await sendOTPFirebase(phone);
-      if (success) {
-        currentStep = "otp";
+      const fullPhone = '+91' + phone;
+
+      setLoading(true);
+      statusMsg.innerText = 'Sending OTP...';
+
+      try {
+        const verifier = await ensureRecaptchaReady();
+        confirmationResult = await signInWithPhoneNumber(auth, fullPhone, verifier);
+        statusMsg.innerText = 'OTP sent! Check your phone.';
+        currentStep = 'otp';
+        otpGroup.style.display = 'block';
+        actionBtn.innerText = 'Verify OTP';
         phoneInput.disabled = true;
-        otpGroup.style.display = "block";
-        actionBtn.innerText = "Verify OTP";
-        stepLabel.innerText = "Enter 6‑digit OTP";
-        otpInput.value = "";
-        if (rememberMeCheckbox) rememberMeCheckbox.checked = false;
+        stepLabel.innerText = 'Enter OTP sent to your phone';
+      } catch (err) {
+        console.error('Send OTP error:', err);
+        statusMsg.innerText = err.message || 'Failed to send OTP.';
+        resetRecaptcha();
+      } finally {
+        setLoading(false);
       }
     } else {
       const otp = otpInput.value.trim();
-      if (otp.length !== 6) {
-        setStatus("Enter valid 6‑digit OTP", true);
+      if (!otp) {
+        statusMsg.innerText = 'Please enter OTP';
         return;
       }
-      const rememberMe = rememberMeCheckbox ? rememberMeCheckbox.checked : false;
-      await verifyOTPFirebase(otp, phoneInput.value.trim(), rememberMe);
+      if (otp.length < 6) {
+        statusMsg.innerText = 'OTP must be 6 digits';
+        return;
+      }
+
+      setLoading(true);
+      statusMsg.innerText = 'Verifying...';
+
+      try {
+        const result = await confirmationResult.confirm(otp);
+        const idToken = await result.user.getIdToken();
+        const phone = phoneInput.value.trim();
+
+        const response = await fetch('/api/auth/firebase-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idToken,
+            phone,
+            remember_me: rememberMeCheckbox.checked
+          })
+        });
+        const data = await response.json();
+        if (response.ok) {
+          localStorage.setItem('access_token', data.access_token);
+          if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+          const role = data.user.role;
+          statusMsg.innerText = 'Login successful! Redirecting...';
+          if (role === 'admin') {
+            window.location.href = '/admin/dashboard';
+          } else {
+            window.location.href = '/api/user/dashboard';
+          }
+        } else {
+          statusMsg.innerText = data.error || 'Login failed';
+        }
+      } catch (err) {
+        console.error('Verify OTP error:', err);
+        statusMsg.innerText = 'Invalid OTP. Please try again.';
+      } finally {
+        setLoading(false);
+      }
     }
+  }
+
+  // Wire up the button
+  actionBtn.addEventListener('click', handleAction);
+
+  // Allow Enter key too
+  [phoneInput, otpInput].forEach((el) => {
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleAction();
+      }
+    });
   });
 
-  // Enter key support
-  phoneInput.addEventListener("keypress", e => {
-    if (e.key === "Enter") actionBtn.click();
+  // Handle phone input formatting
+  phoneInput.addEventListener('input', function () {
+    this.value = this.value.replace(/\D/g, '').slice(0, 10);
   });
-  otpInput.addEventListener("keypress", e => {
-    if (e.key === "Enter") actionBtn.click();
+
+  // Handle OTP input formatting
+  otpInput.addEventListener('input', function () {
+    this.value = this.value.replace(/\D/g, '').slice(0, 6);
   });
+
+  // Pre-create (but don't render) the verifier once the DOM is ready.
+  initializeRecaptcha();
+
+  console.log('Login page loaded successfully');
 </script>
 
 {% endblock %}

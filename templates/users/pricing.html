@@ -54,6 +54,14 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+  .no-plans-msg {
+    color: #cbd5e1;
+    text-align: center;
+    width: 100%;
+  }
+  .plan-card p {
+    color: #cbd5e1;
+  }
 </style>
 
 <div class="pricing-container">
@@ -65,25 +73,36 @@
 
 <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 <script>
-  // All available plans – include an 'eligibleRoles' field
+  // All available plans – each plan now has 'eligibleRoles' so the
+  // page knows who is allowed to see / buy it. Adjust these lists
+  // to match your actual upgrade rules.
   const ALL_PLANS = [
     {
       id: "Service Provider",
       name: "Service Provider",
-      price: 499
+      price: 499,
+      eligibleRoles: ["free"]
     },
     {
       id: "Business Basic",
       name: "Business Basic",
-      price: 999
+      price: 999,
+      eligibleRoles: ["free", "service_provider"]
     },
     {
       id: "Business Premium",
       name: "Business Premium",
-      price: 1999
+      price: 1999,
+      eligibleRoles: ["free", "service_provider", "business_basic"]
     }
   ];
 
+  // Reads a cookie value by name (used to grab the CSRF token
+  // that flask-jwt-extended sets alongside the login cookie).
+  function getCookie(name) {
+    const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return match ? decodeURIComponent(match.pop()) : '';
+  }
 
   async function loadPlans() {
     // Fetch current user role from subscription-status endpoint
@@ -96,21 +115,28 @@
         const data = await res.json();
         userRole = data.role;
       }
-    } catch(e) { console.error("Could not fetch role", e); }
+    } catch (e) {
+      console.error("Could not fetch role", e);
+    }
 
     const container = document.getElementById("plansContainer");
     container.innerHTML = "";
 
-    ALL_PLANS.forEach(plan => {
-      if (!plan.eligibleRoles.includes(userRole)) return; // skip if user already has this or can't buy
+    const visiblePlans = ALL_PLANS.filter(plan => plan.eligibleRoles.includes(userRole));
 
+    if (visiblePlans.length === 0) {
+      container.innerHTML = '<p class="no-plans-msg">No plans available for your current account. You may already be on the top plan.</p>';
+      return;
+    }
+
+    visiblePlans.forEach(plan => {
       const card = document.createElement("div");
       card.className = "plan-card";
       card.innerHTML = `
         <h3>${plan.name}</h3>
         <div class="price">₹${plan.price}</div>
         <p>per month</p>
-        <button class="btn-plan" onclick="startPayment('${plan.name}')">
+        <button class="btn-plan" onclick="startPayment('${plan.name}', event)">
           ${plan.id === "extra_business" ? "Buy Slot" : "Choose Plan"}
         </button>
       `;
@@ -124,108 +150,106 @@
     button.innerText = "Processing...";
 
     try {
-        const res = await fetch("/api/payment/create-order", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            credentials: "include",
-            body: JSON.stringify({
-                plan: planName
-            })
-        });
+      const res = await fetch("/api/payment/create-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-TOKEN": getCookie("csrf_access_token")
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          plan: planName
+        })
+      });
 
-        const data = await res.json();
+      const data = await res.json();
 
-        if (!res.ok || data.error) {
-            alert(data.error || "Unable to create order");
-            button.disabled = false;
-            button.innerText = "Choose Plan";
-            return;
-        }
-
-        const options = {
-            key: data.key,
-            amount: data.amount,
-            currency: data.currency,
-            order_id: data.order_id,
-            name: "LANDMARK",
-            description: planName,
-            handler: async function(response) {
-                try {
-                    const verifyRes = await fetch("/api/payment/verify-payment", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        credentials: "include",
-                        body: JSON.stringify({
-                            razorpay_payment_id: response.razorpay_payment_id,
-                            razorpay_order_id: response.razorpay_order_id,
-                            razorpay_signature: response.razorpay_signature,
-                            plan: planName
-                        })
-                    });
-
-                    const verifyData = await verifyRes.json();
-
-                    if (verifyData.success) {
-                        alert(verifyData.message || "Payment successful!");
-                        window.location.href = verifyData.redirect || "/dashboard";
-                    } else {
-                        alert(verifyData.error || "Payment verification failed");
-                        button.disabled = false;
-                        button.innerText = "Choose Plan";
-                    }
-                } catch (verifyError) {
-                    console.error("Verification error:", verifyError);
-                    alert("Payment verification failed. Please contact support.");
-                    button.disabled = false;
-                    button.innerText = "Choose Plan";
-                }
-            },
-            modal: {
-                ondismiss: function() {
-                    button.disabled = false;
-                    button.innerText = "Choose Plan";
-                }
-            },
-            theme: {
-                color: "#facc15"
-            },
-            // Add prefill if you have user data
-            prefill: {
-                name: "", // Add user's name if available
-                email: "", // Add user's email if available
-                contact: "" // Add user's phone if available
-            },
-            // Add notes for your reference
-            notes: {
-                plan: planName,
-                source: "web"
-            }
-        };
-
-        const rzp = new Razorpay(options);
-        
-        // Add event listeners for better error handling
-        rzp.on('payment.failed', function(response) {
-            console.error("Payment failed:", response.error);
-            alert(response.error.description || "Payment failed. Please try again.");
-            button.disabled = false;
-            button.innerText = "Choose Plan";
-        });
-        
-        rzp.open();
-        
-    } catch (error) {
-        console.error("Payment initiation error:", error);
-        alert("Payment initiation failed: " + (error.message || "Unknown error"));
+      if (!res.ok || data.error) {
+        alert(data.error || "Unable to create order");
         button.disabled = false;
         button.innerText = "Choose Plan";
-    }
-}
+        return;
+      }
 
+      const options = {
+        key: data.key,
+        amount: data.amount,
+        currency: data.currency,
+        order_id: data.order_id,
+        name: "LANDMARK",
+        description: planName,
+        handler: async function (response) {
+          try {
+            const verifyRes = await fetch("/api/payment/verify-payment", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-TOKEN": getCookie("csrf_access_token")
+              },
+              credentials: "include",
+              body: JSON.stringify({
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+                plan: planName
+              })
+            });
+
+            const verifyData = await verifyRes.json();
+
+            if (verifyData.success) {
+              alert(verifyData.message || "Payment successful!");
+              window.location.href = verifyData.redirect || "/dashboard";
+            } else {
+              alert(verifyData.error || "Payment verification failed");
+              button.disabled = false;
+              button.innerText = "Choose Plan";
+            }
+          } catch (verifyError) {
+            console.error("Verification error:", verifyError);
+            alert("Payment verification failed. Please contact support.");
+            button.disabled = false;
+            button.innerText = "Choose Plan";
+          }
+        },
+        modal: {
+          ondismiss: function () {
+            button.disabled = false;
+            button.innerText = "Choose Plan";
+          }
+        },
+        theme: {
+          color: "#facc15"
+        },
+        prefill: {
+          name: "",
+          email: "",
+          contact: ""
+        },
+        notes: {
+          plan: planName,
+          source: "web"
+        }
+      };
+
+      const rzp = new Razorpay(options);
+
+      rzp.on('payment.failed', function (response) {
+        console.error("Payment failed:", response.error);
+        alert(response.error.description || "Payment failed. Please try again.");
+        button.disabled = false;
+        button.innerText = "Choose Plan";
+      });
+
+      rzp.open();
+
+    } catch (error) {
+      console.error("Payment initiation error:", error);
+      alert("Payment initiation failed: " + (error.message || "Unknown error"));
+      button.disabled = false;
+      button.innerText = "Choose Plan";
+    }
+  }
 
   document.addEventListener("DOMContentLoaded", loadPlans);
 </script>
