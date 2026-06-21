@@ -6,16 +6,19 @@
 
 <style>
 /* ----- GLOBAL NEON THEME ----- */
+* {
+    box-sizing: border-box;
+}
+
 .login-wrapper {
-    text-align: center;
-    width: 100%;
+    width: calc(100% - 20px);
     max-width: 420px;
     margin: 0 auto;
     background: rgba(12, 18, 28, 0.7);
     backdrop-filter: blur(12px);
     border: 1px solid rgba(0, 255, 255, 0.3);
     border-radius: 32px;
-    padding: 32px 28px;
+    padding: 32px 24px;
     box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
 }
 
@@ -24,6 +27,7 @@
     font-weight: 700;
     color: #0ff;
     text-shadow: 0 0 5px #0ff;
+    margin-bottom: 8px;
 }
 
 .page-subtitle {
@@ -32,15 +36,20 @@
     font-size: 0.95rem;
 }
 
+.input-group {
+    position: relative;
+    margin-bottom: 12px;
+}
+
 input {
     width: 100%;
-    padding: 12px;
-    margin-bottom: 12px;
+    padding: 12px 16px;
     border-radius: 30px;
     border: 1px solid #2a4c7a;
     background: #000;
     color: white;
     transition: 0.2s;
+    font-size: 1rem;
 }
 
 input:focus {
@@ -51,6 +60,11 @@ input:focus {
 
 input:disabled {
     opacity: 0.5;
+    cursor: not-allowed;
+}
+
+input::placeholder {
+    color: #556;
 }
 
 .btn-primary {
@@ -61,10 +75,13 @@ input:disabled {
     border: none;
     cursor: pointer;
     font-weight: bold;
+    font-size: 1rem;
     transition: 0.2s;
+    color: #000;
+    position: relative;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
     background: #0fa;
     box-shadow: 0 0 12px #0ff;
 }
@@ -75,9 +92,34 @@ input:disabled {
     box-shadow: none;
 }
 
+.btn-primary .spinner {
+    display: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #000;
+    border-top: 2px solid #0ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto;
+}
+
+.btn-primary.loading .spinner {
+    display: inline-block;
+}
+
+.btn-primary.loading .btn-text {
+    display: none;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 .status-text {
     min-height: 30px;
     margin-top: 10px;
+    font-size: 0.9rem;
 }
 
 .status-text.error {
@@ -88,9 +130,17 @@ input:disabled {
     color: #5dffb0;
 }
 
+.status-text.info {
+    color: #4fc3f7;
+}
+
 .link-row {
     margin-top: 8px;
     font-size: 0.85rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
 }
 
 .link-row button {
@@ -101,6 +151,12 @@ input:disabled {
     cursor: pointer;
     font-size: 0.85rem;
     padding: 4px 8px;
+    transition: 0.2s;
+}
+
+.link-row button:hover:not(:disabled) {
+    color: #0fa;
+    text-shadow: 0 0 8px #0ff;
 }
 
 .link-row button:disabled {
@@ -109,57 +165,123 @@ input:disabled {
     text-decoration: none;
 }
 
+.link-row span {
+    color: #557;
+}
+
 /* ----- NEON CUSTOM CHECKBOX (Remember Me) ----- */
-#rememberMe {
-    display: none;
-}
-
-label[for="rememberMe"] {
-    display: inline-flex;
+.remember-me-wrapper {
+    display: flex;
     align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    font-size: 0.85rem;
-    color: #ccf;
-    transition: 0.2s;
+    gap: 10px;
     margin: 12px 0;
+    justify-content: flex-start;
 }
 
-label[for="rememberMe"]::before {
-    content: "";
-    width: 18px;
-    height: 18px;
-    border: 1px solid #0ff;
+#rememberMe {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.custom-checkbox {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    border: 2px solid #0ff;
     border-radius: 4px;
     background: rgba(0, 20, 40, 0.8);
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: 0.2s;
     box-shadow: 0 0 2px #0ff;
-}
-
-#rememberMe:checked + label::before {
-    background: #0ff;
-    box-shadow: 0 0 8px #0ff;
-    content: "✓";
+    cursor: pointer;
     color: #000;
-    text-align: center;
-    line-height: 18px;
+    font-size: 14px;
     font-weight: bold;
 }
 
-label[for="rememberMe"]:hover::before {
+#rememberMe:checked + .custom-checkbox {
+    background: #0ff;
+    box-shadow: 0 0 8px #0ff;
+}
+
+#rememberMe:checked + .custom-checkbox::after {
+    content: "✓";
+    color: #000;
+}
+
+.custom-checkbox:hover {
     border-color: #0fa;
     box-shadow: 0 0 6px #0fa;
 }
 
-label[for="rememberMe"]:hover {
+.remember-label {
+    color: #ccf;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: 0.2s;
+    user-select: none;
+}
+
+.remember-label:hover {
     text-shadow: 0 0 4px #0ff;
     color: #fff;
 }
 
-#rememberMe:focus + label::before {
+#rememberMe:focus-visible + .custom-checkbox {
     outline: 2px solid #0ff;
     outline-offset: 2px;
+}
+
+/* ----- OTP Group ----- */
+#otpGroup {
+    display: none;
+    animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ----- Mobile Responsiveness ----- */
+@media (max-width: 480px) {
+    .login-wrapper {
+        padding: 24px 16px;
+        border-radius: 24px;
+    }
+
+    .login-title {
+        font-size: 1.6rem;
+    }
+
+    input {
+        font-size: 0.95rem;
+        padding: 10px 14px;
+    }
+
+    .btn-primary {
+        font-size: 0.95rem;
+        padding: 10px;
+    }
+}
+
+@media (max-width: 380px) {
+    .login-wrapper {
+        padding: 20px 12px;
+    }
+
+    .login-title {
+        font-size: 1.4rem;
+    }
+
+    .page-subtitle {
+        font-size: 0.85rem;
+    }
 }
 </style>
 
@@ -168,33 +290,47 @@ label[for="rememberMe"]:hover {
         <h2 class="login-title">Welcome Back</h2>
         <p class="page-subtitle" id="stepLabel">Enter your phone number</p>
 
-        <input
-            type="tel"
-            id="phone"
-            placeholder="Phone number"
-            maxlength="10"
-            autocomplete="tel"
-            inputmode="numeric"
-        >
-
-        <div id="otpGroup" style="display:none;">
+        <div class="input-group">
             <input
-                type="text"
-                id="otp"
-                placeholder="Enter OTP"
-                maxlength="6"
-                autocomplete="one-time-code"
+                type="tel"
+                id="phone"
+                placeholder="Phone number"
+                maxlength="10"
+                autocomplete="tel"
                 inputmode="numeric"
+                aria-label="Phone number"
             >
-            <!-- NEON CHECKBOX -->
-            <input type="checkbox" id="rememberMe">
-            <label for="rememberMe">Remember me (stay logged in until you logout)</label>
         </div>
 
-        <!-- Invisible reCAPTCHA container (Firebase requirement) -->
+        <div id="otpGroup">
+            <div class="input-group">
+                <input
+                    type="text"
+                    id="otp"
+                    placeholder="Enter OTP"
+                    maxlength="6"
+                    autocomplete="one-time-code"
+                    inputmode="numeric"
+                    aria-label="OTP code"
+                >
+            </div>
+
+            <div class="remember-me-wrapper">
+                <input type="checkbox" id="rememberMe">
+                <label for="rememberMe" class="custom-checkbox"></label>
+                <label for="rememberMe" class="remember-label">
+                    Remember me (stay logged in until you logout)
+                </label>
+            </div>
+        </div>
+
+        <!-- Invisible reCAPTCHA container -->
         <div id="recaptcha-container"></div>
 
-        <button class="btn-primary" id="actionBtn" type="button">Send OTP</button>
+        <button class="btn-primary" id="actionBtn" type="button">
+            <span class="btn-text">Send OTP</span>
+            <span class="spinner"></span>
+        </button>
 
         <div id="otpActions" class="link-row" style="display:none;">
             <button type="button" id="resendBtn">Resend OTP</button>
@@ -202,18 +338,22 @@ label[for="rememberMe"]:hover {
             <button type="button" id="changeNumberBtn">Change number</button>
         </div>
 
-        <p id="statusMessage" class="status-text"></p>
+        <p id="statusMessage" class="status-text" aria-live="polite"></p>
     </div>
 </div>
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getAuth, signInWithPhoneNumber, RecaptchaVerifier } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+  import {
+    getAuth,
+    signInWithPhoneNumber,
+    RecaptchaVerifier,
+    setPersistence,
+    browserLocalPersistence,
+    browserSessionPersistence
+  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
   // ========== FIREBASE CONFIGURATION ==========
-  // This config is meant to be public (it's shipped to every browser).
-  // Actual protection comes from Firebase Security Rules / App Check,
-  // not from hiding these values.
   const firebaseConfig = {
     apiKey: "AIzaSyDcMnIg7NT2RLnZ1ECTqSu-HVGz4TXxsKE",
     authDomain: "landmark-dde55.firebaseapp.com",
@@ -228,16 +368,11 @@ label[for="rememberMe"]:hover {
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
 
-  // Resend cooldown (seconds) to avoid hammering Firebase / getting rate limited
+  // ========== CONSTANTS ==========
   const RESEND_COOLDOWN_SECONDS = 30;
+  const MAX_RETRY_ATTEMPTS = 2;
 
-  let currentStep = "phone";
-  let confirmationResult = null;
-  let recaptchaVerifier = null;
-  let recaptchaRenderPromise = null;
-  let isSubmitting = false;
-  let resendTimer = null;
-
+  // ========== DOM ELEMENTS ==========
   const phoneInput = document.getElementById("phone");
   const otpGroup = document.getElementById("otpGroup");
   const otpInput = document.getElementById("otp");
@@ -249,95 +384,177 @@ label[for="rememberMe"]:hover {
   const resendBtn = document.getElementById("resendBtn");
   const changeNumberBtn = document.getElementById("changeNumberBtn");
 
-  // ----- Friendly error messages -----
-  // Firebase error messages can be cryptic or leak internal detail.
-  // Map known codes to plain-language text; fall back to a generic message
-  // for anything unrecognized so we never show raw SDK output to the user.
+  // ========== STATE ==========
+  let currentStep = "phone";
+  let confirmationResult = null;
+  let recaptchaVerifier = null;
+  let isSubmitting = false;
+  let resendTimer = null;
+  let retryCount = 0;
+
+  // ========== FRIENDLY ERROR MESSAGES ==========
   const FRIENDLY_ERRORS = {
-    "auth/invalid-phone-number": "That phone number doesn't look valid.",
+    "auth/invalid-phone-number": "That phone number doesn't look valid. Please check and try again.",
     "auth/missing-phone-number": "Please enter a phone number.",
-    "auth/quota-exceeded": "Too many attempts right now. Please try again later.",
-    "auth/user-disabled": "This account has been disabled. Contact support.",
-    "auth/operation-not-allowed": "Phone sign-in isn't enabled. Contact support.",
+    "auth/quota-exceeded": "Too many attempts right now. Please wait a few minutes and try again.",
+    "auth/user-disabled": "This account has been disabled. Please contact support.",
+    "auth/operation-not-allowed": "Phone sign-in isn't enabled. Please contact support.",
     "auth/too-many-requests": "Too many attempts. Please wait a bit and try again.",
-    "auth/captcha-check-failed": "Security check failed. Please refresh and try again.",
-    "auth/invalid-verification-code": "That code doesn't look right. Check and try again.",
-    "auth/code-expired": "That code has expired. Request a new one.",
-    "auth/network-request-failed": "Network issue — check your connection and try again."
+    "auth/captcha-check-failed": "Security check failed. Please refresh the page and try again.",
+    "auth/invalid-verification-code": "That code doesn't look right. Please check and try again.",
+    "auth/code-expired": "That code has expired. Please request a new one.",
+    "auth/network-request-failed": "Network issue detected. Please check your connection and try again.",
+    "auth/app-not-authorized": "App configuration error. Please contact support.",
+    "auth/credential-already-in-use": "This phone number is already in use.",
+    "auth/invalid-verification-id": "Verification expired. Please request a new OTP."
   };
 
-  function friendlyError(err, fallback) {
+  // ========== UTILITY FUNCTIONS ==========
+  function friendlyError(err) {
     if (err && err.code && FRIENDLY_ERRORS[err.code]) {
       return FRIENDLY_ERRORS[err.code];
     }
-    return fallback;
+    console.error('Unknown error:', err);
+    return 'Something went wrong. Please try again.';
   }
 
-  function setStatus(message, type) {
-    statusMsg.innerText = message;
-    statusMsg.classList.remove("error", "success");
+  function setStatus(message, type = null) {
+    statusMsg.innerText = message || '';
+    statusMsg.classList.remove("error", "success", "info");
     if (type) statusMsg.classList.add(type);
-  }
-
-  // Helper to fully tear down and reset reCAPTCHA after an error
-  function resetRecaptcha() {
-    if (recaptchaVerifier) {
-      try {
-        recaptchaVerifier.clear();
-      } catch (e) {
-        // ignore — clear() can throw if never rendered
-      }
-    }
-    const container = document.getElementById('recaptcha-container');
-    if (container) container.innerHTML = '';
-    recaptchaVerifier = null;
-    recaptchaRenderPromise = null;
-  }
-
-  // Create the verifier. Correct param order for Firebase v10+:
-  // auth instance, container id, options.
-  function initializeRecaptcha() {
-    try {
-      recaptchaVerifier = new RecaptchaVerifier(
-        auth,
-        'recaptcha-container',
-        {
-          size: 'invisible',
-          callback: () => {},
-          'expired-callback': () => {
-            resetRecaptcha();
-          }
-        }
-      );
-      return recaptchaVerifier;
-    } catch (error) {
-      setStatus('Failed to initialize security verification. Please refresh.', 'error');
-      return null;
-    }
-  }
-
-  // Ensure the verifier exists AND has been rendered exactly once.
-  async function ensureRecaptchaReady() {
-    if (!recaptchaVerifier) {
-      const verifier = initializeRecaptcha();
-      if (!verifier) throw new Error('Failed to initialize security verification');
-    }
-    if (!recaptchaRenderPromise) {
-      recaptchaRenderPromise = recaptchaVerifier.render();
-    }
-    await recaptchaRenderPromise;
-    return recaptchaVerifier;
   }
 
   function setLoading(loading) {
     isSubmitting = loading;
     actionBtn.disabled = loading;
+    actionBtn.classList.toggle('loading', loading);
   }
 
+  function showOtpStep() {
+    currentStep = "otp";
+    otpGroup.style.display = "block";
+    otpActions.style.display = "flex";
+    actionBtn.querySelector('.btn-text').textContent = "Verify OTP";
+    phoneInput.disabled = true;
+    stepLabel.textContent = "Enter OTP sent to your phone";
+    setStatus("OTP sent! Check your phone.", "success");
+
+    setTimeout(() => otpInput.focus(), 100);
+  }
+
+  function resetToPhoneStep() {
+    currentStep = "phone";
+    confirmationResult = null;
+    otpGroup.style.display = "none";
+    otpActions.style.display = "none";
+    otpInput.value = "";
+    actionBtn.querySelector('.btn-text').textContent = "Send OTP";
+    phoneInput.disabled = false;
+    stepLabel.textContent = "Enter your phone number";
+    setStatus("", null);
+    retryCount = 0;
+
+    if (resendTimer) {
+      clearInterval(resendTimer);
+      resendTimer = null;
+    }
+    resendBtn.disabled = false;
+    resendBtn.textContent = "Resend OTP";
+
+    resetRecaptcha();
+    phoneInput.focus();
+  }
+
+  // ========== RECAPTCHA MANAGEMENT (FIXED) ==========
+  function initializeRecaptcha() {
+      try {
+          // Clear any existing verifier
+          if (recaptchaVerifier) {
+              try {
+                  recaptchaVerifier.clear();
+              } catch (e) {
+                  // Ignore
+              }
+              recaptchaVerifier = null;
+          }
+          
+          const container = document.getElementById('recaptcha-container');
+          if (container) container.innerHTML = '';
+          
+          // Create new verifier
+          recaptchaVerifier = new RecaptchaVerifier(
+              'recaptcha-container',
+              {
+                  size: 'invisible',
+                  callback: () => {
+                      // reCAPTCHA solved - now we can proceed
+                      console.log('reCAPTCHA solved');
+                      // Don't auto-submit, let the user click the button
+                  },
+                  'expired-callback': () => {
+                      console.log('reCAPTCHA expired');
+                      setStatus("Security verification expired. Please try again.", "error");
+                      resetRecaptcha();
+                  },
+                  'error-callback': () => {
+                      console.error('reCAPTCHA error');
+                      setStatus("Security verification error. Please refresh.", "error");
+                  }
+              },
+              auth
+          );
+          
+          // IMPORTANT: Don't render immediately - let Firebase handle it
+          return recaptchaVerifier;
+      } catch (error) {
+          console.error('reCAPTCHA initialization error:', error);
+          setStatus('Failed to initialize security verification. Please refresh the page.', 'error');
+          return null;
+      }
+  }
+
+  async function ensureRecaptchaReady() {
+      // If verifier doesn't exist or is invalid, recreate it
+      if (!recaptchaVerifier) {
+          const verifier = initializeRecaptcha();
+          if (!verifier) throw new Error('Failed to initialize security verification');
+      }
+      
+      // IMPORTANT: Render the verifier only if not already rendered
+      try {
+          // Check if already rendered by trying to get the widget ID
+          if (recaptchaVerifier._widgetId === undefined) {
+              await recaptchaVerifier.render();
+              console.log('reCAPTCHA rendered');
+          }
+      } catch (e) {
+          console.warn('reCAPTCHA render warning:', e);
+          // If render fails, recreate
+          const verifier = initializeRecaptcha();
+          if (!verifier) throw new Error('Failed to initialize security verification');
+          await verifier.render();
+      }
+      
+      return recaptchaVerifier;
+  }
+
+  function resetRecaptcha() {
+      if (recaptchaVerifier) {
+          try {
+              recaptchaVerifier.clear();
+          } catch (e) {
+              // Ignore
+          }
+          recaptchaVerifier = null;
+      }
+      const container = document.getElementById('recaptcha-container');
+      if (container) container.innerHTML = '';
+  }
+  // ========== RESEND COOLDOWN ==========
   function startResendCooldown() {
     let remaining = RESEND_COOLDOWN_SECONDS;
     resendBtn.disabled = true;
-    resendBtn.innerText = `Resend OTP (${remaining}s)`;
+    resendBtn.textContent = `Resend OTP (${remaining}s)`;
 
     if (resendTimer) clearInterval(resendTimer);
     resendTimer = setInterval(() => {
@@ -346,33 +563,140 @@ label[for="rememberMe"]:hover {
         clearInterval(resendTimer);
         resendTimer = null;
         resendBtn.disabled = false;
-        resendBtn.innerText = 'Resend OTP';
+        resendBtn.textContent = 'Resend OTP';
       } else {
-        resendBtn.innerText = `Resend OTP (${remaining}s)`;
+        resendBtn.textContent = `Resend OTP (${remaining}s)`;
       }
     }, 1000);
   }
 
+  // ========== CORE FUNCTIONS ==========
+
   async function sendOtp() {
     const phone = phoneInput.value.trim();
     if (!phone.match(/^[6-9]\d{9}$/)) {
-      setStatus('Enter a valid 10-digit Indian mobile number', 'error');
-      return false;
+        setStatus('Enter a valid 10-digit Indian mobile number (starting with 6-9)', 'error');
+        phoneInput.focus();
+        return false;
     }
     const fullPhone = '+91' + phone;
 
     setLoading(true);
-    setStatus('Sending OTP...', null);
+    setStatus('Sending OTP...', 'info');
 
     try {
-      const verifier = await ensureRecaptchaReady();
-      confirmationResult = await signInWithPhoneNumber(auth, fullPhone, verifier);
-      setStatus('OTP sent! Check your phone.', 'success');
-      return true;
+        // Ensure reCAPTCHA is ready
+        await ensureRecaptchaReady();
+        
+        // **ADD THIS - Small delay to ensure reCAPTCHA is fully ready**
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Send OTP
+        confirmationResult = await signInWithPhoneNumber(auth, fullPhone, recaptchaVerifier);
+        setStatus('OTP sent! Check your phone.', 'success');
+        retryCount = 0;
+        return true;
     } catch (err) {
-      setStatus(friendlyError(err, 'Failed to send OTP. Please try again.'), 'error');
-      resetRecaptcha();
-      return false;
+        console.error('Send OTP error:', err);
+        
+        // Handle specific errors
+        if (err.code === 'auth/captcha-check-failed') {
+            setStatus('Security check failed. Refreshing...', 'info');
+            resetRecaptcha();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            initializeRecaptcha();
+            setStatus('Please try again.', 'error');
+        } else if (err.code === 'auth/network-request-failed' && retryCount < MAX_RETRY_ATTEMPTS) {
+            retryCount++;
+            setStatus(`Network issue. Retrying (${retryCount}/${MAX_RETRY_ATTEMPTS})...`, 'info');
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            return sendOtp();
+        } else {
+            setStatus(friendlyError(err), 'error');
+        }
+        return false;
+    } finally {
+        setLoading(false);
+    }
+}
+
+  async function verifyOtp() {
+    const otp = otpInput.value.trim();
+    if (!otp) {
+      setStatus('Please enter the OTP', 'error');
+      otpInput.focus();
+      return;
+    }
+    if (otp.length !== 6) {
+      setStatus('OTP must be 6 digits', 'error');
+      otpInput.focus();
+      return;
+    }
+
+    if (!confirmationResult) {
+      setStatus('Session expired. Please request a new OTP.', 'error');
+      resetToPhoneStep();
+      return;
+    }
+
+    setLoading(true);
+    setStatus('Verifying...', 'info');
+
+    try {
+      // Set Firebase persistence based on remember me
+      const persistence = rememberMeCheckbox.checked 
+        ? browserLocalPersistence 
+        : browserSessionPersistence;
+      await setPersistence(auth, persistence);
+
+      const result = await confirmationResult.confirm(otp);
+      const idToken = await result.user.getIdToken();
+      const phone = phoneInput.value.trim();
+
+      const response = await fetch('/api/auth/firebase-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idToken,
+          phone,
+          remember_me: rememberMeCheckbox.checked
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        const storage = rememberMeCheckbox.checked ? localStorage : sessionStorage;
+        storage.setItem('access_token', data.access_token);
+        if (data.refresh_token) storage.setItem('refresh_token', data.refresh_token);
+
+        const role = data.user.role;
+        setStatus('Login successful! Redirecting...', 'success');
+
+        setTimeout(() => {
+          if (role === 'admin') {
+            window.location.href = '/admin/dashboard';
+          } else {
+            window.location.href = '/api/user/dashboard';
+          }
+        }, 500);
+      } else {
+        setStatus(data.error || 'Login failed. Please try again.', 'error');
+      }
+    } catch (err) {
+      console.error('Verify OTP error:', err);
+      const errorMessage = friendlyError(err);
+      setStatus(errorMessage, 'error');
+
+      otpInput.value = '';
+      otpInput.focus();
+
+      if (err.code === 'auth/code-expired') {
+        setStatus('OTP expired. Sending new one...', 'info');
+        setTimeout(() => {
+          handleResend();
+        }, 1000);
+      }
     } finally {
       setLoading(false);
     }
@@ -383,128 +707,81 @@ label[for="rememberMe"]:hover {
 
     if (currentStep === 'phone') {
       const sent = await sendOtp();
-      if (!sent) return;
-
-      currentStep = 'otp';
-      otpGroup.style.display = 'block';
-      otpActions.style.display = 'flex';
-      otpActions.style.justifyContent = 'center';
-      otpActions.style.alignItems = 'center';
-      otpActions.style.gap = '6px';
-      actionBtn.innerText = 'Verify OTP';
-      phoneInput.disabled = true;
-      stepLabel.innerText = 'Enter OTP sent to your phone';
-      startResendCooldown();
+      if (sent) {
+        showOtpStep();
+        startResendCooldown();
+      }
     } else {
-      const otp = otpInput.value.trim();
-      if (!otp) {
-        setStatus('Please enter the OTP', 'error');
-        return;
-      }
-      if (otp.length !== 6) {
-        setStatus('OTP must be 6 digits', 'error');
-        return;
-      }
-
-      setLoading(true);
-      setStatus('Verifying...', null);
-
-      try {
-        const result = await confirmationResult.confirm(otp);
-        const idToken = await result.user.getIdToken();
-        const phone = phoneInput.value.trim();
-
-        const response = await fetch('/api/auth/firebase-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            idToken,
-            phone,
-            remember_me: rememberMeCheckbox.checked
-          })
-        });
-        const data = await response.json();
-        if (response.ok) {
-          localStorage.setItem('access_token', data.access_token);
-          if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
-          const role = data.user.role;
-          setStatus('Login successful! Redirecting...', 'success');
-          if (role === 'admin') {
-            window.location.href = '/admin/dashboard';
-          } else {
-            window.location.href = '/api/user/dashboard';
-          }
-        } else {
-          setStatus(data.error || 'Login failed. Please try again.', 'error');
-        }
-      } catch (err) {
-        setStatus(friendlyError(err, 'Invalid OTP. Please try again.'), 'error');
-      } finally {
-        setLoading(false);
-      }
+      await verifyOtp();
     }
   }
 
-  function resetToPhoneStep() {
-    currentStep = 'phone';
-    confirmationResult = null;
-    otpGroup.style.display = 'none';
-    otpActions.style.display = 'none';
-    otpInput.value = '';
-    actionBtn.innerText = 'Send OTP';
-    phoneInput.disabled = false;
-    stepLabel.innerText = 'Enter your phone number';
-    setStatus('', null);
-    if (resendTimer) {
-      clearInterval(resendTimer);
-      resendTimer = null;
-    }
-    resetRecaptcha();
-    initializeRecaptcha();
-  }
-
-  // Wire up the main button
-  actionBtn.addEventListener('click', handleAction);
-
-  // Resend OTP without losing the phone step UI
-  resendBtn.addEventListener('click', async () => {
+  async function handleResend() {
     if (isSubmitting || resendBtn.disabled) return;
+
     resetRecaptcha();
     initializeRecaptcha();
     const sent = await sendOtp();
     if (sent) {
-      otpInput.value = '';
+      otpInput.value = "";
+      otpInput.focus();
       startResendCooldown();
+      setStatus("New OTP sent!", "success");
+    }
+  }
+
+  // ========== EVENT LISTENERS ==========
+
+  actionBtn.addEventListener('click', handleAction);
+  resendBtn.addEventListener('click', handleResend);
+  changeNumberBtn.addEventListener('click', resetToPhoneStep);
+
+  phoneInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && currentStep === 'phone') {
+      event.preventDefault();
+      handleAction();
     }
   });
 
-  // Let the user go back and fix the phone number
-  changeNumberBtn.addEventListener('click', () => {
-    resetToPhoneStep();
+  otpInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && currentStep === 'otp') {
+      event.preventDefault();
+      handleAction();
+    }
   });
 
-  // Allow Enter key too
-  [phoneInput, otpInput].forEach((el) => {
-    el.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        handleAction();
-      }
-    });
-  });
-
-  // Handle phone input formatting
-  phoneInput.addEventListener('input', function () {
+  phoneInput.addEventListener('input', function() {
     this.value = this.value.replace(/\D/g, '').slice(0, 10);
   });
 
-  // Handle OTP input formatting
-  otpInput.addEventListener('input', function () {
+  otpInput.addEventListener('input', function() {
     this.value = this.value.replace(/\D/g, '').slice(0, 6);
+    if (this.value.length === 6 && currentStep === 'otp' && !isSubmitting) {
+      handleAction();
+    }
   });
 
-  // Pre-create (but don't render) the verifier once the DOM is ready.
-  initializeRecaptcha();
+  document.addEventListener('DOMContentLoaded', () => {
+    // Initialize reCAPTCHA
+    initializeRecaptcha();
+    
+    // Check if user had "Remember me" checked
+    const hasRemembered = localStorage.getItem('access_token') !== null;
+    if (hasRemembered) {
+      rememberMeCheckbox.checked = true;
+    }
+    phoneInput.focus();
+  });
+
+  // ========== CLEANUP ==========
+  window.addEventListener('beforeunload', () => {
+    if (resendTimer) {
+      clearInterval(resendTimer);
+    }
+    resetRecaptcha();
+  });
+
+  console.log('Login page initialized successfully');
 </script>
 
 {% endblock %}
