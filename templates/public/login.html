@@ -41,6 +41,26 @@
     margin-bottom: 12px;
 }
 
+.phone-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.country-code {
+    width: 64px;
+    flex: 0 0 64px;
+    padding: 12px 8px;
+    border-radius: 30px;
+    border: 1px solid #2a4c7a;
+    background: #000;
+    color: #8aaee0;
+    text-align: center;
+    font-size: 1rem;
+    pointer-events: none;
+    user-select: none;
+}
+
 input {
     width: 100%;
     padding: 12px 16px;
@@ -290,24 +310,29 @@ input::placeholder {
         <h2 class="login-title">Welcome Back</h2>
         <p class="page-subtitle" id="stepLabel">Enter your phone number</p>
 
+        <!-- Phone Input -->
         <div class="input-group">
-            <input
-                type="tel"
-                id="phone"
-                placeholder="Phone number"
-                maxlength="10"
-                autocomplete="tel"
-                inputmode="numeric"
-                aria-label="Phone number"
-            >
+            <div class="phone-row">
+                <div class="country-code">+91</div>
+                <input
+                    type="tel"
+                    id="phoneInput"
+                    placeholder="10-digit mobile number"
+                    maxlength="10"
+                    autocomplete="tel-national"
+                    inputmode="numeric"
+                    aria-label="Phone number"
+                >
+            </div>
         </div>
 
+        <!-- OTP Input (hidden initially) -->
         <div id="otpGroup">
             <div class="input-group">
                 <input
                     type="text"
-                    id="otp"
-                    placeholder="Enter OTP"
+                    id="otpInput"
+                    placeholder="Enter 6-digit OTP"
                     maxlength="6"
                     autocomplete="one-time-code"
                     inputmode="numeric"
@@ -324,14 +349,13 @@ input::placeholder {
             </div>
         </div>
 
-        <!-- Invisible reCAPTCHA container -->
-        <div id="recaptcha-container"></div>
-
+        <!-- Action Button -->
         <button class="btn-primary" id="actionBtn" type="button">
             <span class="btn-text">Send OTP</span>
             <span class="spinner"></span>
         </button>
 
+        <!-- OTP Actions (hidden initially) -->
         <div id="otpActions" class="link-row" style="display:none;">
             <button type="button" id="resendBtn">Resend OTP</button>
             <span>&middot;</span>
@@ -342,95 +366,48 @@ input::placeholder {
     </div>
 </div>
 
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import {
-    getAuth,
-    signInWithPhoneNumber,
-    RecaptchaVerifier,
-    setPersistence,
-    browserLocalPersistence,
-    browserSessionPersistence
-  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+<script>
+// ========================================
+// MESSAGE CENTRAL OTP LOGIN
+// ========================================
 
-  // ========== FIREBASE CONFIGURATION ==========
-  const firebaseConfig = {
-    apiKey: "AIzaSyDcMnIg7NT2RLnZ1ECTqSu-HVGz4TXxsKE",
-    authDomain: "landmark-dde55.firebaseapp.com",
-    projectId: "landmark-dde55",
-    storageBucket: "landmark-dde55.firebasestorage.app",
-    messagingSenderId: "204601925235",
-    appId: "1:204601925235:web:a30963f83189219e681406",
-    measurementId: "G-8MEJ5EDX3B"
-  };
-  // ============================================
+const RESEND_COOLDOWN_SECONDS = 30;
+const PHONE_REGEX = /^[6-9]\d{9}$/;   // real Indian mobile numbers only
+const OTP_REGEX = /^\d{6}$/;
 
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
+// DOM ELEMENTS
+const phoneInput = document.getElementById("phoneInput");
+const otpGroup = document.getElementById("otpGroup");
+const otpInput = document.getElementById("otpInput");
+const actionBtn = document.getElementById("actionBtn");
+const statusMsg = document.getElementById("statusMessage");
+const stepLabel = document.getElementById("stepLabel");
+const rememberMeCheckbox = document.getElementById("rememberMe");
+const otpActions = document.getElementById("otpActions");
+const resendBtn = document.getElementById("resendBtn");
+const changeNumberBtn = document.getElementById("changeNumberBtn");
 
-  // ========== CONSTANTS ==========
-  const RESEND_COOLDOWN_SECONDS = 30;
-  const MAX_RETRY_ATTEMPTS = 2;
+// STATE
+let currentStep = "phone";
+let pendingPhone = "";
+let isSubmitting = false;
+let resendTimer = null;
 
-  // ========== DOM ELEMENTS ==========
-  const phoneInput = document.getElementById("phone");
-  const otpGroup = document.getElementById("otpGroup");
-  const otpInput = document.getElementById("otp");
-  const actionBtn = document.getElementById("actionBtn");
-  const statusMsg = document.getElementById("statusMessage");
-  const stepLabel = document.getElementById("stepLabel");
-  const rememberMeCheckbox = document.getElementById("rememberMe");
-  const otpActions = document.getElementById("otpActions");
-  const resendBtn = document.getElementById("resendBtn");
-  const changeNumberBtn = document.getElementById("changeNumberBtn");
+// ========== UTILITY FUNCTIONS ==========
 
-  // ========== STATE ==========
-  let currentStep = "phone";
-  let confirmationResult = null;
-  let recaptchaVerifier = null;
-  let isSubmitting = false;
-  let resendTimer = null;
-  let retryCount = 0;
-
-  // ========== FRIENDLY ERROR MESSAGES ==========
-  const FRIENDLY_ERRORS = {
-    "auth/invalid-phone-number": "That phone number doesn't look valid. Please check and try again.",
-    "auth/missing-phone-number": "Please enter a phone number.",
-    "auth/quota-exceeded": "Too many attempts right now. Please wait a few minutes and try again.",
-    "auth/user-disabled": "This account has been disabled. Please contact support.",
-    "auth/operation-not-allowed": "Phone sign-in isn't enabled. Please contact support.",
-    "auth/too-many-requests": "Too many attempts. Please wait a bit and try again.",
-    "auth/captcha-check-failed": "Security check failed. Please refresh the page and try again.",
-    "auth/invalid-verification-code": "That code doesn't look right. Please check and try again.",
-    "auth/code-expired": "That code has expired. Please request a new one.",
-    "auth/network-request-failed": "Network issue detected. Please check your connection and try again.",
-    "auth/app-not-authorized": "App configuration error. Please contact support.",
-    "auth/credential-already-in-use": "This phone number is already in use.",
-    "auth/invalid-verification-id": "Verification expired. Please request a new OTP."
-  };
-
-  // ========== UTILITY FUNCTIONS ==========
-  function friendlyError(err) {
-    if (err && err.code && FRIENDLY_ERRORS[err.code]) {
-      return FRIENDLY_ERRORS[err.code];
-    }
-    console.error('Unknown error:', err);
-    return 'Something went wrong. Please try again.';
-  }
-
-  function setStatus(message, type = null) {
+function setStatus(message, type = null) {
     statusMsg.innerText = message || '';
     statusMsg.classList.remove("error", "success", "info");
     if (type) statusMsg.classList.add(type);
-  }
+}
 
-  function setLoading(loading) {
+function setLoading(loading) {
     isSubmitting = loading;
     actionBtn.disabled = loading;
     actionBtn.classList.toggle('loading', loading);
-  }
+}
 
-  function showOtpStep() {
+function showOtpStep() {
     currentStep = "otp";
     otpGroup.style.display = "block";
     otpActions.style.display = "flex";
@@ -438,13 +415,11 @@ input::placeholder {
     phoneInput.disabled = true;
     stepLabel.textContent = "Enter OTP sent to your phone";
     setStatus("OTP sent! Check your phone.", "success");
-
     setTimeout(() => otpInput.focus(), 100);
-  }
+}
 
-  function resetToPhoneStep() {
+function resetToPhoneStep() {
     currentStep = "phone";
-    confirmationResult = null;
     otpGroup.style.display = "none";
     otpActions.style.display = "none";
     otpInput.value = "";
@@ -452,336 +427,222 @@ input::placeholder {
     phoneInput.disabled = false;
     stepLabel.textContent = "Enter your phone number";
     setStatus("", null);
-    retryCount = 0;
+    pendingPhone = "";
 
     if (resendTimer) {
-      clearInterval(resendTimer);
-      resendTimer = null;
+        clearInterval(resendTimer);
+        resendTimer = null;
     }
     resendBtn.disabled = false;
     resendBtn.textContent = "Resend OTP";
-
-    resetRecaptcha();
     phoneInput.focus();
-  }
+}
 
-  // ========== RECAPTCHA MANAGEMENT (FIXED) ==========
-  function initializeRecaptcha() {
-      try {
-          // Clear any existing verifier
-          if (recaptchaVerifier) {
-              try {
-                  recaptchaVerifier.clear();
-              } catch (e) {
-                  // Ignore
-              }
-              recaptchaVerifier = null;
-          }
-          
-          const container = document.getElementById('recaptcha-container');
-          if (container) container.innerHTML = '';
-          
-          // Create new verifier
-          recaptchaVerifier = new RecaptchaVerifier(
-              'recaptcha-container',
-              {
-                  size: 'invisible',
-                  callback: () => {
-                      // reCAPTCHA solved - now we can proceed
-                      console.log('reCAPTCHA solved');
-                      // Don't auto-submit, let the user click the button
-                  },
-                  'expired-callback': () => {
-                      console.log('reCAPTCHA expired');
-                      setStatus("Security verification expired. Please try again.", "error");
-                      resetRecaptcha();
-                  },
-                  'error-callback': () => {
-                      console.error('reCAPTCHA error');
-                      setStatus("Security verification error. Please refresh.", "error");
-                  }
-              },
-              auth
-          );
-          
-          // IMPORTANT: Don't render immediately - let Firebase handle it
-          return recaptchaVerifier;
-      } catch (error) {
-          console.error('reCAPTCHA initialization error:', error);
-          setStatus('Failed to initialize security verification. Please refresh the page.', 'error');
-          return null;
-      }
-  }
-
-  async function ensureRecaptchaReady() {
-      // If verifier doesn't exist or is invalid, recreate it
-      if (!recaptchaVerifier) {
-          const verifier = initializeRecaptcha();
-          if (!verifier) throw new Error('Failed to initialize security verification');
-      }
-      
-      // IMPORTANT: Render the verifier only if not already rendered
-      try {
-          // Check if already rendered by trying to get the widget ID
-          if (recaptchaVerifier._widgetId === undefined) {
-              await recaptchaVerifier.render();
-              console.log('reCAPTCHA rendered');
-          }
-      } catch (e) {
-          console.warn('reCAPTCHA render warning:', e);
-          // If render fails, recreate
-          const verifier = initializeRecaptcha();
-          if (!verifier) throw new Error('Failed to initialize security verification');
-          await verifier.render();
-      }
-      
-      return recaptchaVerifier;
-  }
-
-  function resetRecaptcha() {
-      if (recaptchaVerifier) {
-          try {
-              recaptchaVerifier.clear();
-          } catch (e) {
-              // Ignore
-          }
-          recaptchaVerifier = null;
-      }
-      const container = document.getElementById('recaptcha-container');
-      if (container) container.innerHTML = '';
-  }
-  // ========== RESEND COOLDOWN ==========
-  function startResendCooldown() {
+function startResendCooldown() {
     let remaining = RESEND_COOLDOWN_SECONDS;
     resendBtn.disabled = true;
     resendBtn.textContent = `Resend OTP (${remaining}s)`;
 
     if (resendTimer) clearInterval(resendTimer);
     resendTimer = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        clearInterval(resendTimer);
-        resendTimer = null;
-        resendBtn.disabled = false;
-        resendBtn.textContent = 'Resend OTP';
-      } else {
-        resendBtn.textContent = `Resend OTP (${remaining}s)`;
-      }
+        remaining -= 1;
+        if (remaining <= 0) {
+            clearInterval(resendTimer);
+            resendTimer = null;
+            resendBtn.disabled = false;
+            resendBtn.textContent = 'Resend OTP';
+        } else {
+            resendBtn.textContent = `Resend OTP (${remaining}s)`;
+        }
     }, 1000);
-  }
+}
 
-  // ========== CORE FUNCTIONS ==========
+// ========================================
+// CORE FUNCTIONS
+// ========================================
 
-  async function sendOtp() {
+async function sendOTP() {
     const phone = phoneInput.value.trim();
-    if (!phone.match(/^[6-9]\d{9}$/)) {
-        setStatus('Enter a valid 10-digit Indian mobile number (starting with 6-9)', 'error');
+
+    if (!PHONE_REGEX.test(phone)) {
+        setStatus('Enter a valid 10-digit mobile number (starting 6-9)', 'error');
         phoneInput.focus();
         return false;
     }
-    const fullPhone = '+91' + phone;
 
     setLoading(true);
     setStatus('Sending OTP...', 'info');
 
     try {
-        // Ensure reCAPTCHA is ready
-        await ensureRecaptchaReady();
-        
-        // **ADD THIS - Small delay to ensure reCAPTCHA is fully ready**
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-        // Send OTP
-        confirmationResult = await signInWithPhoneNumber(auth, fullPhone, recaptchaVerifier);
-        setStatus('OTP sent! Check your phone.', 'success');
-        retryCount = 0;
-        return true;
-    } catch (err) {
-        console.error('Send OTP error:', err);
-        
-        // Handle specific errors
-        if (err.code === 'auth/captcha-check-failed') {
-            setStatus('Security check failed. Refreshing...', 'info');
-            resetRecaptcha();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            initializeRecaptcha();
-            setStatus('Please try again.', 'error');
-        } else if (err.code === 'auth/network-request-failed' && retryCount < MAX_RETRY_ATTEMPTS) {
-            retryCount++;
-            setStatus(`Network issue. Retrying (${retryCount}/${MAX_RETRY_ATTEMPTS})...`, 'info');
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            return sendOtp();
-        } else {
-            setStatus(friendlyError(err), 'error');
+        const response = await fetch('/api/auth/send-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            pendingPhone = phone;
+            return true;
         }
+
+        setStatus(result.message || 'Failed to send OTP. Please try again.', 'error');
+        return false;
+    } catch (error) {
+        console.error('sendOTP error:', error);
+        setStatus('Network error. Please check your connection and try again.', 'error');
         return false;
     } finally {
         setLoading(false);
     }
 }
 
-  async function verifyOtp() {
+async function verifyOTP() {
     const otp = otpInput.value.trim();
-    if (!otp) {
-      setStatus('Please enter the OTP', 'error');
-      otpInput.focus();
-      return;
-    }
-    if (otp.length !== 6) {
-      setStatus('OTP must be 6 digits', 'error');
-      otpInput.focus();
-      return;
+
+    if (!OTP_REGEX.test(otp)) {
+        setStatus('Please enter a valid 6-digit OTP', 'error');
+        otpInput.focus();
+        return;
     }
 
-    if (!confirmationResult) {
-      setStatus('Session expired. Please request a new OTP.', 'error');
-      resetToPhoneStep();
-      return;
+    if (!pendingPhone) {
+        setStatus('Session expired. Please request a new OTP.', 'error');
+        resetToPhoneStep();
+        return;
     }
 
     setLoading(true);
-    setStatus('Verifying...', 'info');
+    setStatus('Verifying OTP...', 'info');
 
     try {
-      // Set Firebase persistence based on remember me
-      const persistence = rememberMeCheckbox.checked 
-        ? browserLocalPersistence 
-        : browserSessionPersistence;
-      await setPersistence(auth, persistence);
+        const response = await fetch('/api/auth/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                phone: pendingPhone,
+                otp: otp,
+                remember_me: rememberMeCheckbox.checked
+            })
+        });
 
-      const result = await confirmationResult.confirm(otp);
-      const idToken = await result.user.getIdToken();
-      const phone = phoneInput.value.trim();
+        const result = await response.json();
 
-      const response = await fetch('/api/auth/firebase-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken,
-          phone,
-          remember_me: rememberMeCheckbox.checked
-        })
-      });
+        if (response.ok && result.success) {
+            // Tokens are set as httpOnly cookies server-side — nothing to store client-side.
+            setStatus('Login successful! Redirecting...', 'success');
 
-      const data = await response.json();
-
-      if (response.ok) {
-        const storage = rememberMeCheckbox.checked ? localStorage : sessionStorage;
-        storage.setItem('access_token', data.access_token);
-        if (data.refresh_token) storage.setItem('refresh_token', data.refresh_token);
-
-        const role = data.user.role;
-        setStatus('Login successful! Redirecting...', 'success');
-
-        setTimeout(() => {
-          if (role === 'admin') {
-            window.location.href = '/admin/dashboard';
-          } else {
-            window.location.href = '/api/user/dashboard';
-          }
-        }, 500);
-      } else {
-        setStatus(data.error || 'Login failed. Please try again.', 'error');
-      }
-    } catch (err) {
-      console.error('Verify OTP error:', err);
-      const errorMessage = friendlyError(err);
-      setStatus(errorMessage, 'error');
-
-      otpInput.value = '';
-      otpInput.focus();
-
-      if (err.code === 'auth/code-expired') {
-        setStatus('OTP expired. Sending new one...', 'info');
-        setTimeout(() => {
-          handleResend();
-        }, 1000);
-      }
+            setTimeout(() => {
+                const role = result.data.user.role;
+                window.location.href = (role === 'admin') ? '/admin/dashboard' : '/dashboard';
+            }, 1200);
+        } else {
+            setStatus(result.message || 'Verification failed. Please try again.', 'error');
+            otpInput.value = '';
+            otpInput.focus();
+        }
+    } catch (error) {
+        console.error('verifyOTP error:', error);
+        setStatus('Network error. Please try again.', 'error');
     } finally {
-      setLoading(false);
+        setLoading(false);
     }
-  }
+}
 
-  async function handleAction() {
+async function handleResend() {
+    if (isSubmitting || resendBtn.disabled) return;
+
+    if (!pendingPhone) {
+        setStatus('Please enter your phone number first.', 'error');
+        return;
+    }
+
+    setLoading(true);
+    setStatus('Resending OTP...', 'info');
+
+    try {
+        const response = await fetch('/api/auth/resend-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: pendingPhone })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            setStatus('New OTP sent!', 'success');
+            otpInput.value = '';
+            otpInput.focus();
+            startResendCooldown();
+        } else {
+            setStatus(result.message || 'Failed to resend OTP.', 'error');
+        }
+    } catch (error) {
+        console.error('handleResend error:', error);
+        setStatus('Network error. Please try again.', 'error');
+    } finally {
+        setLoading(false);
+    }
+}
+
+async function handleAction() {
     if (isSubmitting) return;
 
     if (currentStep === 'phone') {
-      const sent = await sendOtp();
-      if (sent) {
-        showOtpStep();
-        startResendCooldown();
-      }
+        const sent = await sendOTP();
+        if (sent) {
+            showOtpStep();
+            startResendCooldown();
+        }
     } else {
-      await verifyOtp();
+        await verifyOTP();
     }
-  }
+}
 
-  async function handleResend() {
-    if (isSubmitting || resendBtn.disabled) return;
+// ========================================
+// EVENT LISTENERS
+// ========================================
 
-    resetRecaptcha();
-    initializeRecaptcha();
-    const sent = await sendOtp();
-    if (sent) {
-      otpInput.value = "";
-      otpInput.focus();
-      startResendCooldown();
-      setStatus("New OTP sent!", "success");
-    }
-  }
+actionBtn.addEventListener('click', handleAction);
+resendBtn.addEventListener('click', handleResend);
+changeNumberBtn.addEventListener('click', resetToPhoneStep);
 
-  // ========== EVENT LISTENERS ==========
-
-  actionBtn.addEventListener('click', handleAction);
-  resendBtn.addEventListener('click', handleResend);
-  changeNumberBtn.addEventListener('click', resetToPhoneStep);
-
-  phoneInput.addEventListener('keydown', (event) => {
+phoneInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && currentStep === 'phone') {
-      event.preventDefault();
-      handleAction();
+        event.preventDefault();
+        handleAction();
     }
-  });
+});
 
-  otpInput.addEventListener('keydown', (event) => {
+otpInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && currentStep === 'otp') {
-      event.preventDefault();
-      handleAction();
+        event.preventDefault();
+        handleAction();
     }
-  });
+});
 
-  phoneInput.addEventListener('input', function() {
+phoneInput.addEventListener('input', function () {
     this.value = this.value.replace(/\D/g, '').slice(0, 10);
-  });
+});
 
-  otpInput.addEventListener('input', function() {
+otpInput.addEventListener('input', function () {
     this.value = this.value.replace(/\D/g, '').slice(0, 6);
     if (this.value.length === 6 && currentStep === 'otp' && !isSubmitting) {
-      handleAction();
+        handleAction();
     }
-  });
+});
 
-  document.addEventListener('DOMContentLoaded', () => {
-    // Initialize reCAPTCHA
-    initializeRecaptcha();
-    
-    // Check if user had "Remember me" checked
-    const hasRemembered = localStorage.getItem('access_token') !== null;
-    if (hasRemembered) {
-      rememberMeCheckbox.checked = true;
-    }
+document.addEventListener('DOMContentLoaded', () => {
     phoneInput.focus();
-  });
+});
 
-  // ========== CLEANUP ==========
-  window.addEventListener('beforeunload', () => {
+window.addEventListener('beforeunload', () => {
     if (resendTimer) {
-      clearInterval(resendTimer);
+        clearInterval(resendTimer);
+        resendTimer = null;
     }
-    resetRecaptcha();
-  });
-
-  console.log('Login page initialized successfully');
+});
 </script>
 
 {% endblock %}
