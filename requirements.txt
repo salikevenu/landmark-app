@@ -1,6 +1,4 @@
-# Replace requirements.txt with clean version
-@"
-# Core Framework
+﻿# Core Framework
 Flask==2.3.3
 Flask-CORS==4.0.0
 Flask-JWT-Extended==4.5.2
@@ -60,6 +58,3 @@ pytest-cov==4.1.0
 black==23.7.0
 flake8==6.1.0
 isort==5.12.0
-"@ | Out-File -FilePath "requirements.txt" -Encoding UTF8 -Force
-
-Write-Host "✅ requirements.txt fixed!" -ForegroundColor Green
