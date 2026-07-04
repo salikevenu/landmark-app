@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # Core Framework
+=======
+# Core Framework - Fixed Versions
+>>>>>>> ab1344b130f37a86656de3ce1e0c1eef00b0cb82
 Flask==2.3.3
 Flask-CORS==4.0.0
 Flask-JWT-Extended==4.5.2
