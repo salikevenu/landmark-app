@@ -25,3 +25,4 @@ python-redis-lock==4.0.0
 razorpay==1.4.2
 redis==4.5.5
 requests>=2.33.0,<3.0.0
+setuptools
