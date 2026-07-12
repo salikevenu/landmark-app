@@ -15,8 +15,8 @@ haversine==2.8.0
 passlib==1.7.4
 phonenumbers==8.13.17
 psycopg2-binary==2.9.7
-pydantic>=1.10.0,<2.0.0
-pydantic-settings>=1.0.0,<2.0.0
+pydantic>=2.0.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
 PyJWT==2.12.1
 pyotp==2.8.0
 python-dotenv==1.0.0
