@@ -47,7 +47,7 @@ h2==4.3.0
 haversine==2.8.0
 hpack==4.1.0
 httpcore==0.17.3
-httpx==0.24.1
+httpx==0.28.0
 hyperframe==6.1.0
 idna==3.13
 iniconfig==2.3.0
