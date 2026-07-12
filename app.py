@@ -25,6 +25,7 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies
 )
+
 from werkzeug.exceptions import HTTPException
 
 from language.translations import TRANSLATIONS
