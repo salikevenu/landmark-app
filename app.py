@@ -27,7 +27,7 @@ from flask_jwt_extended import (
 )
 
 from werkzeug.exceptions import HTTPException
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from language.translations import TRANSLATIONS
 from extensions import init_extensions, limiter, get_razorpay_client
 from master_agent import MasterAgent
