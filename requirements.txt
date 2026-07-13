@@ -22,6 +22,8 @@ pyotp==2.8.0
 python-dotenv==1.0.0
 python-jose==3.3.0
 python-redis-lock==4.0.0
+pillow
+qrcode
 razorpay==1.4.2
 redis==4.5.5
 requests>=2.33.0,<3.0.0
