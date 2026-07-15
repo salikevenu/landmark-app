@@ -27,4 +27,4 @@ qrcode
 razorpay==1.4.2
 redis==4.5.5
 requests>=2.33.0,<3.0.0
-setuptools
+setuptools==65.5.0

@@ -27,18 +27,48 @@ def request_withdraw():
 
         conn = get_db()
 
-        # Check wallet balance
+        # Get wallet with policy flags
         wallet = conn.execute(
-            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            text("SELECT balance, had_first_withdrawal, active_business_referrals_count FROM wallet_balance WHERE user_id = :uid"),
             {"uid": user_id}
         ).fetchone()
 
         if not wallet:
             return jsonify({"error": "Wallet not found"}), 404
-        if wallet._mapping["balance"] < amount:
+
+        balance = float(wallet._mapping["balance"])
+        had_first = wallet._mapping["had_first_withdrawal"]
+        biz_refs = wallet._mapping["active_business_referrals_count"]
+
+        # ========== FIRST WITHDRAWAL RULES ==========
+        if not had_first:
+            if balance < 500:
+                return jsonify({"error": "First withdrawal requires minimum ₹500 balance"}), 400
+            if biz_refs < 1:
+                return jsonify({"error": "You must refer at least 1 paid business subscription to withdraw"}), 400
+
+            # Check for pending referral rewards (fraud verification)
+            pending = conn.execute(
+                text("SELECT COUNT(*) FROM wallet_transactions WHERE user_id=:uid AND source='referral' AND status='pending'"),
+                {"uid": user_id}
+            ).scalar()
+            if pending > 0:
+                return jsonify({"error": "Your referral rewards are still under verification"}), 400
+        else:
+            # ========== AFTER FIRST WITHDRAWAL ==========
+            if amount < 100:
+                return jsonify({"error": "Minimum withdrawal amount is ₹100"}), 400
+
+        # Check sufficient balance
+        if balance < amount:
             return jsonify({"error": "Insufficient wallet balance"}), 400
 
-        # Create withdraw request
+        # Deduct from wallet and create withdraw request (atomic)
+        conn.execute(
+            text("UPDATE wallet_balance SET balance = balance - :amount, updated_at = NOW() WHERE user_id = :uid"),
+            {"amount": amount, "uid": user_id}
+        )
+
         conn.execute(text("""
             INSERT INTO withdraw_requests
             (user_id, amount, payment_method, upi_id, status, created_at)
@@ -50,13 +80,17 @@ def request_withdraw():
             "upi_id": upi_id,
             "created_at": datetime.utcnow()
         })
+
         conn.commit()
 
-        return jsonify({"message": "Withdrawal request submitted", "status": "pending"}), 200
+        return jsonify({
+            "message": "Withdrawal request submitted",
+            "status": "pending",
+            "new_balance": round(balance - amount, 2)
+        }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # ============================
 # USER WITHDRAW HISTORY
@@ -129,33 +163,24 @@ def approve_withdraw(withdraw_id):
             return jsonify({"error": "Already processed"}), 400
 
         user_id = req._mapping["user_id"]
-        amount = req._mapping["amount"]
 
-        # Check current balance
-        wallet = conn.execute(
-            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
-            {"uid": user_id}
-        ).fetchone()
-        if not wallet or wallet._mapping["balance"] < amount:
-            return jsonify({"error": "Insufficient balance now"}), 400
-
-        # Deduct and update status (transactionally)
+        # Mark as approved
         conn.execute(
-            text("UPDATE wallet_balance SET balance = balance - :amount WHERE user_id = :uid"),
-            {"amount": amount, "uid": user_id}
-        )
-        conn.execute(
-            text("UPDATE withdraw_requests SET status = 'approved' WHERE id = :wid"),
+            text("UPDATE withdraw_requests SET status = 'approved', processed_at = NOW() WHERE id = :wid"),
             {"wid": withdraw_id}
         )
-        conn.commit()
 
+        # Set first withdrawal flag if not already set
+        conn.execute(
+            text("UPDATE wallet_balance SET had_first_withdrawal = TRUE WHERE user_id = :uid AND had_first_withdrawal = FALSE"),
+            {"uid": user_id}
+        )
+
+        conn.commit()
         return jsonify({"message": "Withdrawal approved"})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 # ============================
 # ADMIN REJECT WITHDRAW
 # ============================

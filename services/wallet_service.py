@@ -134,3 +134,32 @@ def get_wallet_transactions(user_id):
         }
         for r in rows
     ]
+
+# =========================
+# ADD PENDING REFERRAL REWARD
+# =========================
+def add_pending_referral_reward(user_id, referral_transaction_id):
+    """
+    Adds ₹2 pending referral reward to wallet when a new user is referred.
+    Reward stays 'pending' until admin verifies the referral.
+    """
+    conn = get_db()
+    # Ensure wallet row exists
+    conn.execute(text("""
+        INSERT INTO wallet_balance (user_id, balance)
+        VALUES (:uid, 0)
+        ON CONFLICT (user_id) DO NOTHING
+    """), {"uid": user_id})
+    
+    # Insert pending transaction
+    conn.execute(text("""
+        INSERT INTO wallet_transactions
+        (user_id, amount, type, source, reference_id, status, created_at)
+        VALUES (:uid, 2, 'credit', 'referral', :ref_id, 'pending', NOW())
+    """), {
+        "uid": user_id,
+        "ref_id": str(referral_transaction_id)
+    })
+    
+    conn.commit()
+    return True

@@ -470,3 +470,171 @@ def api_audit_log():
 
     logs = [dict(r._mapping) for r in rows]
     return jsonify({"logs": logs, "total": total, "page": page})
+
+# ============================
+# VERIFY REFERRAL (CONVERT PENDING TO CREDIT)
+# ============================
+@admin_bp.route("/api/admin/referrals/<int:ref_id>/verify", methods=["POST"])
+@admin_required
+def verify_referral(ref_id):
+    """Admin verifies a referral – converts pending rewards to credit"""
+    try:
+        admin_id, admin_phone = get_admin_info()
+        ip = request.remote_addr
+        conn = get_db()
+
+        ref = conn.execute(
+            text("SELECT referrer_id, referred_user_id, status FROM referral_transactions WHERE id = :id"),
+            {"id": ref_id}
+        ).fetchone()
+
+        if not ref:
+            return jsonify({"error": "Referral not found"}), 404
+
+        referrer_id = ref._mapping["referrer_id"]
+        referred_user_id = ref._mapping["referred_user_id"]
+
+        # Mark referral as completed
+        conn.execute(
+            text("UPDATE referral_transactions SET status = 'completed' WHERE id = :id"),
+            {"id": ref_id}
+        )
+
+        # Convert all pending wallet transactions for this referral to credit
+        conn.execute(
+            text("""
+                UPDATE wallet_transactions
+                SET status = 'credit'
+                WHERE reference_id = :ref_id AND source = 'referral' AND status = 'pending'
+            """),
+            {"ref_id": str(ref_id)}
+        )
+
+        # If referred user has a paid business plan, increment referrer's business count
+        plan_row = conn.execute(
+            text("SELECT plan FROM users WHERE id = :uid"),
+            {"uid": referred_user_id}
+        ).fetchone()
+
+        if plan_row and plan_row._mapping["plan"] in ("business_basic", "business_premium"):
+            conn.execute(
+                text("""
+                    UPDATE wallet_balance
+                    SET active_business_referrals_count = active_business_referrals_count + 1
+                    WHERE user_id = :uid
+                """),
+                {"uid": referrer_id}
+            )
+
+        conn.commit()
+
+        # Log admin action
+        log_admin_action(admin_id, admin_phone, "verify_referral", "referral", ref_id,
+                         details="Referral verified and rewards credited", ip_address=ip)
+
+        return jsonify({"message": "Referral verified and rewards credited"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================
+# MARK WITHDRAWAL AS PAID (WITH FIRST WITHDRAWAL FLAG)
+# ============================
+@admin_bp.route("/api/admin/withdrawals/<int:wid>/paid-with-flag", methods=["POST"])
+@admin_required
+def mark_withdraw_paid_with_flag(wid):
+    """Mark withdrawal as paid AND set first-withdrawal flag"""
+    try:
+        admin_id, admin_phone = get_admin_info()
+        ip = request.remote_addr
+        conn = get_db()
+
+        withdrawal = conn.execute(
+            text("SELECT user_id, status FROM withdraw_requests WHERE id = :id"),
+            {"id": wid}
+        ).fetchone()
+
+        if not withdrawal:
+            return jsonify({"error": "Withdrawal not found"}), 404
+
+        user_id = withdrawal._mapping["user_id"]
+
+        # Mark as paid
+        conn.execute(
+            text("UPDATE withdraw_requests SET status = 'paid', processed_at = NOW() WHERE id = :id"),
+            {"id": wid}
+        )
+
+        # Set first withdrawal flag
+        conn.execute(
+            text("UPDATE wallet_balance SET had_first_withdrawal = TRUE WHERE user_id = :uid AND had_first_withdrawal = FALSE"),
+            {"uid": user_id}
+        )
+
+        conn.commit()
+
+        # Log admin action
+        log_admin_action(admin_id, admin_phone, "mark_withdraw_paid", "withdrawal", wid,
+                         details="Withdrawal marked as paid, first-withdrawal flag set", ip_address=ip)
+
+        return jsonify({"message": "Withdrawal marked as paid"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================
+# ONE-TIME MIGRATION (RUN ONCE, THEN REMOVE)
+# ============================
+@admin_bp.route("/api/admin/run-migration/withdrawal-policy", methods=["POST"])
+@admin_required
+def run_withdrawal_policy_migration():
+    """
+    Adds withdrawal policy columns and syncs wallet_balance for all users.
+    Run ONCE after deployment, then DELETE this endpoint.
+    """
+    try:
+        admin_id, admin_phone = get_admin_info()
+        ip = request.remote_addr
+        conn = get_db()
+
+        # Add new columns (safe to re-run – uses IF NOT EXISTS)
+        conn.execute(text("""
+            ALTER TABLE wallet_balance
+            ADD COLUMN IF NOT EXISTS had_first_withdrawal BOOLEAN DEFAULT FALSE
+        """))
+        conn.execute(text("""
+            ALTER TABLE wallet_balance
+            ADD COLUMN IF NOT EXISTS active_business_referrals_count INTEGER DEFAULT 0
+        """))
+
+        # Sync wallet_balance for all users who don't have a row yet
+        users = conn.execute(text("SELECT id, wallet_balance FROM users")).fetchall()
+        count = 0
+        for u in users:
+            uid = u._mapping["id"]
+            wb = u._mapping["wallet_balance"] or 0
+            result = conn.execute(text("""
+                INSERT INTO wallet_balance (user_id, balance)
+                VALUES (:uid, :bal)
+                ON CONFLICT (user_id) DO NOTHING
+            """), {"uid": uid, "bal": wb})
+            if result.rowcount > 0:
+                count += 1
+
+        conn.commit()
+
+        # Log admin action
+        log_admin_action(admin_id, admin_phone, "run_migration", "system", None,
+                         details="Withdrawal policy migration completed", ip_address=ip)
+
+        return jsonify({
+            "success": True,
+            "message": "Migration completed",
+            "new_wallets_created": count,
+            "columns_added": ["had_first_withdrawal", "active_business_referrals_count"]
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
