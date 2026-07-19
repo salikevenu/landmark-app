@@ -7,7 +7,7 @@ from sqlalchemy import text
 from extensions import razor_client
 from config.payment_config import PLAN_PRICES
 from services.wallet_service import credit_wallet, debit_wallet
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 
 # =========================
@@ -15,7 +15,7 @@ from database.init_db import get_db
 # =========================
 def activate_subscription(phone, plan, days=30):
     expiry_date = (datetime.datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         UPDATE users
         SET role = :plan,
@@ -35,7 +35,7 @@ def activate_subscription(phone, plan, days=30):
 # PROCESS PAYMENT (internal helper)
 # =========================
 def process_payment(user_id, payment_id, amount_in_rupees):
-    conn = get_db()
+    conn = get_db_connection()
     try:
         conn.execute(text("BEGIN"))
         
@@ -119,7 +119,7 @@ def verify_payment_service(data, user_id):
         return {"error": "Order not paid"}
 
     # 6. Get user phone (for subscription activation)
-    conn = get_db()
+    conn = get_db_connection()
     user_row = conn.execute(
         text("SELECT phone FROM users WHERE id = :user_id"),
         {"user_id": user_id}

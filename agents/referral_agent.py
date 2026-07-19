@@ -16,13 +16,13 @@ class ReferralAgent:
     
     def generate_referral_code(self, user_id: int) -> Dict[str, Any]:
         """Generate unique referral code for user"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             suffix = secrets.token_hex(2).upper()
             code = f"LM{user_id}{suffix}"
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -47,10 +47,10 @@ class ReferralAgent:
     
     def process_referral_reward(self, user_id: int, plan: str) -> Dict[str, Any]:
         """Process referral commission when a user upgrades"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 def get_unlock_utc(referral_utc: datetime):
     """Return UTC unlock datetime for a referral commission."""
@@ -18,7 +18,7 @@ def get_unlock_utc(referral_utc: datetime):
 
 def process_referral_commission(referred_user_id, payment_amount):
     """Queue 10% first-bonus and 5% recurring commission for the referrer."""
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT referred_by, first_sub_commission_paid FROM users WHERE id = :uid"),
         {"uid": referred_user_id}

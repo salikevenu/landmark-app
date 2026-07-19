@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, render_template
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from services.referral_commission import next_saturday_6pm_ist
 from services.wallet_service import (
     get_wallet_transactions,
@@ -26,7 +26,7 @@ def wallet_transactions():
 @jwt_required()
 def wallet_overview():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
 
     # Available balance
     wallet = conn.execute(
@@ -80,7 +80,7 @@ def withdraw():
     if not success:
         return jsonify({"error": "Failed to debit wallet"}), 500
 
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         INSERT INTO withdraw_requests (user_id, amount, upi_id, status, created_at)
         VALUES (:uid, :amount, :upi_id, 'pending', CURRENT_TIMESTAMP)

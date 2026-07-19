@@ -30,7 +30,7 @@ class PaymentAgent:
     
     def create_order(self, user_id: int, amount: int, currency: str = "INR") -> Dict[str, Any]:
         """Create Razorpay payment order"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             order_data = {
@@ -42,7 +42,7 @@ class PaymentAgent:
             
             order = self.client.order.create(data=order_data)
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -66,13 +66,13 @@ class PaymentAgent:
     
     def verify_payment(self, payment_id: str, user_id: int) -> Dict[str, Any]:
         """Verify payment with Razorpay"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             payment_details = self.client.payment.fetch(payment_id)
             
             if payment_details["status"] == "captured":
-                conn = get_db()
+                conn = get_db_connection()
                 try:
                     cursor = conn.cursor()
                     order_id = payment_details.get("order_id")

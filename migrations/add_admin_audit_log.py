@@ -5,11 +5,11 @@ logger = logging.getLogger(__name__)
 # Add the project root (one level up) to the Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from sqlalchemy import text
 
 def create_audit_table():
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS admin_audit_log (
             id SERIAL PRIMARY KEY,

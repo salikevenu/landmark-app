@@ -3,13 +3,13 @@ import logging
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 # ===============================
 # CREATE LISTING
 # ===============================
 def create_listing(data):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         INSERT INTO listings
         (user_id, listing_type, business_name, category, city, state,
@@ -40,7 +40,7 @@ def create_listing(data):
 # GET USER LISTINGS
 # ===============================
 def get_user_listings(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT *
         FROM listings
@@ -54,7 +54,7 @@ def get_user_listings(user_id):
 # GET LISTING BY ID
 # ===============================
 def get_listing(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT * FROM listings WHERE id = :id"), {"id": listing_id}
     ).fetchone()
@@ -65,7 +65,7 @@ def get_listing(listing_id):
 # UPDATE LISTING
 # ===============================
 def update_listing(listing_id, data):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         UPDATE listings
         SET business_name = :business_name,
@@ -95,7 +95,7 @@ def update_listing(listing_id, data):
 # DELETE LISTING
 # ===============================
 def delete_listing(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("DELETE FROM listings WHERE id = :id"), {"id": listing_id})
     conn.commit()
 
@@ -104,7 +104,7 @@ def delete_listing(listing_id):
 # GET NEARBY LISTINGS (by grid)
 # ===============================
 def get_nearby_listings(lat_grid, lng_grid, category):
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT *
         FROM listings
@@ -134,7 +134,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 
 def find_nearby(user_lat, user_lng, radius_km=10):
-    conn = get_db()
+    conn = get_db_connection()
     listings = conn.execute(text("SELECT * FROM listings")).fetchall()
     results = []
     for row in listings:
@@ -151,7 +151,7 @@ def find_nearby(user_lat, user_lng, radius_km=10):
 
 
 def update_sponsored_status():
-    conn = get_db()
+    conn = get_db_connection()
     # PostgreSQL supports this as a single statement
     conn.execute(text("""
         UPDATE listings
@@ -170,7 +170,7 @@ def browse_listings(location, category, page):
     try:
         limit = 10
         offset = (page - 1) * limit
-        conn = get_db()
+        conn = get_db_connection()
 
         query = text("""
             SELECT id, business_name, listing_type, category, city, state,
@@ -242,28 +242,28 @@ def browse_listings(location, category, page):
 
 # --- Admin service functions ---
 def disable_listing_service(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET is_active = 0 WHERE id = :id"), {"id": listing_id})
     conn.commit()
     return {"status": "disabled"}
 
 
 def verify_listing_service(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET is_verified = 1 WHERE id = :id"), {"id": listing_id})
     conn.commit()
     return {"status": "verified"}
 
 
 def delete_listing_service(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("DELETE FROM listings WHERE id = :id"), {"id": listing_id})
     conn.commit()
     return {"status": "deleted"}
 
 
 def sponsor_listing_service(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     start = datetime.utcnow()
     end = start + timedelta(days=30)
     conn.execute(text("""
@@ -285,7 +285,7 @@ def add_review_service(data, user_id):
     rating = data.get("rating")
     review = data.get("review", "")
 
-    conn = get_db()
+    conn = get_db_connection()
     # Fetch user phone from users table using user_id
     user_row = conn.execute(
         text("SELECT phone FROM users WHERE id = :user_id"), {"user_id": user_id}
@@ -318,7 +318,7 @@ def add_review_service(data, user_id):
 
 
 def get_reviews_service(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT r.user_phone,
                u.name AS user_name,

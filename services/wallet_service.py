@@ -1,13 +1,13 @@
 # services/wallet_service.py
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 
 # =========================
 # GET WALLET BALANCE
 # =========================
 def get_wallet_balance(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
         {"uid": user_id}
@@ -19,7 +19,7 @@ def get_wallet_balance(user_id):
 # CREDIT WALLET
 # =========================
 def credit_wallet(user_id, amount, source="system", reference_id=None):
-    conn = get_db()
+    conn = get_db_connection()
     # Ensure wallet row exists (PostgreSQL upsert)
     conn.execute(text("""
         INSERT INTO wallet_balance (user_id, balance)
@@ -50,7 +50,7 @@ def credit_wallet(user_id, amount, source="system", reference_id=None):
 # DEBIT WALLET
 # =========================
 def debit_wallet(user_id, amount, source="withdraw", reference_id=None):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
         {"uid": user_id}
@@ -86,7 +86,7 @@ def process_referral(user_id, purchase_amount):
     (This is a simpler version; the dedicated `process_referral_reward` in
     referral_service is more robust.)
     """
-    conn = get_db()
+    conn = get_db_connection()
     # Get referrer's referral code stored in 'referred_by' column
     referred_row = conn.execute(
         text("SELECT referred_by FROM users WHERE id = :uid"),
@@ -116,7 +116,7 @@ def process_referral(user_id, purchase_amount):
 # GET WALLET TRANSACTIONS
 # =========================
 def get_wallet_transactions(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT type, amount, description, created_at
         FROM wallet_transactions
@@ -143,7 +143,7 @@ def add_pending_referral_reward(user_id, referral_transaction_id):
     Adds ₹2 pending referral reward to wallet when a new user is referred.
     Reward stays 'pending' until admin verifies the referral.
     """
-    conn = get_db()
+    conn = get_db_connection()
     # Ensure wallet row exists
     conn.execute(text("""
         INSERT INTO wallet_balance (user_id, balance)

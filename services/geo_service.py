@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 import math
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from utils.geo_utils import calculate_distance
 
 geo_bp = Blueprint("geo", __name__)
@@ -50,7 +50,7 @@ def find_nearby_friends(user_lat, user_lng, radius):
     lng_grid = int(user_lng / GRID_SIZE)
     grid_range = int(radius / 11) + 1
 
-    conn = get_db()
+    conn = get_db_connection()
     # Use named parameters and text() for PostgreSQL compatibility
     query = text("""
         SELECT phone, name, latitude, longitude

@@ -1,5 +1,5 @@
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from utils.geo_utils import calculate_distance
 
 GRID_SIZE = 0.1
@@ -9,7 +9,7 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
     lng_grid = int(user_lng / GRID_SIZE)
     grid_range = int(radius / 11) + 1
 
-    conn = get_db()
+    conn = get_db_connection()
     query = text("""
         SELECT id,
                business_name,

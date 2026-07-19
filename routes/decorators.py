@@ -4,7 +4,7 @@ from flask import redirect, url_for, flash
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from datetime import datetime
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 def requires_active_plan(*allowed_roles):
     def decorator(f):
@@ -12,7 +12,7 @@ def requires_active_plan(*allowed_roles):
         @jwt_required()
         def wrapped(*args, **kwargs):
             user_id = get_jwt_identity()
-            db = get_db()
+            db = get_db_connection()
             user = db.execute(
                 text("SELECT role, subscription_expiry FROM users WHERE id = :uid"),
                 {"uid": user_id}

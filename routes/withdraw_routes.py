@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 withdraw_bp = Blueprint("withdraw", __name__)
 
@@ -25,7 +25,7 @@ def request_withdraw():
         if not upi_id:
             return jsonify({"error": "UPI ID required"}), 400
 
-        conn = get_db()
+        conn = get_db_connection()
 
         # Get wallet with policy flags
         wallet = conn.execute(
@@ -100,7 +100,7 @@ def request_withdraw():
 def withdraw_history():
     try:
         user_id = get_jwt_identity()
-        conn = get_db()
+        conn = get_db_connection()
         rows = conn.execute(text("""
             SELECT id, amount, status, payment_method, upi_id, created_at
             FROM withdraw_requests
@@ -133,7 +133,7 @@ def admin_withdraw_requests():
         return jsonify({"error": "Admin access required"}), 403
 
     try:
-        conn = get_db()
+        conn = get_db_connection()
         rows = conn.execute(text("SELECT * FROM withdraw_requests ORDER BY created_at DESC")).fetchall()
         return jsonify([dict(row._mapping) for row in rows])
 
@@ -152,7 +152,7 @@ def approve_withdraw(withdraw_id):
         return jsonify({"error": "Admin access required"}), 403
 
     try:
-        conn = get_db()
+        conn = get_db_connection()
         req = conn.execute(
             text("SELECT * FROM withdraw_requests WHERE id = :wid"),
             {"wid": withdraw_id}
@@ -192,7 +192,7 @@ def reject_withdraw(withdraw_id):
         return jsonify({"error": "Admin access required"}), 403
 
     try:
-        conn = get_db()
+        conn = get_db_connection()
         conn.execute(text("""
             UPDATE withdraw_requests
             SET status = 'rejected'

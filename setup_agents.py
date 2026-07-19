@@ -74,9 +74,9 @@ class AuthAgent:
     
     def verify_user(self, user_id: int) -> Dict[str, Any]:
         """Verify user exists and is active"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
-        conn = get_db()
+        conn = get_db_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
@@ -123,7 +123,7 @@ class AuthAgent:
     
     def verify_otp(self, phone: str, otp: str) -> Dict[str, Any]:
         """Verify OTP and generate JWT"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             if phone not in self.otp_cache:
@@ -140,7 +140,7 @@ class AuthAgent:
             
             del self.otp_cache[phone]
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, role FROM users WHERE phone = %s", (phone,))
@@ -211,7 +211,7 @@ class PaymentAgent:
     
     def create_order(self, user_id: int, amount: int, currency: str = "INR") -> Dict[str, Any]:
         """Create Razorpay payment order"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             order_data = {
@@ -223,7 +223,7 @@ class PaymentAgent:
             
             order = self.client.order.create(data=order_data)
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -247,13 +247,13 @@ class PaymentAgent:
     
     def verify_payment(self, payment_id: str, user_id: int) -> Dict[str, Any]:
         """Verify payment with Razorpay"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             payment_details = self.client.payment.fetch(payment_id)
             
             if payment_details["status"] == "captured":
-                conn = get_db()
+                conn = get_db_connection()
                 try:
                     cursor = conn.cursor()
                     order_id = payment_details.get("order_id")
@@ -305,13 +305,13 @@ class ReferralAgent:
     
     def generate_referral_code(self, user_id: int) -> Dict[str, Any]:
         """Generate unique referral code for user"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             suffix = secrets.token_hex(2).upper()
             code = f"LM{user_id}{suffix}"
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -336,10 +336,10 @@ class ReferralAgent:
     
     def process_referral_reward(self, user_id: int, plan: str) -> Dict[str, Any]:
         """Process referral commission when a user upgrades"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute(

@@ -2,6 +2,8 @@ import os
 import logging
 logger = logging.getLogger(__name__)
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,20 +12,25 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = None
+engine = create_engine(
+    DATABASE_URL,
+    poolclass=NullPool,
+    connect_args={
+        "sslmode": "require",
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+    }
+)
 
-# Create engine only if DATABASE_URL exists
-
-if DATABASE_URL:
-    engine = create_engine(DATABASE_URL, echo=False)
-
-def get_db():
-    if engine is None:
-        raise Exception("DATABASE_URL is not configured")
+def get_db_connection():
+    """Return a fresh database connection."""
     return engine.connect()
 
 def init_db():
-    conn = get_db()
+    conn = get_db_connection()
 
     # =====================================================
     # USERS TABLE

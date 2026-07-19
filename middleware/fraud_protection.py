@@ -2,7 +2,7 @@
 from functools import wraps
 from flask import request, jsonify
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 def fraud_check(f):
     @wraps(f)
@@ -10,7 +10,7 @@ def fraud_check(f):
         ip = request.remote_addr
         # device = request.headers.get("User-Agent")   # unused, kept if needed later
 
-        conn = get_db()
+        conn = get_db_connection()
         result = conn.execute(
             text("SELECT COUNT(*) FROM users WHERE ip_address = :ip"),
             {"ip": ip}

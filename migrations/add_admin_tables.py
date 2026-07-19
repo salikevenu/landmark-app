@@ -1,11 +1,11 @@
 # migrations/add_admin_tables.py
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 import logging
 logger = logging.getLogger(__name__)
 
 def add_admin_tables():
-    conn = get_db()
+    conn = get_db_connection()
 
     # Admin audit log
     conn.execute(text("""

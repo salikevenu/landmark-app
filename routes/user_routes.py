@@ -2,7 +2,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from time import time
 import razorpay
 import os
@@ -23,7 +23,7 @@ razor_client = razorpay.Client(auth=(
 # Helper: get user by ID
 # ------------------------------------------------------------
 def get_user_by_id(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT name, phone, role, plan, referral_code, subscription_expiry FROM users WHERE id = :uid"),
         {"uid": user_id}
@@ -60,7 +60,7 @@ def update_profile():
     name = data.get("name")
     if not name:
         return jsonify({"error": "Name required"}), 400
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(
         text("UPDATE users SET name = :name WHERE id = :uid"),
         {"name": name, "uid": user_id}
@@ -113,7 +113,7 @@ def verify_payment():
     except razorpay.errors.SignatureVerificationError:
         return jsonify({"error": "Invalid payment signature"}), 400
 
-    conn = get_db()
+    conn = get_db_connection()
 
     # ----- Extra business purchase -----
     if plan_type == "extra_business":
@@ -190,7 +190,7 @@ def user_dashboard():
 @requires_active_plan('business_basic', 'business_premium')
 def create_listing():
     user_id = get_jwt_identity()
-    db = get_db()
+    db = get_db_connection()
     user = db.execute(
         text("SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
         {"uid": user_id}
@@ -236,7 +236,7 @@ def api_browse():
         limit = 10
         offset = (page - 1) * limit
 
-        conn = get_db()
+        conn = get_db_connection()
 
         # Base query with optional distance calculation
         query = text("""
@@ -301,7 +301,7 @@ def invite():
 @jwt_required()
 def api_invite():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT referral_code FROM users WHERE id = :uid"),
         {"uid": user_id}
@@ -326,7 +326,7 @@ def api_invite():
 def track():
     data = request.json
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(
         text("INSERT INTO interactions (business_id, user_id, action) VALUES (:bid, :uid, :action)"),
         {"bid": data["business_id"], "uid": user_id, "action": data["action"]}
@@ -336,7 +336,7 @@ def track():
 
 @user_bp.route("/api/recommend")
 def recommend():
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT b.*, COUNT(i.id) as score
         FROM businesses b
@@ -351,7 +351,7 @@ def recommend():
 @jwt_required()
 def subscription_status():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT role, plan, subscription_expiry FROM users WHERE id = :uid"),
         {"uid": user_id}

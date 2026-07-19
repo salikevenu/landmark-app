@@ -9,7 +9,7 @@ from werkzeug.utils import secure_filename
 from functools import wraps
 from sqlalchemy import text
 
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from services.listing_service import add_review_service, get_reviews_service
 import logging
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def api_create_listing():
         claims = get_jwt()
         user_phone = claims.get("phone")
 
-        conn = get_db()
+        conn = get_db_connection()
         user = conn.execute(
             text("SELECT id, role, plan, subscription_expiry, is_active FROM users WHERE id = :uid"),
             {"uid": user_id}
@@ -168,7 +168,7 @@ def api_create_listing():
 @jwt_required()
 @role_required(["admin"])
 def admin_listings():
-    conn = get_db()
+    conn = get_db_connection()
     listings = conn.execute(text("SELECT * FROM listings WHERE status='pending'")).fetchall()
     return render_template("admin/listings.html", listings=[dict(r._mapping) for r in listings])
 
@@ -188,7 +188,7 @@ def my_listings_page():
 @jwt_required()
 def my_listings():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT l.*, 
             (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as image_url
@@ -211,7 +211,7 @@ def update_listing(listing_id):
     user_id = get_jwt_identity()
     data = request.get_json(silent=True) or request.form.to_dict()
 
-    conn = get_db()
+    conn = get_db_connection()
     listing = conn.execute(
         text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
         {"lid": listing_id, "uid": user_id}
@@ -243,7 +243,7 @@ def update_listing(listing_id):
 @role_required(["service_provider", "business_basic", "business_premium"])
 def delete_listing(listing_id):
     user_phone = get_jwt().get("phone")
-    conn = get_db()
+    conn = get_db_connection()
     listing = conn.execute(
         text("SELECT id FROM listings WHERE id = :lid AND user_phone = :phone"),
         {"lid": listing_id, "phone": user_phone}
@@ -276,7 +276,7 @@ def upload_listing_image():
     image.save(filepath)
     image_url = f"/static/images/listings/{filename}"
 
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text(
         "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
     ), {"lid": listing_id, "url": image_url, "type": image_type})
@@ -292,7 +292,7 @@ def upload_listing_image():
 @role_required(["service_provider", "business_basic", "business_premium"])
 def get_listing(listing_id):
     user_phone = get_jwt().get("phone")
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(text("""
         SELECT id, business_name, category, city, state, latitude, longitude, description
         FROM listings
@@ -314,7 +314,7 @@ def rate_business():
     if not listing_id or not rating:
         return jsonify({"error": "listing_id and rating required"}), 400
 
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("INSERT INTO reviews (listing_id, rating) VALUES (:lid, :rating)"),
                  {"lid": listing_id, "rating": rating})
     conn.execute(text("""
@@ -332,14 +332,14 @@ def rate_business():
 # =========================
 @listing_bp.route("/click-call/<int:listing_id>", methods=["POST"])
 def track_call_click(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET call_clicks = call_clicks + 1 WHERE id = :lid"), {"lid": listing_id})
     conn.commit()
     return jsonify({"status": "ok"})
 
 @listing_bp.route("/click-whatsapp/<int:listing_id>", methods=["POST"])
 def track_whatsapp_click(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET whatsapp_clicks = whatsapp_clicks + 1 WHERE id = :lid"), {"lid": listing_id})
     conn.commit()
     return jsonify({"status": "ok"})
@@ -350,7 +350,7 @@ def track_whatsapp_click(listing_id):
 # =========================
 @listing_bp.route("/listing-images/<int:listing_id>")
 def get_listing_images(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(
         text("SELECT image_url, image_type FROM listing_images WHERE listing_id = :lid"),
         {"lid": listing_id}
@@ -391,7 +391,7 @@ def browse_api():
         limit = 10
         offset = (page - 1) * limit
 
-        conn = get_db()
+        conn = get_db_connection()
 
         # Use a CTE to calculate distance once, then filter and order
         query = text("""
@@ -485,7 +485,7 @@ def get_reviews(listing_id):
 # =========================
 @listing_bp.route("/api/listing/<int:listing_id>")
 def public_listing_detail(listing_id):
-    conn = get_db()
+    conn = get_db_connection()
     listing = conn.execute(text("SELECT * FROM listings WHERE id = :lid"), {"lid": listing_id}).fetchone()
     if not listing:
         return jsonify({"error": "Listing not found"}), 404

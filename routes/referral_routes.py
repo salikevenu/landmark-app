@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from services.referral_service import get_referral_info
 
 referral_bp = Blueprint("referral", __name__)
@@ -12,7 +12,7 @@ referral_bp = Blueprint("referral", __name__)
 @referral_bp.route("/api/referral-leaderboard", methods=["GET"])
 def referral_leaderboard():
     try:
-        conn = get_db()
+        conn = get_db_connection()
         rows = conn.execute(text("""
             SELECT users.name,
                    COUNT(referral_transactions.id) AS total_referrals
@@ -44,7 +44,7 @@ def nearby_leads():
     lng_grid = int(lng * 100)
 
     try:
-        conn = get_db()
+        conn = get_db_connection()
         rows = conn.execute(text("""
             SELECT *
             FROM business_leads
@@ -87,7 +87,7 @@ def invite_business():
 
     try:
         user_id = int(get_jwt_identity())
-        conn = get_db()
+        conn = get_db_connection()
 
         # Duplicate check
         existing = conn.execute(

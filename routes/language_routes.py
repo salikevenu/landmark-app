@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 lang_bp = Blueprint("language", __name__)
 
@@ -17,7 +17,7 @@ def set_language():
     # Persist to DB for logged-in users
     user_id = get_jwt_identity()
     if user_id:
-        conn = get_db()
+        conn = get_db_connection()
         conn.execute(text("UPDATE users SET language = :lang WHERE id = :uid"), {"lang": lang, "uid": user_id})
         conn.commit()
 

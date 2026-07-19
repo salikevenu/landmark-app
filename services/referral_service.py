@@ -5,7 +5,7 @@ from PIL import Image
 from sqlalchemy import text
 
 from config.payment_config import BASE_URL
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 PLAN_REWARDS = {
     "service": 25,
@@ -15,7 +15,7 @@ PLAN_REWARDS = {
 
 
 def get_referral_info(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(text("""
         SELECT referral_code, wallet_balance
         FROM users
@@ -32,7 +32,7 @@ def get_referral_info(user_id):
 
 
 def process_referral_reward(user_id, plan_type, payment_id):
-    conn = get_db()
+    conn = get_db_connection()
 
     # Find referrer
     referral_row = conn.execute(

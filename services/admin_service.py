@@ -2,7 +2,7 @@ import csv
 import io
 from datetime import datetime, timedelta
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from services.wallet_service import credit_wallet, debit_wallet
 from services.payment_service import activate_subscription
 
@@ -14,7 +14,7 @@ def _row_to_dict(row):
 # AUDIT LOGGING
 # -------------------------------
 def log_admin_action(admin_id, admin_phone, action, target_type, target_id, details, ip_address):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(
         text("""
             INSERT INTO admin_audit_log (admin_id, admin_phone, action, target_type, target_id, details, ip_address)
@@ -36,7 +36,7 @@ def log_admin_action(admin_id, admin_phone, action, target_type, target_id, deta
 # DASHBOARD STATS (Advanced)
 # -------------------------------
 def get_admin_stats(period='week'):
-    conn = get_db()
+    conn = get_db_connection()
     now = datetime.utcnow()
     if period == 'day':
         start_date = now - timedelta(days=1)
@@ -125,7 +125,7 @@ def get_admin_stats(period='week'):
 # USER MANAGEMENT
 # -------------------------------
 def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter=''):
-    conn = get_db()
+    conn = get_db_connection()
     offset = (page - 1) * limit
     params = {}
     where_clauses = []
@@ -179,7 +179,7 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
     return {'users': users, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def ban_user(user_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET is_blocked = 1 WHERE id = :user_id"), {"user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'ban', 'user', str(user_id), f'Banned user {user_id}', ip)
@@ -187,7 +187,7 @@ def ban_user(user_id, admin_id, admin_phone, ip):
     return {'status': 'banned'}
 
 def unban_user(user_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET is_blocked = 0 WHERE id = :user_id"), {"user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'unban', 'user', str(user_id), f'Unbanned user {user_id}', ip)
@@ -198,7 +198,7 @@ def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
     valid_roles = ['user', 'business_basic', 'business_premium', 'admin']
     if new_role not in valid_roles:
         return {'error': 'Invalid role'}
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET role = :role WHERE id = :user_id"), {"role": new_role, "user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'change_role', 'user', str(user_id), f'Role changed to {new_role}', ip)
@@ -206,7 +206,7 @@ def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
     return {'status': 'role_updated'}
 
 def reset_user_subscription(user_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET role = 'user', subscription_expiry = NULL WHERE id = :user_id"), {"user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'reset_subscription', 'user', str(user_id), 'Subscription reset', ip)
@@ -217,7 +217,7 @@ def reset_user_subscription(user_id, admin_id, admin_phone, ip):
 # LISTING MANAGEMENT
 # -------------------------------
 def get_admin_listings(page=1, limit=50, search='', status_filter='', category_filter=''):
-    conn = get_db()
+    conn = get_db_connection()
     offset = (page - 1) * limit
     params = {}
     where_clauses = []
@@ -253,7 +253,7 @@ def get_admin_listings(page=1, limit=50, search='', status_filter='', category_f
     return {'listings': listings, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_listing_admin(listing_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET status = 'approved', is_active = 1 WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'approve_listing', 'listing', str(listing_id), f'Approved listing {listing_id}', ip)
@@ -261,7 +261,7 @@ def approve_listing_admin(listing_id, admin_id, admin_phone, ip):
     return {'status': 'approved'}
 
 def disable_listing_admin(listing_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET is_active = 0 WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'disable_listing', 'listing', str(listing_id), f'Disabled listing {listing_id}', ip)
@@ -269,7 +269,7 @@ def disable_listing_admin(listing_id, admin_id, admin_phone, ip):
     return {'status': 'disabled'}
 
 def verify_listing_admin(listing_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE listings SET is_verified = 1 WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'verify_listing', 'listing', str(listing_id), f'Verified listing {listing_id}', ip)
@@ -277,7 +277,7 @@ def verify_listing_admin(listing_id, admin_id, admin_phone, ip):
     return {'status': 'verified'}
 
 def delete_listing_admin(listing_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("DELETE FROM listings WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'delete_listing', 'listing', str(listing_id), f'Deleted listing {listing_id}', ip)
@@ -295,7 +295,7 @@ def sponsor_listing_admin(listing_id, admin_id, admin_phone, ip):
 # PAYMENT MANAGEMENT
 # -------------------------------
 def get_admin_payments(page=1, limit=50, search='', status_filter='', start_date=None, end_date=None):
-    conn = get_db()
+    conn = get_db_connection()
     offset = (page - 1) * limit
     params = {}
     where_clauses = []
@@ -333,7 +333,7 @@ def get_admin_payments(page=1, limit=50, search='', status_filter='', start_date
     return {'payments': payments, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_payment_admin(payment_id, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     payment = conn.execute(
         text("SELECT user_id, amount, user_phone FROM payments WHERE id = :payment_id AND status='pending'"),
         {"payment_id": payment_id}
@@ -352,7 +352,7 @@ def approve_payment_admin(payment_id, admin_id, admin_phone, ip):
 # WITHDRAWAL MANAGEMENT
 # -------------------------------
 def get_withdraw_requests(page=1, limit=50, status_filter=''):
-    conn = get_db()
+    conn = get_db_connection()
     offset = (page - 1) * limit
     params = {}
     where_clause = ""
@@ -381,7 +381,7 @@ def get_withdraw_requests(page=1, limit=50, status_filter=''):
     return {'withdrawals': withdrawals, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT user_id, amount FROM withdraw_requests WHERE id = :wid AND status='pending'"),
         {"wid": wid}
@@ -398,7 +398,7 @@ def approve_withdraw_request(wid, admin_id, admin_phone, ip):
     return {'status': 'approved'}
 
 def reject_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE withdraw_requests SET status = 'rejected' WHERE id = :wid"), {"wid": wid})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'reject_withdraw', 'withdraw', str(wid), f'Rejected withdrawal {wid}', ip)
@@ -406,7 +406,7 @@ def reject_withdraw_request(wid, admin_id, admin_phone, ip):
     return {'status': 'rejected'}
 
 def mark_withdraw_paid(wid, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE withdraw_requests SET status = 'paid' WHERE id = :wid"), {"wid": wid})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'mark_paid', 'withdraw', str(wid), f'Marked withdrawal {wid} as paid', ip)
@@ -424,7 +424,7 @@ def bulk_approve_withdrawals(wids, admin_id, admin_phone, ip):
 # REFERRAL MANAGEMENT
 # -------------------------------
 def get_admin_referrals(page=1, limit=50, search=''):
-    conn = get_db()
+    conn = get_db_connection()
     offset = (page - 1) * limit
     params = {}
     where_clause = "WHERE 1=1"
@@ -461,7 +461,7 @@ def get_admin_referrals(page=1, limit=50, search=''):
 # CSV EXPORTS
 # -------------------------------
 def export_users_csv():
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("SELECT id, phone, name, role, subscription_expiry, wallet_balance, is_blocked, created_at FROM users ORDER BY id")).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -472,7 +472,7 @@ def export_users_csv():
     return output.getvalue()
 
 def export_payments_csv():
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("SELECT id, user_phone, amount, status, created_at FROM payments ORDER BY id")).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -483,7 +483,7 @@ def export_payments_csv():
     return output.getvalue()
 
 def export_withdrawals_csv():
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT wr.id, u.phone, wr.amount, wr.upi_id, wr.status, wr.created_at
         FROM withdraw_requests wr JOIN users u ON wr.user_id = u.id
@@ -501,14 +501,14 @@ def export_withdrawals_csv():
 # SYSTEM SETTINGS
 # -------------------------------
 def get_settings():
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("SELECT key, value FROM admin_settings")).fetchall()
     settings = {r[0]: r[1] for r in rows}
     conn.close()
     return settings
 
 def update_setting(key, value, admin_id, admin_phone, ip):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE admin_settings SET value = :value, updated_at = CURRENT_TIMESTAMP WHERE key = :key"), {"value": value, "key": key})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'update_setting', 'setting', key, f'Set {key}={value}', ip)

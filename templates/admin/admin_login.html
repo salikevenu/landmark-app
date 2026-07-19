@@ -47,14 +47,15 @@ async function sendOTP() {
     });
     const data = await res.json();
 
-    if (data.status === "success") {
+    // ✅ ACCEPT MULTIPLE RESPONSE FORMATS
+    if (res.ok && (data.status === "success" || data.success || data.message)) {
       otpGroup.style.display = "block";
       actionBtn.innerText = "Verify OTP";
       currentStep = 'otp';
       phoneInput.disabled = true;
-      statusEl.innerText = "OTP sent (check terminal in dev mode)";
+      statusEl.innerText = "OTP sent (check Render logs for OTP)";
     } else {
-      statusEl.innerText = data.error || "Failed to send OTP";
+      statusEl.innerText = data.error || data.message || "Failed to send OTP";
     }
   } catch (err) {
     statusEl.innerText = "Server error";
@@ -78,7 +79,7 @@ async function verifyOTP() {
     });
     const data = await res.json();
 
-    if (data.access_token) {
+    if (res.ok && data.access_token) {
       const token = data.access_token;
       // Check if the user is an admin
       const meRes = await fetch("/api/auth/me", {
@@ -91,11 +92,12 @@ async function verifyOTP() {
         return;
       }
 
-      // ✅ Store token with the same key used by all admin pages
       localStorage.setItem("access_token", token);
       window.location.href = "/admin/dashboard";
     } else {
-      statusEl.innerText = data.error || "Invalid OTP";
+      // ✅ Show more detailed error
+      statusEl.innerText = data.error || data.message || "Invalid OTP or server error (500)";
+      console.error("Backend error:", data);
     }
   } catch (err) {
     statusEl.innerText = "Server error";

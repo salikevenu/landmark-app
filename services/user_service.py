@@ -3,7 +3,7 @@ import random
 import string
 from datetime import datetime
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 GRID_SIZE = 0.1
 
@@ -15,7 +15,7 @@ def _generate_referral_code(length=8):
 
 
 def get_user_by_id(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT * FROM users WHERE id = :uid"),
         {"uid": user_id}
@@ -24,7 +24,7 @@ def get_user_by_id(user_id):
 
 
 def get_user_by_phone(phone):
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT * FROM users WHERE phone = :phone"),
         {"phone": phone}
@@ -39,7 +39,7 @@ def create_user(phone, name, **kwargs):
     Optional kwargs: role, plan, referral_code, referred_by, device_id, ip_address, language
     Returns dict with user id or error.
     """
-    conn = get_db()
+    conn = get_db_connection()
     # Check duplicate
     if get_user_by_phone(phone):
         return {"error": "Phone already registered"}, 409
@@ -103,7 +103,7 @@ def update_user(user_id, data):
     if not set_clauses:
         return {"error": "No valid fields to update"}
 
-    conn = get_db()
+    conn = get_db_connection()
     query = text(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = :uid")
     conn.execute(query, params)
     conn.commit()
@@ -114,7 +114,7 @@ def update_location(user_id, latitude, longitude):
     """Update user location and grid indices."""
     lat_grid = int(latitude / GRID_SIZE)
     lng_grid = int(longitude / GRID_SIZE)
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         UPDATE users
         SET latitude = :lat, longitude = :lng,
@@ -132,14 +132,14 @@ def update_location(user_id, latitude, longitude):
 
 
 def deactivate_user(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET is_active = 0 WHERE id = :uid"), {"uid": user_id})
     conn.commit()
     return {"status": "deactivated"}
 
 
 def activate_user(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("UPDATE users SET is_active = 1 WHERE id = :uid"), {"uid": user_id})
     conn.commit()
     return {"status": "activated"}
@@ -147,7 +147,7 @@ def activate_user(user_id):
 
 def get_user_referral_stats(user_id):
     """Count how many users were referred by this user."""
-    conn = get_db()
+    conn = get_db_connection()
     count = conn.execute(
         text("SELECT COUNT(*) FROM users WHERE referred_by = :uid"),
         {"uid": user_id}
@@ -160,7 +160,7 @@ def update_wallet_balance(user_id, amount):
     Add amount (can be negative) to wallet_balance.
     For complete wallet operations, use wallet_service.
     """
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         UPDATE users SET wallet_balance = wallet_balance + :amount WHERE id = :uid
     """), {"amount": amount, "uid": user_id})
@@ -171,7 +171,7 @@ def update_wallet_balance(user_id, amount):
 def list_users(page=1, limit=20, search=None):
     """Admin list users with pagination and optional search on phone/name."""
     offset = (page - 1) * limit
-    conn = get_db()
+    conn = get_db_connection()
     base_where = "WHERE 1=1"
     params = {"limit": limit, "offset": offset}
 

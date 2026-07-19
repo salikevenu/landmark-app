@@ -52,7 +52,7 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 # Database connection (PostgreSQL via SQLAlchemy)
-from database.init_db import get_db
+from database.init_db import get_db_connection   # ✅ The new function
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -198,20 +198,20 @@ def inject_language():
             verify_jwt_in_request(optional=True)
             user_id = get_jwt_identity()
             if user_id:
-                conn = get_db()
-                row = conn.execute(
-                    text("SELECT language FROM users WHERE id = :uid"),
-                    {"uid": user_id}
-                ).fetchone()
-                if row and row._mapping["language"]:
-                    lang = row._mapping["language"]
+                from database.init_db import get_db_connection_connection
+                with get_db_connection() as conn:
+                    row = conn.execute(
+                        text("SELECT language FROM users WHERE id = :uid"),
+                        {"uid": user_id}
+                    ).fetchone()
+                    if row and row._mapping["language"]:
+                        lang = row._mapping["language"]
         except Exception:
             pass
     if not lang:
         lang = "en"
     
-    # Use the FULL translations (imported from language.translations)
-    t = get_translations(lang)   # note the 's' – cached version using full TRANSLATIONS
+    t = get_translations(lang)
     logger.debug(f"Language selected: {lang}")
     return dict(
         t=t,
@@ -224,14 +224,15 @@ def inject_language():
 # ------------------------------
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
     """Execute a SQLAlchemy text query and return results if requested."""
-    conn = get_db()
-    result = conn.execute(text(query), params or {})
-    if commit:
-        conn.commit()
-    if fetchone:
-        return result.fetchone()
-    elif fetchall:
-        return result.fetchall()
+    from database.init_db import get_db_connection_connection
+    with get_db_connection() as conn:
+        result = conn.execute(text(query), params or {})
+        if commit:
+            conn.commit()
+        if fetchone:
+            return result.fetchone()
+        elif fetchall:
+            return result.fetchall()
     return None
 
 # ------------------------------
@@ -251,40 +252,40 @@ def is_subscription_active(user_dict):
         return False
 
 def _execute_payout():
-    conn = get_db()
-    # Use NOW() in the query – no parameter needed
-    locked = conn.execute(text("""
-        SELECT id, user_id, amount
-        FROM wallet_transactions
-        WHERE type = 'credit'
-          AND source IN ('referral_first_bonus', 'referral_recurring')
-          AND status = 'locked'
-          AND unlock_at <= NOW()
-    """)).fetchall()
+    from database.init_db import get_db_connection_connection
+    with get_db_connection() as conn:
+        locked = conn.execute(text("""
+            SELECT id, user_id, amount
+            FROM wallet_transactions
+            WHERE type = 'credit'
+              AND source IN ('referral_first_bonus', 'referral_recurring')
+              AND status = 'locked'
+              AND unlock_at <= NOW()
+        """)).fetchall()
 
-    released_count = 0
-    for row in locked:
-        uid = row._mapping["user_id"]
-        amt = row._mapping["amount"]
-        tid = row._mapping["id"]
+        released_count = 0
+        for row in locked:
+            uid = row._mapping["user_id"]
+            amt = row._mapping["amount"]
+            tid = row._mapping["id"]
 
-        conn.execute(text("""
-            INSERT INTO wallet_balance (user_id, balance, updated_at)
-            VALUES (:uid, :amt, NOW())
-            ON CONFLICT (user_id) DO UPDATE
-            SET balance = wallet_balance.balance + :amt2,
-                updated_at = NOW()
-        """), {"uid": uid, "amt": amt, "amt2": amt})
+            conn.execute(text("""
+                INSERT INTO wallet_balance (user_id, balance, updated_at)
+                VALUES (:uid, :amt, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET balance = wallet_balance.balance + :amt2,
+                    updated_at = NOW()
+            """), {"uid": uid, "amt": amt, "amt2": amt})
 
-        conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"),
-                     {"amt": amt, "uid": uid})
+            conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"),
+                         {"amt": amt, "uid": uid})
 
-        conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"),
-                     {"tid": tid})
+            conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"),
+                         {"tid": tid})
 
-        released_count += 1
+            released_count += 1
 
-    conn.commit()
+        conn.commit()
     return released_count
 
 @app.before_request
@@ -377,15 +378,16 @@ def set_language():
         verify_jwt_in_request(optional=True)
         user_id = get_jwt_identity()
         if user_id:
-            conn = get_db()
-            conn.execute(
-                text("UPDATE users SET language = :lang WHERE id = :uid"),
-                {"lang": lang, "uid": user_id}
-            )
-            conn.commit()
+            from database.init_db import get_db_connection_connection
+            with get_db_connection() as conn:
+                conn.execute(
+                    text("UPDATE users SET language = :lang WHERE id = :uid"),
+                    {"lang": lang, "uid": user_id}
+                )
+                conn.commit()
     except Exception:
         pass
-    
+        
     return resp
 
 # ------------------------------
@@ -398,13 +400,14 @@ def api_health():
 @app.route('/api/readiness')
 def readiness():
     try:
-        from database.init_db import get_db
+        from database.init_db import get_db_connection_connection
         from sqlalchemy import text
-        get_db().execute(text("SELECT 1"))
+        with get_db_connection() as conn:
+            conn.execute(text("SELECT 1"))
         return {"status": "ready"}, 200
     except Exception as e:
         return {"status": "not ready", "error": str(e)}, 503
-
+    
 @app.route("/api/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh():
@@ -439,57 +442,68 @@ def generate_qr(referral_code):
 @app.route("/api/add-business", methods=["POST"])
 @jwt_required()
 def api_add_business():
+    from database.init_db import get_db_connection_connection
     user_id = get_jwt_identity()
-    user = execute_query(
-        "SELECT * FROM users WHERE id = :uid",
-        {"uid": user_id},
-        fetchone=True
-    )
-    if not user:
-        return jsonify({"error": "User not found"}), 404
+    
+    with get_db_connection() as conn:
+        user = conn.execute(
+            text("SELECT * FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
 
-    user_dict = dict(user._mapping)
+        user_dict = dict(user._mapping)
 
-    if user_dict["plan"] == "free":
-        return jsonify({"error": "This feature requires a paid plan. Please upgrade."}), 403
+        if user_dict["plan"] == "free":
+            return jsonify({"error": "This feature requires a paid plan. Please upgrade."}), 403
 
-    if not is_subscription_active(user_dict):
-        return jsonify({"error": "Your plan has expired. Please upgrade."}), 403
+        if not is_subscription_active(user_dict):
+            return jsonify({"error": "Your plan has expired. Please upgrade."}), 403
 
-    if user_dict["role"] != "business_owner":
-        return jsonify({"error": "Only business users can add businesses."}), 403
+        if user_dict["role"] != "business_owner":
+            return jsonify({"error": "Only business users can add businesses."}), 403
 
-    count_result = execute_query(
-        "SELECT COUNT(*) as cnt FROM businesses WHERE user_id = :uid",
-        {"uid": user_id},
-        fetchone=True
-    )
-    count = count_result._mapping["cnt"]
+        count_result = conn.execute(
+            text("SELECT COUNT(*) as cnt FROM businesses WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        count = count_result._mapping["cnt"]
 
-    if count >= user_dict.get("business_limit", 0):
-        return jsonify({"error": "Business limit reached. Upgrade your plan."}), 403
+        if count >= user_dict.get("business_limit", 0):
+            return jsonify({"error": "Business limit reached. Upgrade your plan."}), 403
 
-    name = request.json.get("name") if request.is_json else request.form.get("name")
-    if not name:
-        return jsonify({"error": "Business name required"}), 400
+        name = request.json.get("name") if request.is_json else request.form.get("name")
+        if not name:
+            return jsonify({"error": "Business name required"}), 400
 
-    execute_query(
-        "INSERT INTO businesses (user_id, name) VALUES (:uid, :name)",
-        {"uid": user_id, "name": name},
-        commit=True
-    )
+        conn.execute(
+            text("INSERT INTO businesses (user_id, name) VALUES (:uid, :name)"),
+            {"uid": user_id, "name": name}
+        )
+        conn.commit()
+    
     return jsonify({"message": "Business added successfully"}), 201
 
 @app.route("/api/wallet/overview")
 @jwt_required()
 def wallet_overview():
+    from database.init_db import get_db_connection_connection
     from services.wallet_service import get_wallet_balance
     from services.referral_commission import next_saturday_6pm_ist
     user_id = get_jwt_identity()
-    conn = get_db()
-    wallet = conn.execute(text("SELECT balance FROM wallet_balance WHERE user_id = :uid"), {"uid": user_id}).fetchone()
-    available = wallet._mapping["balance"] if wallet else 0.0
-    pending = conn.execute(text("SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id = :uid AND status = 'locked' AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')"), {"uid": user_id}).scalar()
+    
+    with get_db_connection() as conn:
+        wallet = conn.execute(
+            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        available = wallet._mapping["balance"] if wallet else 0.0
+        pending = conn.execute(
+            text("SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id = :uid AND status = 'locked' AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')"),
+            {"uid": user_id}
+        ).scalar()
+    
     next_payout = next_saturday_6pm_ist().strftime("%Y-%m-%d %H:%M IST") if next_saturday_6pm_ist else ""
     return jsonify({"available_balance": available, "pending_unlock": round(pending,2), "next_payout_ist": next_payout})
 

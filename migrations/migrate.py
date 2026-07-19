@@ -1,12 +1,12 @@
 # migrate_add_status_column.py
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
-from database.init_db import get_db
+from database.init_db import get_db_connection
 import logging
 logger = logging.getLogger(__name__)
 
 def migrate_add_status_column():
-    conn = get_db()
+    conn = get_db_connection()
     try:
         # Check if column already exists
         column_exists = conn.execute(text("""

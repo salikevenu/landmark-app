@@ -1,10 +1,10 @@
 # services/audit_service.py
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from datetime import datetime
 
 def log_admin_action(admin_id, admin_phone, action, target_type, target_id, details=None, ip_address=None):
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         INSERT INTO admin_audit_log
             (admin_id, admin_phone, action, target_type, target_id, details, ip_address, created_at)

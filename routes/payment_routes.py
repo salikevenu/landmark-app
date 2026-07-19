@@ -10,7 +10,7 @@ from sqlalchemy import text
 from extensions import get_razorpay_client
 from config.payment_config import PLAN_PRICES, RAZORPAY_KEY_ID
 from services.payment_service import verify_payment_service
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from services.referral_commission import process_referral_commission
 
 payment_bp = Blueprint("payment", __name__)
@@ -112,7 +112,7 @@ def create_order():
         })
 
         # Save order in database
-        conn = get_db()
+        conn = get_db_connection()
 
         conn.execute(text("""
             INSERT INTO payments
@@ -169,7 +169,7 @@ def create_order():
 @jwt_required()
 def wallet_balance():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     row = conn.execute(
         text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
         {"uid": user_id}
@@ -185,7 +185,7 @@ def wallet_balance():
 @jwt_required()
 def wallet_transactions():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT * FROM wallet_transactions
         WHERE user_id = :uid
@@ -239,7 +239,7 @@ def razorpay_webhook():
 
     from services.payment_service import process_payment
 
-    conn = get_db()
+    conn = get_db_connection()
     user_row = conn.execute(
         text("SELECT id FROM users WHERE phone = :phone"),
         {"phone": phone}
@@ -269,7 +269,7 @@ def submit_payment_proof():
     if plan not in PLAN_PRICES:
         return {"error": "Invalid plan"}, 400
 
-    conn = get_db()
+    conn = get_db_connection()
     conn.execute(text("""
         INSERT INTO payments (phone, plan, amount, status, payment_method, reference_id)
         VALUES (:phone, :plan, :amount, :status, :payment_method, :reference_id)

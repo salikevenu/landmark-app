@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from middleware.rate_limit import rate_limit
 
 heatmap_bp = Blueprint("heatmap", __name__)
@@ -11,7 +11,7 @@ heatmap_bp = Blueprint("heatmap", __name__)
 @jwt_required()
 @rate_limit
 def heatmap():
-    conn = get_db()
+    conn = get_db_connection()
     category = request.args.get("category")
     limit = int(request.args.get("limit", 1000))
 

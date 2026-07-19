@@ -20,9 +20,9 @@ class AuthAgent:
     
     def verify_user(self, user_id: int) -> Dict[str, Any]:
         """Verify user exists and is active"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
-        conn = get_db()
+        conn = get_db_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
@@ -69,7 +69,7 @@ class AuthAgent:
     
     def verify_otp(self, phone: str, otp: str) -> Dict[str, Any]:
         """Verify OTP and generate JWT"""
-        from database.init_db import get_db
+        from database.init_db import get_db_connection
         
         try:
             if phone not in self.otp_cache:
@@ -86,7 +86,7 @@ class AuthAgent:
             
             del self.otp_cache[phone]
             
-            conn = get_db()
+            conn = get_db_connection()
             try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT id, role FROM users WHERE phone = %s", (phone,))

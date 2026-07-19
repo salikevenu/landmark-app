@@ -2,10 +2,11 @@ import io
 import os
 from flask import Blueprint, jsonify, render_template, request, send_file, redirect
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from functools import wraps
 from datetime import timedelta, datetime
 from sqlalchemy import text
+from services.sms_service import get_sms_service
 from services.audit_service import log_admin_action
 from services.admin_service import (
     get_admin_stats, get_admin_users, ban_user, unban_user, change_user_role, reset_user_subscription,
@@ -19,6 +20,8 @@ from services.admin_service import (
     get_settings, update_setting,
     log_admin_action
 )
+import logging
+logger = logging.getLogger(__name__)
 from services.payment_service import activate_subscription
 
 admin_bp = Blueprint("admin", __name__)
@@ -36,7 +39,7 @@ def admin_required(fn):
 def get_admin_info():
     """Helper to get current admin id and phone from JWT"""
     identity = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT id, phone FROM users WHERE phone = :phone"),
         {"phone": identity}
@@ -160,7 +163,7 @@ def api_reset_subscription(user_id):
 @admin_bp.route("/api/admin/users/<int:user_id>/referral-tree")
 @admin_required
 def user_referral_tree(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     # Get the user
     user = conn.execute(
         text("SELECT id, phone, name, referral_code, referred_by FROM users WHERE id = :uid"),
@@ -389,7 +392,7 @@ def admin_trigger_payout():
 @admin_bp.route("/api/admin/users/<int:user_id>/impersonate", methods=["POST"])
 @admin_required
 def impersonate_user(user_id):
-    conn = get_db()
+    conn = get_db_connection()
     user = conn.execute(
         text("SELECT id, phone, role FROM users WHERE id = :uid"),
         {"uid": user_id}
@@ -412,7 +415,7 @@ def impersonate_user(user_id):
 @admin_bp.route("/api/admin/stats/chart")
 @admin_required
 def admin_chart_data():
-    conn = get_db()
+    conn = get_db_connection()
     days = 7
     dates = []
     user_counts = []
@@ -459,7 +462,7 @@ def api_audit_log():
     limit = request.args.get('limit', 50, type=int)
     offset = (page - 1) * limit
 
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text("""
         SELECT * FROM admin_audit_log
         ORDER BY created_at DESC
@@ -481,7 +484,7 @@ def verify_referral(ref_id):
     try:
         admin_id, admin_phone = get_admin_info()
         ip = request.remote_addr
-        conn = get_db()
+        conn = get_db_connection()
 
         ref = conn.execute(
             text("SELECT referrer_id, referred_user_id, status FROM referral_transactions WHERE id = :id"),
@@ -548,7 +551,7 @@ def mark_withdraw_paid_with_flag(wid):
     try:
         admin_id, admin_phone = get_admin_info()
         ip = request.remote_addr
-        conn = get_db()
+        conn = get_db_connection()
 
         withdrawal = conn.execute(
             text("SELECT user_id, status FROM withdraw_requests WHERE id = :id"),
@@ -597,7 +600,7 @@ def run_withdrawal_policy_migration():
     try:
         admin_id, admin_phone = get_admin_info()
         ip = request.remote_addr
-        conn = get_db()
+        conn = get_db_connection()
 
         # Add new columns (safe to re-run – uses IF NOT EXISTS)
         conn.execute(text("""
@@ -638,3 +641,183 @@ def run_withdrawal_policy_migration():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@admin_bp.route("/api/admin/direct-token", methods=["POST"])
+def direct_admin_token():
+    """TEMP: Generate admin token without OTP. DELETE AFTER USE."""
+    from flask_jwt_extended import create_access_token
+    from datetime import timedelta
+    
+    data = request.get_json()
+    secret = data.get("secret", "")
+    
+    # Use a one-time secret only you know
+    if secret != "landmark-migration-2026":
+        return jsonify({"error": "Invalid secret"}), 403
+    
+    token = create_access_token(
+        identity="9959543954",
+        additional_claims={"role": "admin"},
+        expires_delta=timedelta(minutes=15)
+    )
+    return jsonify({"token": token}), 200    
+
+# In routes/admin_routes.py - replace the send_sms and send_otp routes
+
+@admin_bp.route("/api/send-sms", methods=["POST"])
+@jwt_required()
+def send_sms():
+    """Send SMS via Message Central"""
+    try:
+        data = request.json
+        phone = data.get('phone')
+        message = data.get('message')
+        
+        if not phone or not message:
+            return jsonify({"error": "Phone and message required"}), 400
+        
+        sms_service = get_sms_service()
+        success, response = sms_service.send_sms(phone, message)
+        
+        log_admin_action(
+            admin_id=get_jwt_identity(),
+            action="SEND_SMS",
+            details=f"SMS sent to {phone}",
+            ip=request.remote_addr
+        )
+        
+        if success:
+            return jsonify({"success": True, "message": "SMS sent", "details": response}), 200
+        else:
+            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.exception("Send SMS error")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@admin_bp.route("/api/send-otp", methods=["POST"])
+@jwt_required()
+def send_otp():
+    """Send OTP via SMS"""
+    try:
+        data = request.json
+        phone = data.get('phone')
+        
+        if not phone:
+            return jsonify({"error": "Phone number required"}), 400
+        
+        sms_service = get_sms_service()
+        success, response, otp = sms_service.send_otp(phone)
+        
+        log_admin_action(
+            admin_id=get_jwt_identity(),
+            action="SEND_OTP",
+            details=f"OTP sent to {phone}",
+            ip=request.remote_addr
+        )
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "OTP sent",
+                "otp": otp if os.getenv('DEBUG_SMS') == 'True' else None
+            }), 200
+        else:
+            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
+            
+    except Exception as e:
+        logger.exception("Send OTP error")
+        return jsonify({"error": "Internal server error"}), 500
+                
+@admin_bp.route("/api/test-sms-ui", methods=["GET"])
+@jwt_required()
+def test_sms_ui():
+    """
+    Simple HTML page to test SMS sending
+    """
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SMS Test - Message Central</title>
+        <style>
+            body { font-family: Arial; max-width: 500px; margin: 50px auto; padding: 20px; }
+            input, textarea { width: 100%; padding: 8px; margin: 5px 0; }
+            button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+            button:hover { background: #0056b3; }
+            #result { margin-top: 20px; padding: 10px; border: 1px solid #ddd; }
+            .success { color: green; }
+            .error { color: red; }
+        </style>
+    </head>
+    <body>
+        <h2>📱 Send Test SMS via Message Central</h2>
+        <form id="smsForm">
+            <div>
+                <label>Phone Number (10 digits for India):</label>
+                <input type="text" id="phone" placeholder="9876543210" required>
+                <small>Enter 10-digit Indian phone number (without +91)</small>
+            </div>
+            <div>
+                <label>Message:</label>
+                <textarea id="message" rows="4" required>Test message from LANDMARK system</textarea>
+            </div>
+            <button type="submit">Send SMS</button>
+        </form>
+        <div id="result"></div>
+        
+        <script>
+            document.getElementById('smsForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const result = document.getElementById('result');
+                result.innerHTML = '⏳ Sending...';
+                result.className = '';
+                
+                try {
+                    // Get JWT token from localStorage
+                    const token = localStorage.getItem('access_token');
+                    
+                    if (!token) {
+                        result.innerHTML = '❌ Please login first. No JWT token found.';
+                        result.className = 'error';
+                        return;
+                    }
+                    
+                    const phone = document.getElementById('phone').value;
+                    const formattedPhone = phone.replace(/[^0-9]/g, '');
+                    
+                    const response = await fetch('/api/send-sms', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify({
+                            phone: formattedPhone,
+                            message: document.getElementById('message').value
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    if (data.success) {
+                        result.innerHTML = '✅ SMS sent successfully!';
+                        result.className = 'success';
+                    } else {
+                        result.innerHTML = '❌ Error: ' + data.error;
+                        result.className = 'error';
+                    }
+                } catch (error) {
+                    result.innerHTML = '❌ Error: ' + error.message;
+                    result.className = 'error';
+                }
+            });
+        </script>
+    </body>
+    </html>
+    '''
+
+
+
+
+

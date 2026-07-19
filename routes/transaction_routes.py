@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template
 from flask_jwt_extended import jwt_required
-from database.init_db import get_db
+from database.init_db import get_db_connection
 
 transaction_bp = Blueprint('transactions', __name__, url_prefix='/transactions')
 

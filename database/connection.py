@@ -14,7 +14,7 @@ DATABASE_URL,
 pool_pre_ping=True
 )
 
-def get_db():
+def get_db_connection():
     if engine is None:
         raise Exception("DATABASE_URL not configured")
     return engine.connect()

@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
-from database.init_db import get_db
+from database.init_db import get_db_connection
 from datetime import datetime
 from routes.decorators import requires_active_plan
 
@@ -19,7 +19,7 @@ def add_service():
         # ... validation ...
 
         user_id = get_jwt_identity()
-        conn = get_db()
+        conn = get_db_connection()
         conn.execute(text("""
             INSERT INTO services 
             (user_id, title, description, category, price, city, created_at) 
@@ -44,7 +44,7 @@ def add_service():
 @jwt_required()
 def my_services():
     user_id = get_jwt_identity()
-    conn = get_db()
+    conn = get_db_connection()
     rows = conn.execute(text(
         "SELECT * FROM services WHERE user_id = :uid ORDER BY created_at DESC"
     ), {"uid": user_id}).fetchall()
