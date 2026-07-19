@@ -709,9 +709,6 @@ def send_otp():
         logger.exception("Send OTP error")
         return jsonify({"error": "Internal server error"}), 500
     
-from flask_limiter import Limiter
-limiter = Limiter(get_remote_address, app=app) 
-
 @admin_bp.route("/api/test-sms-ui", methods=["GET"])
 @jwt_required()
 def test_sms_ui():
