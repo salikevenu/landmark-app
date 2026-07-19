@@ -52,7 +52,8 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 # Database connection (PostgreSQL via SQLAlchemy)
-from database.init_db import get_db_connection   # ✅ The new function
+from database.init_db import get_db_connection, init_db   # ✅ The new function
+init_db()
 
 # Initialize Flask app
 app = Flask(__name__)
