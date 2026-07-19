@@ -6,6 +6,7 @@ from database.init_db import get_db_connection
 from functools import wraps
 from datetime import timedelta, datetime
 from sqlalchemy import text
+from flask_limiter.util import get_remote_address
 from services.sms_service import get_sms_service
 from services.audit_service import log_admin_action
 from services.admin_service import (
@@ -642,28 +643,6 @@ def run_withdrawal_policy_migration():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
-@admin_bp.route("/api/admin/direct-token", methods=["POST"])
-def direct_admin_token():
-    """TEMP: Generate admin token without OTP. DELETE AFTER USE."""
-    from flask_jwt_extended import create_access_token
-    from datetime import timedelta
-    
-    data = request.get_json()
-    secret = data.get("secret", "")
-    
-    # Use a one-time secret only you know
-    if secret != "landmark-migration-2026":
-        return jsonify({"error": "Invalid secret"}), 403
-    
-    token = create_access_token(
-        identity="9959543954",
-        additional_claims={"role": "admin"},
-        expires_delta=timedelta(minutes=15)
-    )
-    return jsonify({"token": token}), 200    
-
-# In routes/admin_routes.py - replace the send_sms and send_otp routes
-
 @admin_bp.route("/api/send-sms", methods=["POST"])
 @jwt_required()
 def send_sms():
@@ -729,7 +708,10 @@ def send_otp():
     except Exception as e:
         logger.exception("Send OTP error")
         return jsonify({"error": "Internal server error"}), 500
-                
+    
+from flask_limiter import Limiter
+limiter = Limiter(get_remote_address, app=app) 
+
 @admin_bp.route("/api/test-sms-ui", methods=["GET"])
 @jwt_required()
 def test_sms_ui():
@@ -752,6 +734,9 @@ def test_sms_ui():
         </style>
     </head>
     <body>
+        <div style="background-color: #fff3cd; padding: 10px; border: 1px solid #ffeeba; margin-bottom: 20px;">
+            ⚠️ <strong>Production Admin Tool</strong> — Only for testing. Do not share this link.
+        </div>
         <h2>📱 Send Test SMS via Message Central</h2>
         <form id="smsForm">
             <div>
@@ -775,7 +760,6 @@ def test_sms_ui():
                 result.className = '';
                 
                 try {
-                    // Get JWT token from localStorage
                     const token = localStorage.getItem('access_token');
                     
                     if (!token) {
@@ -816,7 +800,6 @@ def test_sms_ui():
     </body>
     </html>
     '''
-
 
 
 

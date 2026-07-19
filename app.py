@@ -75,41 +75,6 @@ except Exception as e:
 def ping():
     return "pong"
 
-@app.route('/api/debug/otp-test', methods=['POST'])
-def debug_otp_test():
-    try:
-        data = request.get_json()
-        phone = data.get('phone', '')
-        from routes.auth_routes import send_otp_via_message_central, generate_otp, clean_phone, validate_phone
-        cleaned = clean_phone(phone)
-        if not validate_phone(cleaned):
-            return jsonify({'error': 'Invalid phone'}), 400
-        full_phone = "91" + cleaned
-        otp = generate_otp()
-        print(f"\n🔍 DEBUG: Testing OTP for {full_phone}", flush=True)
-        success, message = send_otp_via_message_central(full_phone, otp)
-        return jsonify({
-            'success': success,
-            'message': message,
-            'phone': full_phone,
-            'otp': otp if os.getenv('DEBUG_SMS') == 'True' else 'hidden',
-            'debug_mode': os.getenv('DEBUG_SMS') == 'True'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/debug/env-check', methods=['GET'])
-def debug_env_check():
-    return jsonify({
-        'DEBUG_SMS': os.getenv('DEBUG_SMS'),
-        'MESSAGE_CENTRAL_AUTH_TOKEN_exists': bool(os.getenv('MESSAGE_CENTRAL_AUTH_TOKEN')),
-        'SECRET_KEY_exists': bool(os.getenv('SECRET_KEY')),
-        'JWT_SECRET_KEY_exists': bool(os.getenv('JWT_SECRET_KEY')),
-        'DATABASE_URL_exists': bool(os.getenv('DATABASE_URL')),
-        'python_dotenv_loaded': True
-    })
-# ==================== END DEBUG ROUTES ====================
-
 # NOW register blueprints (AFTER debug routes)
 from routes import register_routes
 register_routes(app)
@@ -558,72 +523,6 @@ def handle_exception(e):
 # ------------------------------
 from middleware.security_headers import add_security_headers
 add_security_headers(app)
-
-@app.route('/api/debug/razorpay-keys')
-def debug_razorpay():
-    key_id = os.environ.get('RAZORPAY_KEY_ID')
-    key_secret = os.environ.get('RAZORPAY_KEY_SECRET')
-    return jsonify({
-        'key_id_exists': bool(key_id),
-        'key_secret_exists': bool(key_secret),
-        'key_id_value': key_id[:15] + '...' if key_id else None,
-        'is_test_key': key_id and key_id.startswith('rzp_test_') if key_id else False,
-        'message': 'Keys are correct!' if (key_id and key_id.startswith('rzp_test_')) else 'Test keys missing or incorrect'
-    })
-
-@app.route('/api/debug/message-central', methods=['GET'])
-def debug_message_central():
-    """Debug endpoint to test Message Central connectivity"""
-    results = {}
-
-    # Check environment variables
-    results['env_vars'] = {
-        'customer_id': bool(os.getenv('MESSAGE_CENTRAL_CUSTOMER_ID')),
-        'key': bool(os.getenv('MESSAGE_CENTRAL_KEY')),
-        'email': bool(os.getenv('MESSAGE_CENTRAL_EMAIL')),
-        'auth_token': bool(os.getenv('MESSAGE_CENTRAL_AUTH_TOKEN')),
-        'country': os.getenv('MESSAGE_CENTRAL_COUNTRY', '91')
-    }
-
-    # Test token fetch
-    try:
-        from routes.auth_routes import get_message_central_token
-        token = get_message_central_token()
-        results['token_fetch'] = {
-            'success': bool(token),
-            'token_preview': token[:10] + '...' if token else None
-        }
-    except Exception as e:
-        results['token_fetch'] = {
-            'success': False,
-            'error': str(e)
-        }
-
-    # Test SMS send (dry run)
-    try:
-        from routes.auth_routes import send_otp_via_message_central
-        # Use a test number (don't actually send)
-        if results['token_fetch'].get('success'):
-            test_phone = "91" + "9999999999"  # Test number
-            test_otp = "123456"
-            # Comment out the actual send to avoid costs
-            # success, message = send_otp_via_message_central(test_phone, test_otp)
-            results['sms_send'] = {
-                'ready': True,
-                'message': 'Dry run - configure DEBUG_SMS=True to test actual send'
-            }
-        else:
-            results['sms_send'] = {
-                'ready': False,
-                'message': 'Token fetch failed, SMS not available'
-            }
-    except Exception as e:
-        results['sms_send'] = {
-            'ready': False,
-            'error': str(e)
-        }
-
-    return jsonify(results)
 
 # ------------------------------
 # Register blueprints (must be after app creation)
