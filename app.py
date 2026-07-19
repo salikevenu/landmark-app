@@ -164,7 +164,7 @@ def inject_language():
             verify_jwt_in_request(optional=True)
             user_id = get_jwt_identity()
             if user_id:
-                from database.init_db import get_db_connection_connection
+                from database.init_db import get_db_connection
                 with get_db_connection() as conn:
                     row = conn.execute(
                         text("SELECT language FROM users WHERE id = :uid"),
@@ -190,7 +190,7 @@ def inject_language():
 # ------------------------------
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
     """Execute a SQLAlchemy text query and return results if requested."""
-    from database.init_db import get_db_connection_connection
+    from database.init_db import get_db_connection
     with get_db_connection() as conn:
         result = conn.execute(text(query), params or {})
         if commit:
@@ -218,7 +218,7 @@ def is_subscription_active(user_dict):
         return False
 
 def _execute_payout():
-    from database.init_db import get_db_connection_connection
+    from database.init_db import get_db_connection
     with get_db_connection() as conn:
         locked = conn.execute(text("""
             SELECT id, user_id, amount
@@ -344,7 +344,7 @@ def set_language():
         verify_jwt_in_request(optional=True)
         user_id = get_jwt_identity()
         if user_id:
-            from database.init_db import get_db_connection_connection
+            from database.init_db import get_db_connection
             with get_db_connection() as conn:
                 conn.execute(
                     text("UPDATE users SET language = :lang WHERE id = :uid"),
@@ -366,7 +366,7 @@ def api_health():
 @app.route('/api/readiness')
 def readiness():
     try:
-        from database.init_db import get_db_connection_connection
+        from database.init_db import get_db_connection
         from sqlalchemy import text
         with get_db_connection() as conn:
             conn.execute(text("SELECT 1"))
@@ -408,7 +408,7 @@ def generate_qr(referral_code):
 @app.route("/api/add-business", methods=["POST"])
 @jwt_required()
 def api_add_business():
-    from database.init_db import get_db_connection_connection
+    from database.init_db import get_db_connection
     user_id = get_jwt_identity()
     
     with get_db_connection() as conn:
@@ -454,7 +454,7 @@ def api_add_business():
 @app.route("/api/wallet/overview")
 @jwt_required()
 def wallet_overview():
-    from database.init_db import get_db_connection_connection
+    from database.init_db import get_db_connection
     from services.wallet_service import get_wallet_balance
     from services.referral_commission import next_saturday_6pm_ist
     user_id = get_jwt_identity()
@@ -554,17 +554,20 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Failed to start scheduler: {e}")
 
-    # Check if running in production mode
-    use_production = os.getenv("PRODUCTION", "False").lower() == "true"
+    # ✅ CLEAN PRODUCTION STARTUP
+    if __name__ == "__main__":
+        import sys
+        # Start scheduler from Master Agent if available
+        try:
+            scheduler = app.master_agent.agents.get('scheduler')
+            if scheduler and hasattr(scheduler, 'start'):
+                result = scheduler.start()
+                logging.info(f"Scheduler started: {result}")
+            else:
+                logging.warning("Scheduler agent not available or missing start() method")
+        except Exception as e:
+            logging.error(f"Failed to start scheduler: {e}")
 
-    if use_production:
-        # Production: Use Waitress
-        from waitress import serve
-        print("Starting LANDMARK with Waitress production server...")
-        print("Listening on http://0.0.0.0:8000")
-        print("Press Ctrl+C to stop")
-        serve(app, host="0.0.0.0", port=8000, threads=4)
-    else:
         # Development: Use Flask built-in server
         debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
         port = int(os.getenv("PORT", 8000))
