@@ -52,8 +52,15 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 # Database connection (PostgreSQL via SQLAlchemy)
-from database.init_db import get_db_connection, init_db   # ✅ The new function
-init_db()
+from database.init_db import get_db_connection, init_db
+
+# ✅ Only run init_db() if we are NOT on localhost
+import os
+if os.getenv("RENDER") != "true":   # Render sets this env var automatically
+    print("🔧 Running locally - skipping database initialization (Render will do this)")
+else:
+    init_db()
+    print("✅ Database initialized on Render")
 
 # Initialize Flask app
 app = Flask(__name__)
