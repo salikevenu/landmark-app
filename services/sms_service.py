@@ -130,7 +130,13 @@ class MessageCentralSMS:
             return success, response, otp   # ✅ Always return a 3-tuple
         except Exception as e:
             return False, {"error": str(e)}, otp  # ✅ Always return a 3-tuple
+# ============================================
+# SINGLETON INSTANCE (Add this before get_sms_service)
+# ============================================
+_sms_service = None  # <--- THIS LINE IS MISSING!
+
 def get_sms_service() -> MessageCentralSMS:
+    """Get SMS service instance (singleton)"""
     global _sms_service
     if _sms_service is None:
         _sms_service = MessageCentralSMS()
