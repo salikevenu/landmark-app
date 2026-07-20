@@ -5,6 +5,7 @@ import secrets
 import redis
 import random
 import traceback
+
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
 from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory, send_file, make_response
@@ -25,7 +26,7 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies
 )
-
+# DEBUG_SMS forced reload - 2026-07-20
 from werkzeug.exceptions import HTTPException
 from pydantic_settings import BaseSettings
 from language.translations import TRANSLATIONS
