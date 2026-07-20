@@ -42,10 +42,6 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# FORCE DEBUG MODE for testing
-os.environ['DEBUG_SMS'] = 'True'
-print(f"🔍 DEBUG_SMS forced to: {os.getenv('DEBUG_SMS')}")
-
 # === PRODUCTION VALIDATION ===
 REQUIRED_ENV_VARS = ["SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"]
 missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
