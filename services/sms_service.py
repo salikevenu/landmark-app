@@ -113,23 +113,23 @@ class MessageCentralSMS:
             logger.error(f"SMS error: {str(e)}")
             return False, {"error": str(e)}
     
-    def send_otp(self, phone: str, otp: str = None) -> tuple[bool, dict, str]:
-        """Send OTP via SMS - Unified"""
+    def send_otp(self, phone: str, otp: str = None):
+        """Send OTP via SMS"""
         if not otp:
             otp = str(random.randint(100000, 999999))
-
-        # ✅ THIS IS WHERE THE PRINT HAPPENS
+        
+        # Debug mode
         if self.debug_mode:
-            print(f"\n🔴🔴🔴 DEBUG MODE - OTP for {phone}: {otp} 🔴🔴🔴\n", flush=True)
-            logger.warning(f"DEBUG MODE - OTP for {phone}: {otp}")
-            return True, {"debug": True}, otp
-
-        # Real SMS sending logic below...
-        # (Rest of your existing real SMS code)
-
-# Singleton
-_sms_service = None
-
+            print(f"\n🔴🔴🔴 DEBUG MODE - OTP for {phone}: {otp} 🔴🔴🔴\n")
+            return True, {"debug": True}, otp   # ✅ Always return a 3-tuple
+        
+        # Real SMS logic (must return 3 values)
+        try:
+            # ... your real SMS code here ...
+            success, response = self.send_sms(phone, f"Your OTP is {otp}")
+            return success, response, otp   # ✅ Always return a 3-tuple
+        except Exception as e:
+            return False, {"error": str(e)}, otp  # ✅ Always return a 3-tuple
 def get_sms_service() -> MessageCentralSMS:
     global _sms_service
     if _sms_service is None:
