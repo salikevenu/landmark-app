@@ -84,7 +84,7 @@ class MessageCentralSMS:
                 return False, {"error": "SMS service unavailable"}
             
             # Message Central API
-            url = "https://cpaas.messagecentral.com/api/v1/send-sms"
+            url = "https://api.messagecentral.com/v1/sms/send"
             payload = {
                 "flowType": "SMS",
                 "type": "OTP",
