@@ -28,20 +28,7 @@ class MessageCentralSMS:
             return self.auth_token
         
         # Fallback: fetch fresh token
-        # Clean, direct Message Central API call
-        # Use this proxy URL to bypass Render's network block
-        url = "https://corsproxy.io/?" + "https://api.messagecentral.com/v1/sms/send"
-        headers = {
-            "authToken": auth_token,
-            "customerId": self.customer_id,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "to": full_phone,
-            "message": message,
-            "senderId": "LANDMARK"
-        }
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
         params = {
             "customerId": self.customer_id,
             "key": os.getenv("MESSAGE_CENTRAL_KEY"),
@@ -90,8 +77,8 @@ class MessageCentralSMS:
             if not auth_token:
                 return False, {"error": "Failed to get auth token"}
 
-            # ✅ TRY primary endpoint
-            url = "https://api.messagecentral.com/v1/sms/send"
+            # ✅ Use the correct, working endpoint
+            url = "https://cpaas.messagecentral.com/api/v1/send-sms"
             payload = {
                 "flowType": "SMS",
                 "type": "OTP",
@@ -101,32 +88,15 @@ class MessageCentralSMS:
             }
             headers = {"authToken": auth_token, "Content-Type": "application/json"}
 
-            # Use a short timeout so it fails fast
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            response = requests.post(url, json=payload, headers=headers, timeout=15)
 
             if response.status_code == 200:
                 logger.info(f"SMS sent successfully to {full_phone}")
                 return True, response.json()
 
-            # If primary fails, try the backup endpoint
-            logger.warning(f"Primary endpoint failed (HTTP {response.status_code}), trying backup...")
-            backup_url = "https://api.messagecentral.com/v1/sms/send"
-            backup_response = requests.post(backup_url, json=payload, headers=headers, timeout=10)
+            logger.error(f"Message Central error: {response.status_code} - {response.text}")
+            return False, {"error": f"Failed to send SMS (HTTP {response.status_code})"}
 
-            if backup_response.status_code == 200:
-                logger.info(f"SMS sent successfully via backup endpoint to {full_phone}")
-                return True, backup_response.json()
-
-            # Both failed
-            logger.error(f"Both endpoints failed: Primary {response.status_code}, Backup {backup_response.status_code}")
-            return False, {"error": "Both SMS endpoints failed"}
-
-        except requests.exceptions.Timeout:
-            logger.error("SMS request timed out")
-            return False, {"error": "Request timeout"}
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"SMS connection error: {e}")
-            return False, {"error": f"Connection error: {str(e)}"}
         except Exception as e:
             logger.error(f"SMS error: {e}")
             return False, {"error": str(e)}
