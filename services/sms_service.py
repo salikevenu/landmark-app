@@ -28,7 +28,19 @@ class MessageCentralSMS:
             return self.auth_token
         
         # Fallback: fetch fresh token
-        url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
+        # Clean, direct Message Central API call
+        url = "https://api.messagecentral.com/v1/sms/send"
+        headers = {
+            "authToken": auth_token,
+            "customerId": self.customer_id,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "to": full_phone,
+            "message": message,
+            "senderId": "LANDMARK"
+        }
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
         params = {
             "customerId": self.customer_id,
             "key": os.getenv("MESSAGE_CENTRAL_KEY"),
