@@ -90,7 +90,7 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}
 
             # ✅ TRY primary endpoint
-            url = "https://cpaas.messagecentral.com/api/v1/send-sms"
+            url = "https://api.messagecentral.com/v1/sms/send"
             payload = {
                 "flowType": "SMS",
                 "type": "OTP",
