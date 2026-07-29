@@ -94,13 +94,12 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
+
             
-            # ✅ FINAL PARAMS: Includes flowType and customerId
+            # ✅ ONLY send verificationId and code
             params = {
                 "verificationId": verification_id,
-                "code": otp,
-                "flowType": "SMS",                  # ✅ Crucial addition
-                "customerId": self.customer_id      # ✅ Crucial addition
+                "code": otp
             }
             
             headers = {"authToken": auth_token}
