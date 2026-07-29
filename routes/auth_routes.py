@@ -40,6 +40,9 @@ verification_storage = {}
 VERIFICATION_EXPIRY_MINUTES = 10
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 
+MAX_OTP_ATTEMPTS = 5
+
+
 # =================================
 # HELPER FUNCTIONS
 # =================================
