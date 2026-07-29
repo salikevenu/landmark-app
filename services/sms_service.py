@@ -21,34 +21,9 @@ class MessageCentralSMS:
         logger.info(f"SMS Service initialized - Debug mode: {self.debug_mode}")
     
     def _get_auth_token(self) -> Optional[str]:
-        """Get a fresh authentication token from Message Central."""
-        # Always fetch a fresh token to avoid expiry issues
-        url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
-        params = {
-            "customerId": self.customer_id,
-            "key": os.getenv("MESSAGE_CENTRAL_KEY"),
-            "scope": "NEW",
-            "country": self.country,
-            "email": os.getenv("MESSAGE_CENTRAL_EMAIL"),
-        }
-        headers = {"accept": "*/*"}
-        
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                # ✅ The documentation says the token is in 'authToken', not 'token'
-                token = data.get("data", {}).get("authToken")
-                if token:
-                    logger.info("✅ Fresh Message Central authToken obtained successfully")
-                    return token
-                logger.error("No authToken found in Message Central response")
-                return None
-            logger.error(f"Message Central token error: {response.status_code} - {response.text}")
-            return None
-        except Exception as e:
-            logger.error(f"Message Central token exception: {e}")
-            return None
+        """Return the permanent Auth Token from environment variables."""
+        # ✅ No need to fetch a new token. Use the permanent one.
+        return self.auth_token
     
     def _format_phone(self, phone: str) -> Tuple[str, str]:
         """Format phone number - returns (full_phone, raw_phone)"""
@@ -119,25 +94,35 @@ class MessageCentralSMS:
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
-            # ✅ Ensure these parameters are exactly correct
+            # ✅ TRY adding customerId to the params (some API versions require it)
             params = {
                 "verificationId": verification_id,
-                "code": otp
+                "code": otp,
+                # "customerId": self.customer_id   # ← Uncomment this line if the 401 persists
             }
             
-            # ✅ Ensure the header is exactly "authToken", not "Authorization" or anything else
-            headers = {
-                "authToken": auth_token
-            }
+            headers = {"authToken": auth_token}
+
+            # 🟡 DEBUG: Log exactly what we are sending
+            logger.info("🔍 DEBUG - VERIFY REQUEST:")
+            logger.info(f"  URL: {url}")
+            logger.info(f"  Headers: {headers}")
+            logger.info(f"  Params: {params}")
 
             response = requests.post(url, params=params, headers=headers, timeout=20)
+
+            # 🟡 DEBUG: Log exactly what we received
+            logger.info("🔍 DEBUG - VERIFY RESPONSE:")
+            logger.info(f"  Status: {response.status_code}")
+            logger.info(f"  Headers: {dict(response.headers)}")
+            logger.info(f"  Body: {response.text}")
 
             if response.status_code == 200:
                 data = response.json()
                 logger.info(f"OTP verified successfully for ID {verification_id}")
                 return True, data
 
-            logger.error(f"Status: {response.status_code} - Response: {response.text}")
+            logger.error(f"Verification failed: {response.status_code} - {response.text}")
             return False, {"error": response.text}
 
         except Exception as e:
