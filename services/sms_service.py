@@ -94,12 +94,11 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
-
             
-            # ✅ ONLY send verificationId and code
+            # ✅ FINAL FIX: Convert code to integer
             params = {
                 "verificationId": verification_id,
-                "code": otp
+                "code": int(otp)   # <-- This is the fix
             }
             
             headers = {"authToken": auth_token}
