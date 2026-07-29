@@ -46,7 +46,6 @@ class MessageCentralSMS:
 
             if self.debug_mode:
                 print(f"\n🔴🔴🔴 DEBUG MODE - OTP requested for {full_phone} 🔴🔴🔴\n")
-                # In debug mode, we mock a verification_id
                 return True, {"debug": True}, "debug_verification_id"
 
             auth_token = self._get_auth_token()
@@ -63,7 +62,8 @@ class MessageCentralSMS:
             }
             headers = {"authToken": auth_token}
 
-            response = requests.get(
+            # ✅ CHANGE FROM requests.get TO requests.post
+            response = requests.post(
                 url,
                 params=params,
                 headers=headers,
