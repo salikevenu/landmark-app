@@ -21,10 +21,8 @@ class MessageCentralSMS:
         logger.info(f"SMS Service initialized - Debug mode: {self.debug_mode}")
     
     def _get_auth_token(self) -> Optional[str]:
-        """Get authentication token from Message Central"""
-        if self.auth_token:
-            return self.auth_token
-        
+        """Get a fresh authentication token from Message Central."""
+        # Always fetch a fresh token to avoid expiry issues
         url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
         params = {
             "customerId": self.customer_id,
@@ -38,11 +36,13 @@ class MessageCentralSMS:
         try:
             response = requests.get(url, params=params, headers=headers, timeout=10)
             if response.status_code == 200:
-                token = response.json().get("data", {}).get("token")
+                data = response.json()
+                # ✅ The documentation says the token is in 'authToken', not 'token'
+                token = data.get("data", {}).get("authToken")
                 if token:
-                    logger.info("Message Central token obtained successfully")
+                    logger.info("✅ Fresh Message Central authToken obtained successfully")
                     return token
-                logger.error("No token in Message Central response")
+                logger.error("No authToken found in Message Central response")
                 return None
             logger.error(f"Message Central token error: {response.status_code} - {response.text}")
             return None
