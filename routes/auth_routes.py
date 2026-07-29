@@ -26,77 +26,50 @@ from dotenv import load_dotenv
 
 load_dotenv()  # Ensure environment variables are loaded
 
-# Debug: Print the value to confirm it's loaded
 print(f"🔍 DEBUG_SMS value in routes/auth.py: {os.getenv('DEBUG_SMS')}")
 
 auth_bp = Blueprint("auth", __name__)
 logger = logging.getLogger(__name__)
 
 # =================================
-# OTP STORAGE
-# In-memory dict — fine for a single dev process. In production with more
-# than one worker/process (Gunicorn, Waitress threads across processes,
-# multiple Render instances) this MUST be moved to Redis, since each
-# worker would otherwise have its own separate otp_storage dict.
+# VERIFICATION ID STORAGE
 # =================================
-otp_storage = {}
+# We store the verificationId returned by Message Central, not the OTP itself.
+verification_storage = {}
 
-MAX_OTP_ATTEMPTS = 5
-OTP_EXPIRY_MINUTES = 10
+VERIFICATION_EXPIRY_MINUTES = 10
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 
 # =================================
 # HELPER FUNCTIONS
 # =================================
 
-
-def send_otp_via_message_central(full_phone, raw_phone, otp):
-    """Send OTP using unified service"""
-    try:
-        sms_service = get_sms_service()
-        success, response, sent_otp = sms_service.send_otp(full_phone, otp)
-        return success, "OTP sent successfully" if success else "Failed to send OTP"
-    except Exception as e:
-        logger.error(f"OTP send error: {e}")
-        return False, "Failed to send OTP"
-def generate_otp():
-    """Generate a 6-digit OTP."""
-    return str(random.randint(100000, 999999))
-
-
 def generate_referral_code():
     """Generate a random 8-character alphanumeric referral code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-
 
 def validate_phone(phone):
     """Basic Indian mobile number validation (10 digits, starts with 6-9)."""
     return bool(re.match(r'^[6-9]\d{9}$', phone))
 
-
 def clean_phone(raw_phone):
-    """Strip everything except digits, then take the last 10 digits.
-    Handles numbers pasted with +91, spaces, dashes, etc."""
+    """Strip everything except digits, then take the last 10 digits."""
     digits = ''.join(filter(str.isdigit, raw_phone or ''))
     return digits[-10:] if len(digits) >= 10 else digits
 
-
-def _new_otp_record(otp):
+def _new_verification_record(verification_id):
     return {
-        "otp": otp,
-        "expires_at": datetime.now() + timedelta(minutes=OTP_EXPIRY_MINUTES),
+        "verification_id": verification_id,
+        "expires_at": datetime.now() + timedelta(minutes=VERIFICATION_EXPIRY_MINUTES),
         "created_at": datetime.now(),
         "attempts": 0,
     }
 
 def get_or_create_user(phone, ip_address=None):
     """Get existing user or create a new one."""
-    
-    # Use the database engine directly
     from database.init_db import engine
     from sqlalchemy import text
     
-    # Open and close the connection automatically using 'with'
     with engine.connect() as conn:
         user = conn.execute(
             text("SELECT id, phone, name, role, referral_code FROM users WHERE phone = :phone"),
@@ -117,7 +90,7 @@ def get_or_create_user(phone, ip_address=None):
             "ip": ip_address or request.remote_addr,
         })
         user_id = result.fetchone()[0]
-        conn.commit()  # You can commit inside the 'with' block
+        conn.commit()
 
         return {
             "id": user_id,
@@ -126,7 +99,7 @@ def get_or_create_user(phone, ip_address=None):
             "role": "free",
             "referral_code": referral_code,
         }, "new"
-                
+
 def generate_jwt_tokens(user_data, remember_me=False):
     """Generate access and refresh tokens."""
     if remember_me:
@@ -148,26 +121,17 @@ def generate_jwt_tokens(user_data, remember_me=False):
 
     return access_token, refresh_token, access_expires, refresh_expires
 
-
 # =================================
 # ROUTES
 # =================================
 
-# In routes/auth_routes.py - replace the send_otp_via_message_central function
-
-from services.sms_service import get_sms_service
-
-# Remove the old send_otp_via_message_central function
-# Add this new one:
-
 @auth_bp.route("/send-otp", methods=["POST"])
 def send_otp():
-    """Send OTP via Message Central (Unified Service)"""
+    """Send OTP via Message Central VerifyNow API."""
     try:
         data = request.get_json(silent=True) or {}
         raw_phone = data.get("phone", "")
 
-        # 1. Clean and validate phone
         phone = clean_phone(raw_phone)
         if not validate_phone(phone):
             return jsonify({
@@ -177,37 +141,31 @@ def send_otp():
 
         full_phone = COUNTRY_CODE + phone
 
-        # 2. Cooldown check: prevent spam (30 seconds)
-        existing = otp_storage.get(full_phone)
+        # Cooldown check: prevent spam (30 seconds)
+        existing = verification_storage.get(full_phone)
         if existing and (datetime.now() - existing["created_at"]) < timedelta(seconds=30):
             return jsonify({
                 "success": False,
                 "message": "Please wait 30 seconds before requesting another OTP."
             }), 429
 
-        # 3. Generate OTP and store it
-        otp = generate_otp()
-        logger.info(f"Generated OTP for {full_phone}")  # Never log the OTP itself!
-        
-        # Save to in-memory storage (or Redis in production)
-        otp_storage[full_phone] = _new_otp_record(otp)
-
-        # 4. Send SMS using the unified service
-        from services.sms_service import get_sms_service
+        # Call the unified SMS service to send OTP
         sms_service = get_sms_service()
-        
-        # The service returns: (success, response_dict, sent_otp)
-        success, response, sent_otp = sms_service.send_otp(full_phone, otp)
+        success, response, verification_id = sms_service.send_otp(full_phone)
 
-        if success:
+        if success and verification_id:
+            # Store the verification_id instead of the OTP
+            verification_storage[full_phone] = _new_verification_record(verification_id)
+            logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
+            
             return jsonify({
                 "success": True,
                 "message": "OTP sent successfully",
                 "data": {"phone": phone}
             })
 
-        # 5. If SMS failed, remove the OTP so user can try again
-        otp_storage.pop(full_phone, None)
+        # If SMS failed, clean up
+        verification_storage.pop(full_phone, None)
         logger.error(f"Failed to send OTP to {full_phone}: {response}")
         return jsonify({
             "success": False, 
@@ -220,10 +178,10 @@ def send_otp():
             "success": False, 
             "message": "Something went wrong. Please try again."
         }), 500
-    
+
 @auth_bp.route("/verify-otp", methods=["POST"])
 def verify_otp():
-    """Verify OTP and login/create user."""
+    """Verify OTP using Message Central VerifyNow API."""
     from database.init_db import engine
     from sqlalchemy import text
     from flask_jwt_extended import create_access_token, create_refresh_token, set_access_cookies, set_refresh_cookies
@@ -235,39 +193,40 @@ def verify_otp():
         remember_me = bool(data.get("remember_me", False))
 
         phone = clean_phone(raw_phone)
-
         if not validate_phone(phone) or not re.match(r'^\d{6}$', user_otp):
             return jsonify({"success": False, "message": "Invalid phone number or OTP"}), 400
 
         full_phone = COUNTRY_CODE + phone
 
-        stored = otp_storage.get(full_phone)
-
+        # Retrieve the stored verification_id
+        stored = verification_storage.get(full_phone)
         if not stored:
             return jsonify({"success": False, "message": "No OTP found. Please request a new one."}), 401
 
         if datetime.now() > stored["expires_at"]:
-            otp_storage.pop(full_phone, None)
+            verification_storage.pop(full_phone, None)
             return jsonify({"success": False, "message": "OTP has expired. Please request a new one."}), 401
 
         stored["attempts"] += 1
         if stored["attempts"] > MAX_OTP_ATTEMPTS:
-            otp_storage.pop(full_phone, None)
+            verification_storage.pop(full_phone, None)
             return jsonify({
                 "success": False,
                 "message": "Too many incorrect attempts. Please request a new OTP."
             }), 429
 
-        if stored["otp"] != user_otp:
+        # Verify the OTP using the unified service
+        sms_service = get_sms_service()
+        success, response = sms_service.verify_otp(stored["verification_id"], user_otp)
+
+        if not success:
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
-        # ✅ OTP verified - clear it so it can't be reused
-        otp_storage.pop(full_phone, None)
+        # OTP verified - clear it so it can't be reused
+        verification_storage.pop(full_phone, None)
 
-        # ✅ Use ONE single database connection for the entire request
+        # Create or login the user
         with engine.connect() as conn:
-            
-            # Get or create user using this connection
             user = conn.execute(
                 text("SELECT id, phone, name, role, referral_code FROM users WHERE phone = :phone"),
                 {"phone": phone}
@@ -326,7 +285,6 @@ def verify_otp():
                 },
             })
 
-            # Cookie-based auth
             set_access_cookies(response, access_token, max_age=int(access_expires.total_seconds()))
             set_refresh_cookies(response, refresh_token, max_age=int(refresh_expires.total_seconds()))
 
@@ -349,30 +307,30 @@ def resend_otp():
 
         full_phone = COUNTRY_CODE + phone
 
-        stored = otp_storage.get(full_phone)
+        stored = verification_storage.get(full_phone)
         if stored and (datetime.now() - stored["created_at"]) < timedelta(seconds=30):
             return jsonify({
                 "success": False,
                 "message": "Please wait before requesting another OTP."
             }), 429
 
+        # Resend using the stored verification_id if valid
         if stored and datetime.now() < stored["expires_at"]:
-            otp = stored["otp"]
-            stored["attempts"] = 0  # reset attempt counter on resend
-        else:
-            otp = generate_otp()
-            otp_storage[full_phone] = _new_otp_record(otp)
+            # Actually, we need to call send_otp again to get a new verification_id
+            # Message Central does not allow resending with the same ID
+            verification_storage.pop(full_phone, None)
 
-        logger.info(f"Resending OTP for {full_phone}")
+        # Send a fresh OTP
+        sms_service = get_sms_service()
+        success, response, verification_id = sms_service.send_otp(full_phone)
 
-        success, message = send_otp_via_message_central(full_phone, otp)
-
-        if success:
+        if success and verification_id:
+            verification_storage[full_phone] = _new_verification_record(verification_id)
             return jsonify({"success": True, "message": "OTP resent successfully"})
 
-        return jsonify({"success": False, "message": message}), 502
+        return jsonify({"success": False, "message": "Failed to resend OTP"}), 502
 
-    except Exception:
+    except Exception as e:
         logger.exception("resend_otp error")
         return jsonify({"success": False, "message": "Something went wrong. Please try again."}), 500
 
@@ -381,7 +339,6 @@ def logout():
     response = jsonify({"message": "Logged out successfully"})
     unset_jwt_cookies(response)
     return response, 200
-
 
 @auth_bp.route("/me", methods=["GET"])
 @jwt_required()

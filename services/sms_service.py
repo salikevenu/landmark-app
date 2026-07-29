@@ -1,18 +1,16 @@
 """
-Unified SMS Service for Message Central
-- Single source of truth for all SMS operations
-- Handles both OTP and general SMS
+Unified SMS Service for Message Central (VerifyNow API)
+- Handles OTP generation and validation using Message Central's built-in flow
 """
 import os
 import logging
-import random
 import requests
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 class MessageCentralSMS:
-    """Message Central SMS Service - Unified"""
+    """Message Central SMS Service using VerifyNow API"""
     
     def __init__(self):
         self.customer_id = os.environ.get('MESSAGE_CENTRAL_CUSTOMER_ID')
@@ -27,7 +25,6 @@ class MessageCentralSMS:
         if self.auth_token:
             return self.auth_token
         
-        # Fallback: fetch fresh token
         url = "https://cpaas.messagecentral.com/auth/v1/authentication/token"
         params = {
             "customerId": self.customer_id,
@@ -55,7 +52,6 @@ class MessageCentralSMS:
     
     def _format_phone(self, phone: str) -> Tuple[str, str]:
         """Format phone number - returns (full_phone, raw_phone)"""
-        # Remove non-numeric
         phone = ''.join(filter(str.isdigit, phone))
         
         if len(phone) == 10:
@@ -64,68 +60,90 @@ class MessageCentralSMS:
             return phone, phone[-10:]
         else:
             return phone, phone[-10:] if len(phone) >= 10 else phone
-    
-    def send_sms(self, phone: str, message: str) -> tuple[bool, dict]:
+
+    def send_otp(self, phone: str) -> Tuple[bool, Optional[dict], Optional[str]]:
+        """
+        Send OTP using Message Central VerifyNow API.
+        Returns: (success, response_json, verification_id)
+        """
         try:
             full_phone, raw_phone = self._format_phone(phone)
 
             if self.debug_mode:
-                print(f"\n🔴🔴🔴 DEBUG MODE - SMS to {full_phone}: {message} 🔴🔴🔴\n")
+                print(f"\n🔴🔴🔴 DEBUG MODE - OTP requested for {full_phone} 🔴🔴🔴\n")
+                # In debug mode, we mock a verification_id
+                return True, {"debug": True}, "debug_verification_id"
+
+            auth_token = self._get_auth_token()
+            if not auth_token:
+                return False, {"error": "Failed to get auth token"}, None
+
+            url = "https://cpaas.messagecentral.com/verification/v3/send"
+            params = {
+                "customerId": self.customer_id,
+                "countryCode": self.country,
+                "flowType": "SMS",
+                "mobileNumber": raw_phone,
+                "otpLength": 6
+            }
+            headers = {"authToken": auth_token}
+
+            response = requests.post(url, params=params, headers=headers, timeout=20)
+
+            if response.status_code == 200:
+                data = response.json()
+                verification_id = data["data"]["verificationId"]
+                logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
+                return True, data, verification_id
+
+            logger.error(f"Status: {response.status_code} - Response: {response.text}")
+            return False, {"error": response.text}, None
+
+        except Exception as e:
+            logger.error(f"send_otp error: {e}")
+            return False, {"error": str(e)}, None
+
+    def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
+        """
+        Validate the OTP using Message Central VerifyNow API.
+        Returns: (success, response_json)
+        """
+        try:
+            if self.debug_mode:
+                print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
                 return True, {"debug": True}
 
             auth_token = self._get_auth_token()
             if not auth_token:
                 return False, {"error": "Failed to get auth token"}
 
-            # ✅ Use the correct, working endpoint
-            url = "https://cpaas.messagecentral.com/api/v1/send-sms"
-            payload = {
-                "flowType": "SMS",
-                "type": "OTP",
-                "country": self.country,
-                "mobileNumber": raw_phone,
-                "message": message,
-                "senderId": "LANDMARK"
+            url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
+            params = {
+                "verificationId": verification_id,
+                "code": otp
             }
-            headers = {"authToken": auth_token, "Content-Type": "application/json"}
+            headers = {"authToken": auth_token}
 
-            response = requests.post(url, json=payload, headers=headers, timeout=15)
+            response = requests.post(url, params=params, headers=headers, timeout=20)
 
             if response.status_code == 200:
-                logger.info(f"SMS sent successfully to {full_phone}")
-                return True, response.json()
+                data = response.json()
+                logger.info(f"OTP verified successfully for ID {verification_id}")
+                return True, data
 
-            logger.error(f"Message Central error: {response.status_code} - {response.text}")
-            return False, {"error": f"Failed to send SMS (HTTP {response.status_code})"}
+            logger.error(f"Status: {response.status_code} - Response: {response.text}")
+            return False, {"error": response.text}
 
         except Exception as e:
-            logger.error(f"SMS error: {e}")
+            logger.error(f"verify_otp error: {e}")
             return False, {"error": str(e)}
-    
-    def send_otp(self, phone: str, otp: str = None):
-        """Send OTP via SMS"""
-        if not otp:
-            otp = str(random.randint(100000, 999999))
-        
-        # Debug mode
-        if self.debug_mode:
-            print(f"\n🔴🔴🔴 DEBUG MODE - OTP for {phone}: {otp} 🔴🔴🔴\n")
-            return True, {"debug": True}, otp   # ✅ Always return a 3-tuple
-        
-        # Real SMS logic (must return 3 values)
-        try:
-            # ... your real SMS code here ...
-            success, response = self.send_sms(phone, f"Your OTP is {otp}")
-            return success, response, otp   # ✅ Always return a 3-tuple
-        except Exception as e:
-            return False, {"error": str(e)}, otp  # ✅ Always return a 3-tuple
+
 # ============================================
-# SINGLETON INSTANCE (Add this before get_sms_service)
+# SINGLETON INSTANCE
 # ============================================
-_sms_service = None  # <--- THIS LINE IS MISSING!
+_sms_service = None
 
 def get_sms_service() -> MessageCentralSMS:
-    """Get SMS service instance (singleton)"""
     global _sms_service
     if _sms_service is None:
         _sms_service = MessageCentralSMS()
