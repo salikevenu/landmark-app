@@ -1,7 +1,3 @@
-"""
-Unified SMS Service for Message Central (VerifyNow API)
-- Handles OTP generation and validation using Message Central's built-in flow
-"""
 import os
 import logging
 import requests
@@ -10,7 +6,7 @@ from typing import Tuple, Optional
 logger = logging.getLogger(__name__)
 
 class MessageCentralSMS:
-    """Message Central SMS Service using VerifyNow API"""
+    """Message Central SMS Service using permanent Auth Token"""
     
     def __init__(self):
         self.customer_id = os.environ.get('MESSAGE_CENTRAL_CUSTOMER_ID')
@@ -22,9 +18,8 @@ class MessageCentralSMS:
     
     def _get_auth_token(self) -> Optional[str]:
         """Return the permanent Auth Token from environment variables."""
-        # ✅ No need to fetch a new token. Use the permanent one.
         return self.auth_token
-    
+
     def _format_phone(self, phone: str) -> Tuple[str, str]:
         """Format phone number - returns (full_phone, raw_phone)"""
         phone = ''.join(filter(str.isdigit, phone))
@@ -62,13 +57,7 @@ class MessageCentralSMS:
             }
             headers = {"authToken": auth_token}
 
-            # ✅ CHANGE FROM requests.get TO requests.post
-            response = requests.post(
-                url,
-                params=params,
-                headers=headers,
-                timeout=20
-            )
+            response = requests.post(url, params=params, headers=headers, timeout=20)
 
             if response.status_code == 200:
                 data = response.json()
@@ -84,6 +73,10 @@ class MessageCentralSMS:
             return False, {"error": str(e)}, None
 
     def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
+        """
+        Validate the OTP using Message Central VerifyNow API.
+        Returns: (success, response_json)
+        """
         try:
             if self.debug_mode:
                 print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
@@ -95,10 +88,9 @@ class MessageCentralSMS:
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
-            # ✅ FINAL FIX: Convert code to integer
             params = {
                 "verificationId": verification_id,
-                "code": int(otp)   # <-- This is the fix
+                "code": otp
             }
             
             headers = {"authToken": auth_token}
