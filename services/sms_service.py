@@ -118,11 +118,17 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
+            
+            # ✅ Ensure these parameters are exactly correct
             params = {
                 "verificationId": verification_id,
                 "code": otp
             }
-            headers = {"authToken": auth_token}
+            
+            # ✅ Ensure the header is exactly "authToken", not "Authorization" or anything else
+            headers = {
+                "authToken": auth_token
+            }
 
             response = requests.post(url, params=params, headers=headers, timeout=20)
 
