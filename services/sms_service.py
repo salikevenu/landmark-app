@@ -63,7 +63,12 @@ class MessageCentralSMS:
             }
             headers = {"authToken": auth_token}
 
-            response = requests.post(url, params=params, headers=headers, timeout=20)
+            response = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=20
+            )
 
             if response.status_code == 200:
                 data = response.json()
@@ -79,10 +84,6 @@ class MessageCentralSMS:
             return False, {"error": str(e)}, None
 
     def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
-        """
-        Validate the OTP using Message Central VerifyNow API.
-        Returns: (success, response_json)
-        """
         try:
             if self.debug_mode:
                 print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
@@ -94,28 +95,17 @@ class MessageCentralSMS:
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
-            # ✅ TRY adding customerId to the params (some API versions require it)
+            # ✅ FINAL PARAMS: Includes flowType and customerId
             params = {
                 "verificationId": verification_id,
                 "code": otp,
-                # "customerId": self.customer_id   # ← Uncomment this line if the 401 persists
+                "flowType": "SMS",                  # ✅ Crucial addition
+                "customerId": self.customer_id      # ✅ Crucial addition
             }
             
             headers = {"authToken": auth_token}
 
-            # 🟡 DEBUG: Log exactly what we are sending
-            logger.info("🔍 DEBUG - VERIFY REQUEST:")
-            logger.info(f"  URL: {url}")
-            logger.info(f"  Headers: {headers}")
-            logger.info(f"  Params: {params}")
-
             response = requests.post(url, params=params, headers=headers, timeout=20)
-
-            # 🟡 DEBUG: Log exactly what we received
-            logger.info("🔍 DEBUG - VERIFY RESPONSE:")
-            logger.info(f"  Status: {response.status_code}")
-            logger.info(f"  Headers: {dict(response.headers)}")
-            logger.info(f"  Body: {response.text}")
 
             if response.status_code == 200:
                 data = response.json()
