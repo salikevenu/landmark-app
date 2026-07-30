@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # We store the verificationId returned by Message Central, not the OTP itself.
 verification_storage = {}
 
-VERIFICATION_EXPIRY_MINUTES = 10
+VERIFICATION_EXPIRY_MINUTES = 2
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 
 MAX_OTP_ATTEMPTS = 5
