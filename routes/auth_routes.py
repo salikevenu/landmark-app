@@ -225,8 +225,10 @@ def verify_otp():
         if not success:
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
-        # OTP verified - clear it so it can't be reused
-        verification_storage.pop(full_phone, None)
+        # Inside your verify_otp route:
+        stored = verification_storage.get(full_phone)
+        if stored:
+            verification_id = stored["verification_id"]  # Must match the key used in _new_verification_record
 
         # Create or login the user
         with engine.connect() as conn:
