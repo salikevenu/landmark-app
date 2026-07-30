@@ -89,7 +89,7 @@ class MessageCentralSMS:
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
             params = {
-                "verificationId": verification_id,
+                "verificationId": int(verification_id),  # <-- Convert to integer
                 "code": otp
             }
             
