@@ -137,7 +137,7 @@ def get_verification(phone):
     """Retrieve verification data from PostgreSQL."""
     with engine.connect() as conn:
         row = conn.execute(text("""
-            SELECT verification_id, attempts, expires_at
+            SELECT verification_id, attempts, expires_at, created_at
             FROM otp_verifications
             WHERE phone = :phone
         """), {"phone": phone}).fetchone()
@@ -145,7 +145,8 @@ def get_verification(phone):
             return {
                 "verification_id": row._mapping["verification_id"],
                 "attempts": row._mapping["attempts"],
-                "expires_at": row._mapping["expires_at"]
+                "expires_at": row._mapping["expires_at"],
+                "created_at": row._mapping["created_at"]   # <-- Add this
             }
         return None
 
