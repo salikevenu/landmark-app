@@ -421,9 +421,24 @@ def init_db():
             ON CONFLICT (key) DO NOTHING
         """), {"key": key, "val": val})
 
+    # =====================================================
+    # OTP VERIFICATIONS (for production multi-worker support)
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS otp_verifications (
+            id SERIAL PRIMARY KEY,
+            phone TEXT UNIQUE NOT NULL,
+            verification_id TEXT NOT NULL,
+            attempts INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_otp_phone ON otp_verifications(phone)"))
+    
     conn.commit()
     conn.close()
-
+    
 if __name__ == "__main__":
     init_db()
     logger.info("✅ PostgreSQL tables created with all indexes and default settings.")
