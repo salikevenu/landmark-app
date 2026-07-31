@@ -90,7 +90,8 @@ class MessageCentralSMS:
             
             params = {
                 "verificationId": int(verification_id),  # <-- Convert to integer
-                "code": otp
+                "code": otp,
+                "flowType": "SMS"
             }
             
             headers = {"authToken": auth_token}
