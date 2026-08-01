@@ -257,9 +257,6 @@ def verify_otp():
         sms_service = get_sms_service()
         success, response = sms_service.verify_otp(str(stored["verification_id"]), user_otp)
 
-
-
-
         if not success:
             # ✅ Only increment attempts on failure
             increment_attempts(full_phone)
@@ -270,6 +267,7 @@ def verify_otp():
 
         # Create or login the user
         with engine.connect() as conn:
+            
             user = conn.execute(
                 text("SELECT id, phone, name, role, referral_code FROM users WHERE phone = :phone"),
                 {"phone": phone}
