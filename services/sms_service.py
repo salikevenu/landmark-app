@@ -70,16 +70,13 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}, None
 
             url = "https://cpaas.messagecentral.com/verification/v3/send"
-            
-            # ✅ EXACTLY AS POSTMAN
             params = {
-                "customerId": self.customer_id,          # C-609BF84D41E340C
-                "countryCode": self.country,             # 91
-                "flowType": "SMS",                       # SMS
-                "mobileNumber": raw_phone,               # 9959543954
-                "otpLength": 6                           # 6
+                "customerId": self.customer_id,
+                "countryCode": self.country,
+                "flowType": "SMS",
+                "mobileNumber": raw_phone,
+                "otpLength": 6
             }
-            
             headers = {"authToken": auth_token}
 
             response = self.session.post(url, params=params, headers=headers, timeout=20)
@@ -100,9 +97,10 @@ class MessageCentralSMS:
             return False, {"error": response.text}, None
 
         except Exception as e:
+            # ✅ This is the missing block
             logger.exception("send_otp failed")
             return False, {"error": str(e)}, None
-
+        
     def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
         try:
             if self.debug_mode:
@@ -128,8 +126,14 @@ class MessageCentralSMS:
             }
 
             response = self.session.post(url, params=params, headers=headers, timeout=20)
+           
+            # ... your code ...
+        except Exception as e:
+            logger.exception("verify_otp failed")
+            return False, {"error": str(e)}
 
             # ... rest of your existing logging and error handling ...
+
 
 
 # ============================================

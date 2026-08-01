@@ -571,6 +571,7 @@ if __name__ == "__main__":
                 logging.warning("Scheduler agent not available or missing start() method")
         except Exception as e:
             logging.error(f"Failed to start scheduler: {e}")
+            
 
         # Development: Use Flask built-in server
         debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
