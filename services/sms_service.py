@@ -103,51 +103,33 @@ class MessageCentralSMS:
             logger.exception("send_otp failed")
             return False, {"error": str(e)}, None
 
-    def send_otp(self, phone: str) -> Tuple[bool, Optional[dict], Optional[str]]:
+    def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
         try:
-            full_phone, raw_phone = self._format_phone(phone)
-
             if self.debug_mode:
-                print(f"\n🔴🔴🔴 DEBUG MODE - OTP requested for {full_phone} 🔴🔴🔴\n")
-                return True, {"debug": True}, "debug_verification_id"
+                print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
+                return True, {"debug": True}
 
             auth_token = self._get_auth_token()
             if not auth_token:
-                return False, {"error": "Failed to get auth token"}, None
+                return False, {"error": "Failed to get auth token"}
 
-            url = "https://cpaas.messagecentral.com/verification/v3/send"
+            url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
             # ✅ EXACTLY AS POSTMAN
             params = {
-                "customerId": self.customer_id,          # C-609BF84D41E340C
-                "countryCode": self.country,             # 91
-                "flowType": "SMS",                       # SMS
-                "mobileNumber": raw_phone,               # 9959543954
-                "otpLength": 6                           # 6
+                "verificationId": verification_id,  # Keep as string (Postman sends it as string)
+                "code": otp,                         # Keep as string
+                "flowType": "SMS"                    # Required
             }
             
-            headers = {"authToken": auth_token}
+            headers = {
+                "authToken": auth_token,
+                "Accept": "application/json"
+            }
 
             response = self.session.post(url, params=params, headers=headers, timeout=20)
 
-            if response.status_code == 200:
-                data = response.json()
-                verification_id = (
-                    data.get("data", {})
-                        .get("verificationId")
-                )
-                if not verification_id:
-                    logger.error(data)
-                    return False, data, None
-                logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
-                return True, data, verification_id
-
-            logger.error(f"Status: {response.status_code} - Response: {response.text}")
-            return False, {"error": response.text}, None
-
-        except Exception as e:
-            logger.exception("send_otp failed")
-            return False, {"error": str(e)}, None
+            # ... rest of your existing logging and error handling ...
 
 
 # ============================================
