@@ -58,10 +58,6 @@ class MessageCentralSMS:
             return phone, phone[-10:] if len(phone) >= 10 else phone
 
     def send_otp(self, phone: str) -> Tuple[bool, Optional[dict], Optional[str]]:
-        """
-        Send OTP using Message Central VerifyNow API.
-        Returns: (success, response_json, verification_id)
-        """
         try:
             full_phone, raw_phone = self._format_phone(phone)
 
@@ -74,27 +70,22 @@ class MessageCentralSMS:
                 return False, {"error": "Failed to get auth token"}, None
 
             url = "https://cpaas.messagecentral.com/verification/v3/send"
+            
+            # ✅ EXACTLY AS POSTMAN
             params = {
-                "customerId": self.customer_id,
-                "countryCode": self.country,
-                "flowType": "SMS",
-                "mobileNumber": raw_phone,
-                "otpLength": 6
+                "customerId": self.customer_id,          # C-609BF84D41E340C
+                "countryCode": self.country,             # 91
+                "flowType": "SMS",                       # SMS
+                "mobileNumber": raw_phone,               # 9959543954
+                "otpLength": 6                           # 6
             }
+            
             headers = {"authToken": auth_token}
 
-            # ✅ Use the persistent session
             response = self.session.post(url, params=params, headers=headers, timeout=20)
 
-            # ✅ Safe JSON parsing with fallback
-            try:
-                data = response.json()
-            except ValueError:
-                logger.error("Invalid JSON returned by Message Central on send_otp")
-                return False, {"error": "Invalid response from Message Central"}, None
-
             if response.status_code == 200:
-                # ✅ Safe extraction with fallback
+                data = response.json()
                 verification_id = (
                     data.get("data", {})
                         .get("verificationId")
@@ -109,82 +100,54 @@ class MessageCentralSMS:
             return False, {"error": response.text}, None
 
         except Exception as e:
-            # ✅ Use logger.exception to capture full traceback
             logger.exception("send_otp failed")
             return False, {"error": str(e)}, None
 
-    def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
-        """
-        Validate the OTP using Message Central VerifyNow API.
-        Returns: (success, response_json)
-        """
+    def send_otp(self, phone: str) -> Tuple[bool, Optional[dict], Optional[str]]:
         try:
+            full_phone, raw_phone = self._format_phone(phone)
+
             if self.debug_mode:
-                print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
-                return True, {"debug": True}
+                print(f"\n🔴🔴🔴 DEBUG MODE - OTP requested for {full_phone} 🔴🔴🔴\n")
+                return True, {"debug": True}, "debug_verification_id"
 
             auth_token = self._get_auth_token()
             if not auth_token:
-                return False, {"error": "Failed to get auth token"}
+                return False, {"error": "Failed to get auth token"}, None
 
-            url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
+            url = "https://cpaas.messagecentral.com/verification/v3/send"
             
-            # ✅ Official VerifyNow params (No customerId, flowType included)
+            # ✅ EXACTLY AS POSTMAN
             params = {
-                "verificationId": int(verification_id),  # Convert to integer
-                "code": otp,
-                "flowType": "SMS"
+                "customerId": self.customer_id,          # C-609BF84D41E340C
+                "countryCode": self.country,             # 91
+                "flowType": "SMS",                       # SMS
+                "mobileNumber": raw_phone,               # 9959543954
+                "otpLength": 6                           # 6
             }
             
-            # ✅ Added Accept header for standard JSON response
-            headers = {
-                "authToken": auth_token,
-                "Accept": "application/json"
-            }
+            headers = {"authToken": auth_token}
 
-            # ✅ Use the persistent session
             response = self.session.post(url, params=params, headers=headers, timeout=20)
 
-            # ✅ Complete request/response logging for debugging (with token redaction)
-            safe_headers = dict(response.request.headers)
-            if "authToken" in safe_headers:
-                safe_headers["authToken"] = "***REDACTED***"
-
-            logger.info("Request URL: %s", response.request.url)
-            logger.info("Request Method: %s", response.request.method)
-            logger.info("Request Headers: %s", safe_headers)
-            logger.info("Response Status: %s", response.status_code)
-            logger.info("Response Body: %s", response.text)
-
             if response.status_code == 200:
-                # ✅ Safe JSON parsing with fallback
-                try:
-                    data = response.json()
-                except ValueError:
-                    logger.error("Invalid JSON returned by Message Central on verify_otp")
-                    return False, {"error": "Invalid response from Message Central"}
+                data = response.json()
+                verification_id = (
+                    data.get("data", {})
+                        .get("verificationId")
+                )
+                if not verification_id:
+                    logger.error(data)
+                    return False, data, None
+                logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
+                return True, data, verification_id
 
-                logger.info(f"OTP verified successfully for ID {verification_id}")
-                return True, data
-
-            # ✅ Improved error handling with JSON fallback
-            try:
-                error_data = response.json()
-            except ValueError:
-                error_data = {"error": response.text}
-
-            logger.error(
-                "Verification failed: %s - %s",
-                response.status_code,
-                error_data
-            )
-
-            return False, error_data
+            logger.error(f"Status: {response.status_code} - Response: {response.text}")
+            return False, {"error": response.text}, None
 
         except Exception as e:
-            # ✅ Use logger.exception to capture full traceback
-            logger.exception("verify_otp failed")
-            return False, {"error": str(e)}
+            logger.exception("send_otp failed")
+            return False, {"error": str(e)}, None
 
 
 # ============================================
