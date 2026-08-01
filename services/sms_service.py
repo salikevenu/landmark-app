@@ -124,7 +124,7 @@ class MessageCentralSMS:
                 "Accept": "application/json"
             }
 
-            response = self.session.post(url, params=params, headers=headers, timeout=20)
+            response = self.session.get(url, params=params, headers=headers, timeout=20)
 
             safe_headers = dict(response.request.headers)
             if "authToken" in safe_headers:

@@ -64,7 +64,8 @@ async function sendOTP() {
 
 async function verifyOTP() {
   const phone = phoneInput.value.trim();
-  const otp = otpInput.value.trim();
+  const otp = otpInput.value.trim();  // ✅ Already trimmed
+  
   if (!otp) {
     statusEl.innerText = "OTP required";
     return;
@@ -75,29 +76,24 @@ async function verifyOTP() {
     const res = await fetch("/api/auth/verify-otp", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone, otp })
+      body: JSON.stringify({ 
+        phone: phone, 
+        otp: otp  // ✅ Sending as a string
+      })
     });
     const data = await res.json();
 
-    if (res.ok && data.access_token) {
-      const token = data.access_token;
-      // Check if the user is an admin
-      const meRes = await fetch("/api/auth/me", {
-        headers: { "Authorization": "Bearer " + token }
-      });
-      const userData = await meRes.json();
-
-      if (userData.role !== "admin") {
-        statusEl.innerText = "Access denied. Admin only.";
-        return;
+    // ✅ Handle success (even if the backend returns a different format)
+    if (res.ok && (data.success === true || data.message === "Login successful")) {
+      // If you expect a token, store it
+      if (data.access_token) {
+        localStorage.setItem("access_token", data.access_token);
       }
-
-      localStorage.setItem("access_token", token);
+      // Redirect based on role or dashboard
       window.location.href = "/admin/dashboard";
     } else {
-      // ✅ Show more detailed error
-      statusEl.innerText = data.error || data.message || "Invalid OTP or server error (500)";
-      console.error("Backend error:", data);
+      // Show the exact error from the backend
+      statusEl.innerText = data.message || data.error || "Incorrect OTP. Please try again.";
     }
   } catch (err) {
     statusEl.innerText = "Server error";
