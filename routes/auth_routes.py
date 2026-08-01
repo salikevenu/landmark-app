@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 from database.init_db import engine
 from sqlalchemy import text
 
-VERIFICATION_EXPIRY_MINUTES = 2
+VERIFICATION_EXPIRY_SECONDS = 60
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 MAX_OTP_ATTEMPTS = 5
 
@@ -120,11 +120,11 @@ def store_verification(phone, verification_id):
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO otp_verifications (phone, verification_id, expires_at)
-            VALUES (:phone, :verification_id, NOW() + INTERVAL '2 minutes')
+            VALUES (:phone, :verification_id, NOW() + INTERVAL '60 seconds')
             ON CONFLICT (phone) DO UPDATE SET
                 verification_id = :verification_id,
                 attempts = 0,
-                expires_at = NOW() + INTERVAL '2 minutes'
+                expires_at = NOW() + INTERVAL '60 seconds'
         """), {
             "phone": phone,
             "verification_id": verification_id
@@ -255,7 +255,10 @@ def verify_otp():
 
         # ✅ Verify OTP FIRST, then increment attempts only on failure
         sms_service = get_sms_service()
-        success, response = sms_service.verify_otp(stored["verification_id"], user_otp)
+        success, response = sms_service.verify_otp(str(stored["verification_id"]), user_otp)
+
+
+
 
         if not success:
             # ✅ Only increment attempts on failure
