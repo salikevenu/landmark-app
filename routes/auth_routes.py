@@ -1,13 +1,11 @@
 import os
-import sys
 import random
 import re
 import string
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-import requests
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify
 from sqlalchemy import text
 from dotenv import load_dotenv
 
@@ -22,9 +20,9 @@ from flask_jwt_extended import (
     unset_jwt_cookies,
 )
 from services.sms_service import get_sms_service
-from dotenv import load_dotenv
 
-load_dotenv()  # Ensure environment variables are loaded
+# Load environment variables
+load_dotenv()
 
 print(f"🔍 DEBUG_SMS value in routes/auth.py: {os.getenv('DEBUG_SMS')}")
 
@@ -118,7 +116,7 @@ def generate_jwt_tokens(user_data, remember_me=False):
 # =================================
 
 def store_verification(phone, verification_id):
-    """Store verification_id in PostgreSQL (shared across all workers)."""
+    """Store verification_id in PostgreSQL."""
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO otp_verifications (phone, verification_id, expires_at)
@@ -136,17 +134,19 @@ def store_verification(phone, verification_id):
 def get_verification(phone):
     """Retrieve verification data from PostgreSQL."""
     with engine.connect() as conn:
+        # ✅ Let PostgreSQL handle the expiry check
         row = conn.execute(text("""
             SELECT verification_id, attempts, expires_at, created_at
             FROM otp_verifications
             WHERE phone = :phone
+              AND expires_at > NOW()
         """), {"phone": phone}).fetchone()
         if row:
             return {
                 "verification_id": row._mapping["verification_id"],
                 "attempts": row._mapping["attempts"],
                 "expires_at": row._mapping["expires_at"],
-                "created_at": row._mapping["created_at"]   # <-- Add this
+                "created_at": row._mapping["created_at"]
             }
         return None
 
@@ -161,7 +161,7 @@ def increment_attempts(phone):
         conn.commit()
 
 def delete_verification(phone):
-    """Delete the verification record after successful validation or expiry."""
+    """Delete the verification record."""
     with engine.connect() as conn:
         conn.execute(text("DELETE FROM otp_verifications WHERE phone = :phone"), {"phone": phone})
         conn.commit()
@@ -187,9 +187,9 @@ def send_otp():
 
         full_phone = COUNTRY_CODE + phone
 
-        # Cooldown check: prevent spam (30 seconds)
+        # Cooldown check
         existing = get_verification(full_phone)
-        if existing and (datetime.now() - existing["created_at"]) < timedelta(seconds=30):
+        if existing:
             return jsonify({
                 "success": False,
                 "message": "Please wait 30 seconds before requesting another OTP."
@@ -200,7 +200,6 @@ def send_otp():
         success, response, verification_id = sms_service.send_otp(full_phone)
 
         if success and verification_id:
-            # Store the verification_id in PostgreSQL
             store_verification(full_phone, verification_id)
             logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
             
@@ -245,25 +244,22 @@ def verify_otp():
         # Retrieve the stored verification_id from PostgreSQL
         stored = get_verification(full_phone)
         if not stored:
-            return jsonify({"success": False, "message": "No OTP found. Please request a new one."}), 401
+            return jsonify({"success": False, "message": "No OTP found or OTP expired. Please request a new one."}), 401
 
-        if datetime.now() > stored["expires_at"]:
-            delete_verification(full_phone)
-            return jsonify({"success": False, "message": "OTP has expired. Please request a new one."}), 401
-
-        increment_attempts(full_phone)
-        if stored["attempts"] > MAX_OTP_ATTEMPTS:
+        if stored["attempts"] >= MAX_OTP_ATTEMPTS:
             delete_verification(full_phone)
             return jsonify({
                 "success": False,
                 "message": "Too many incorrect attempts. Please request a new OTP."
             }), 429
 
-        # Verify the OTP using the unified service
+        # ✅ Verify OTP FIRST, then increment attempts only on failure
         sms_service = get_sms_service()
         success, response = sms_service.verify_otp(stored["verification_id"], user_otp)
 
         if not success:
+            # ✅ Only increment attempts on failure
+            increment_attempts(full_phone)
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
         # OTP verified successfully - delete the record
@@ -352,16 +348,11 @@ def resend_otp():
         full_phone = COUNTRY_CODE + phone
 
         stored = get_verification(full_phone)
-        if stored and (datetime.now() - stored["created_at"]) < timedelta(seconds=30):
+        if stored:
             return jsonify({
                 "success": False,
                 "message": "Please wait before requesting another OTP."
             }), 429
-
-        # Resend using the stored verification_id if valid
-        if stored and datetime.now() < stored["expires_at"]:
-            # Message Central does not allow resending with the same ID
-            delete_verification(full_phone)
 
         # Send a fresh OTP
         sms_service = get_sms_service()
