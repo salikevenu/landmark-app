@@ -113,11 +113,10 @@ class MessageCentralSMS:
 
             url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
             
-            # ✅ EXACTLY AS POSTMAN
             params = {
-                "verificationId": verification_id,  # Keep as string (Postman sends it as string)
-                "code": otp,                         # Keep as string
-                "flowType": "SMS"                    # Required
+                "verificationId": verification_id,
+                "code": otp,
+                "flowType": "SMS"
             }
             
             headers = {
@@ -126,14 +125,38 @@ class MessageCentralSMS:
             }
 
             response = self.session.post(url, params=params, headers=headers, timeout=20)
-           
-            # ... your code ...
+
+            safe_headers = dict(response.request.headers)
+            if "authToken" in safe_headers:
+                safe_headers["authToken"] = "***REDACTED***"
+
+            logger.info("Request URL: %s", response.request.url)
+            logger.info("Request Method: %s", response.request.method)
+            logger.info("Request Headers: %s", safe_headers)
+            logger.info("Response Status: %s", response.status_code)
+            logger.info("Response Body: %s", response.text)
+
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except ValueError:
+                    logger.error("Invalid JSON returned by Message Central on verify_otp")
+                    return False, {"error": "Invalid response from Message Central"}
+
+                logger.info(f"OTP verified successfully for ID {verification_id}")
+                return True, data
+
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {"error": response.text}
+
+            logger.error("Verification failed: %s - %s", response.status_code, error_data)
+            return False, error_data
+
         except Exception as e:
             logger.exception("verify_otp failed")
             return False, {"error": str(e)}
-
-            # ... rest of your existing logging and error handling ...
-
 
 
 # ============================================
