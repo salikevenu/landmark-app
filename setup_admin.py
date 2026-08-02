@@ -1,13 +1,18 @@
-# setup_admin.py (PostgreSQL version)
+# setup_admin.py (PostgreSQL version) – Updated for your phone number
 import jwt
 import datetime
 import os
 from sqlalchemy import create_engine, text
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
+
 # Use the same PostgreSQL URL as in database/init_db.py
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/landmark")
+DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 
 def create_jwt_token(user_id, user_role, secret_key, expires_days=30):
@@ -23,43 +28,41 @@ def create_jwt_token(user_id, user_role, secret_key, expires_days=30):
 
 def setup_admin():
     with engine.connect() as conn:
-        # Check if any admin exists
-        admin = conn.execute(text("SELECT id, phone, role FROM users WHERE role = 'admin' LIMIT 1")).fetchone()
-        admin_id = None
-        admin_phone = None
-        admin_role = None
+        # ✅ UPDATE YOUR OWN PHONE NUMBER TO ADMIN
+        phone = "9959543954"  # <-- CHANGE THIS if your phone number is different
 
-        if not admin:
-            logger.info("No admin found. Creating one...")
-            phone = "admin@example.com"
-            name = "Super Admin"
+        # Check if user exists
+        user = conn.execute(text("SELECT id, phone, role FROM users WHERE phone = :phone"), {"phone": phone}).fetchone()
+        
+        if not user:
+            # User doesn't exist, create them as admin
+            name = "Admin User"
             role = "admin"
             referral_code = "ADMIN123"
 
-            try:
-                # Use RETURNING to get the new id
-                result = conn.execute(text("""
-                    INSERT INTO users (phone, name, role, referral_code, wallet_balance)
-                    VALUES (:phone, :name, :role, :code, 0)
-                    ON CONFLICT (phone) DO NOTHING
-                    RETURNING id, phone, role
-                """), {"phone": phone, "name": name, "role": role, "code": referral_code}).fetchone()
-                if result:
-                    admin_id, admin_phone, admin_role = result
-                else:
-                    # Phone already exists, let's update role
-                    conn.execute(text("UPDATE users SET role = 'admin' WHERE phone = :phone"), {"phone": phone})
-                    conn.commit()
-                    # Fetch the updated row
-                    updated = conn.execute(text("SELECT id, phone, role FROM users WHERE phone = :phone"), {"phone": phone}).fetchone()
-                    admin_id, admin_phone, admin_role = updated
+            result = conn.execute(text("""
+                INSERT INTO users (phone, name, role, referral_code, wallet_balance)
+                VALUES (:phone, :name, :role, :code, 0)
+                ON CONFLICT (phone) DO NOTHING
+                RETURNING id, phone, role
+            """), {"phone": phone, "name": name, "role": role, "code": referral_code}).fetchone()
+            
+            if result:
+                admin_id, admin_phone, admin_role = result
                 logger.info(f"✅ Admin user created with phone: {admin_phone}")
-            except Exception as e:
-                logger.info(f"Error creating admin: {e}")
+            else:
+                logger.info("User already exists but could not be created.")
                 return None
         else:
-            admin_id, admin_phone, admin_role = admin._mapping["id"], admin._mapping["phone"], admin._mapping["role"]
-            logger.info(f"Admin already exists: {admin_phone} (role={admin_role})")
+            admin_id, admin_phone, admin_role = user._mapping["id"], user._mapping["phone"], user._mapping["role"]
+            # ✅ If the user exists but is not admin, update them
+            if admin_role != "admin":
+                conn.execute(text("UPDATE users SET role = 'admin' WHERE phone = :phone"), {"phone": phone})
+                conn.commit()
+                logger.info(f"✅ Updated user {admin_phone} to admin role")
+                admin_role = "admin"
+            else:
+                logger.info(f"✅ User {admin_phone} is already an admin")
 
     # IMPORTANT: Use the SAME JWT_SECRET_KEY as your Flask app
     secret_key = os.environ.get('JWT_SECRET_KEY', 'hlecFd2cJQY0UCyXcq5Fpo1UCLyBERNEu2hUiv_kM60')

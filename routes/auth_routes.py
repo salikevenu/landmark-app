@@ -334,7 +334,12 @@ def verify_otp():
     except Exception as e:
         logger.exception("verify_otp error")
         return jsonify({"success": False, "message": "Something went wrong. Please try again."}), 500
-
+        
+@auth_bp.route("/public/login", methods=["GET"])
+def public_login_page():
+    """Public user login page."""
+    return render_template("public/login.html")
+    
 @auth_bp.route("/resend-otp", methods=["POST"])
 def resend_otp():
     """Resend OTP."""
