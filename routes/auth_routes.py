@@ -5,7 +5,7 @@ import string
 import logging
 from datetime import timedelta
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app, render_template
 from sqlalchemy import text
 from dotenv import load_dotenv
 
@@ -339,7 +339,7 @@ def verify_otp():
 def public_login_page():
     """Public user login page."""
     return render_template("public/login.html")
-    
+
 @auth_bp.route("/resend-otp", methods=["POST"])
 def resend_otp():
     """Resend OTP."""
