@@ -334,7 +334,10 @@
             <a href="/api/user/browse" title="{{ _('search_nearby') }}">🔍 {{ _('search_nearby') }}</a>
             <a href="/api/user/create-listing" title="{{ _('add_business') }}">➕ {{ _('add_business') }}</a>
             <a href="/service/add" title="{{ _('add_service') }}">🛠️ {{ _('add_service') }}</a>
-            <a href="/promotions" title="{{ _('promotions') }}">📢 {{ _('promotions') }}</a>
+            <a href="/promotions" title="{{ _('promotions') }}">
+                📢 {{ _('promotions') }}
+                <span style="background:#0ff; color:#000; font-size:0.6rem; padding:2px 8px; border-radius:12px; margin-left:8px; font-weight:bold;">NEW</span>
+            </a>
             <a href="/my-listings" title="{{ _('my_listings') }}">💼 {{ _('my_listings') }}</a>
             <a href="/analytics" title="{{ _('analytics') }}">📊 {{ _('analytics') }}</a>
             <a href="/api/user/invite" title="{{ _('referrals') }}">👥 {{ _('referrals') }}</a>
@@ -342,7 +345,7 @@
             <a href="/api/user/profile" title="{{ _('profile') }}">👤 {{ _('profile') }}</a>
             <a href="/transactions" title="{{ _('transactions') }}">🧾 {{ _('transactions') }}</a>
             <a href="/pricing" title="{{ _('upgrade') }}">⭐ {{ _('upgrade') }}</a>
-            <a href="#" id="logoutLink" title="{{ _('logout') }}">🚪 {{ _('logout') }}</a>
+            <a href="/api/auth/logout" id="logoutLink" title="{{ _('logout') }}">🚪 {{ _('logout') }}</a>
         </aside>
 
         <!-- MAIN CONTENT -->
@@ -410,10 +413,9 @@
         const logoutLink = document.getElementById('logoutLink');
         if (logoutLink) {
           logoutLink.addEventListener('click', function(e) {
-            e.preventDefault();
+            // Let the browser navigate to the href normally
             localStorage.removeItem('access_token');
             localStorage.removeItem('refresh_token');
-            window.location.href = '/api/auth/public/login';
           });
         }
 
