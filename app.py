@@ -62,6 +62,9 @@ else:
 # Initialize Flask app
 app = Flask(__name__)
 
+# ✅ Add this line to bind the port for Render's gunicorn
+port = int(os.environ.get("PORT", 10000))
+
 # ==================== MASTER AGENT INITIALIZATION ====================
 # We initialize the master agent right here
 try:
@@ -283,6 +286,7 @@ def redirect_dashboard():
     return redirect("/api/user/dashboard")
 
 from flask import send_from_directory
+
 
 @app.route('/download/android')
 def download_apk():
