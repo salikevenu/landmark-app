@@ -59,11 +59,24 @@ else:
     init_db()
     print("✅ Database initialized on Render")
 
+    # ============================================
+    # 🔥 ONE-TIME FIX: Add logo_url column if missing
+    # ============================================
+    from database.init_db import engine
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS logo_url TEXT;"))
+        conn.commit()
+        print("✅ Verified: logo_url column exists on Render.")
+    # ============================================
+
 # Initialize Flask app
 app = Flask(__name__)
 
 # ✅ Add this line to bind the port for Render's gunicorn
 port = int(os.environ.get("PORT", 10000))
+
+# fix
 
 # ==================== MASTER AGENT INITIALIZATION ====================
 # We initialize the master agent right here
