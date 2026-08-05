@@ -142,6 +142,7 @@ def init_db():
             longitude REAL DEFAULT 0,
             address TEXT,
             status TEXT DEFAULT 'pending',
+            logo_url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
