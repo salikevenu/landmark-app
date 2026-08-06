@@ -55,31 +55,31 @@ def promotions():
     ai_score = 82
     ai_recommendations = ["Upload Logo", "Add 5 Photos", "Add WhatsApp", "Add Description"]
 
-        # 7. Safely prepare business data for JSON serialization
-        business_data = None
-        if business:
-            business_data = {
-                'business_name': business._mapping.get('business_name') or '',
-                'category': business._mapping.get('category') or '',
-                'rating': business._mapping.get('rating') or 0,
-                'phone': business._mapping.get('phone') or '',
-                'whatsapp': business._mapping.get('whatsapp') or '',
-                'logo_url': business._mapping.get('logo_url') or '',
-                'latitude': business._mapping.get('latitude') or 0,
-                'longitude': business._mapping.get('longitude') or 0,
-            }
+    # 7. Safely prepare business data for JSON serialization
+    business_data = None
+    if business:
+        business_data = {
+            'business_name': business._mapping.get('business_name') or '',
+            'category': business._mapping.get('category') or '',
+            'rating': business._mapping.get('rating') or 0,
+            'phone': business._mapping.get('phone') or '',
+            'whatsapp': business._mapping.get('whatsapp') or '',
+            'logo_url': business._mapping.get('logo_url') or '',
+            'latitude': business._mapping.get('latitude') or 0,
+            'longitude': business._mapping.get('longitude') or 0,
+        }
 
-        return render_template(
-            'promotions/index.html',
-            business=business_data,
-            wallet_balance=wallet_balance,
-            active_promos=active_promos_list,
-            analytics=analytics,
-            promotion_plans=promotion_plans,
-            ai_score=ai_score,
-            ai_recommendations=ai_recommendations,
-            now=datetime.now()
-        )
+    return render_template(
+        'promotions/index.html',
+        business=business_data,
+        wallet_balance=wallet_balance,
+        active_promos=active_promos_list,
+        analytics=analytics,
+        promotion_plans=promotion_plans,
+        ai_score=ai_score,
+        ai_recommendations=ai_recommendations,
+        now=datetime.now()
+    )
 
 @promotions_bp.route("/api/promotions/onboard", methods=["POST"])
 @jwt_required()
