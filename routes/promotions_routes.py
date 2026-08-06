@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, render_template
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from database.init_db import get_db_connection
 from sqlalchemy import text
-from datetime import datetime, timedelta
+from datetime import datetime
 
 promotions_bp = Blueprint('promotions', __name__, url_prefix='/promotions')
 
@@ -25,21 +25,21 @@ def promotions():
     ).fetchone()
     wallet_balance = wallet._mapping['balance'] if wallet else 0.0
 
-        # 3. Fetch Active Promotions
-        active_promos = conn.execute(
-            text("SELECT plan, start_date, end_date, is_active FROM sponsored_ads WHERE user_id = :uid AND end_date > NOW()"),
-            {"uid": user_id}
-        ).fetchall()
-        
-        active_promos_list = []
-        for row in active_promos:
-            if row._mapping['plan'] is None:
-                continue
-            active_promos_list.append({
-                'plan': row._mapping['plan'] or 'Unknown',
-                'days_left': max(0, (row._mapping['end_date'] - datetime.now()).days),
-                'status': 'Active' if row._mapping['is_active'] else 'Paused'
-            })
+    # 3. Fetch Active Promotions
+    active_promos = conn.execute(
+        text("SELECT plan, start_date, end_date, is_active FROM sponsored_ads WHERE user_id = :uid AND end_date > NOW()"),
+        {"uid": user_id}
+    ).fetchall()
+    
+    active_promos_list = []
+    for row in active_promos:
+        if row._mapping['plan'] is None:
+            continue
+        active_promos_list.append({
+            'plan': row._mapping['plan'] or 'Unknown',
+            'days_left': max(0, (row._mapping['end_date'] - datetime.now()).days),
+            'status': 'Active' if row._mapping['is_active'] else 'Paused'
+        })
 
     # 4. Fetch Analytics (Static dummy data for now - connect your real analytics table)
     analytics = {'views': 1245, 'clicks': 329, 'calls': 54, 'whatsapp': 28, 'ctr': 13}
@@ -72,6 +72,15 @@ def promotions():
 def create_promotion():
     user_id = get_jwt_identity()
     data = request.json
-    plan_name = data.get('plan')
-    # ... existing logic to save to sponsored_ads table ...
+    plan = data.get('plan')
+    listing_url = data.get('listing_url')
+    headline = data.get('headline')
+
+    conn = get_db_connection()
+    conn.execute(
+        text("INSERT INTO sponsored_ads (user_id, listing_id, plan, start_date, end_date, is_active) VALUES (:uid, 1, :plan, NOW(), NOW() + INTERVAL '1 month', 1)"),
+        {"uid": user_id, "plan": plan}
+    )
+    conn.commit()
+    
     return jsonify({"success": True, "message": "Promotion started successfully!"})
