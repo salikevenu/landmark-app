@@ -25,17 +25,21 @@ def promotions():
     ).fetchone()
     wallet_balance = wallet._mapping['balance'] if wallet else 0.0
 
-    # 3. Fetch Active Promotions
-    active_promos = conn.execute(
-        text("SELECT plan, start_date, end_date, is_active FROM sponsored_ads WHERE user_id = :uid AND end_date > NOW()"),
-        {"uid": user_id}
-    ).fetchall()
-    
-    active_promos_list = [{
-        'plan': row._mapping['plan'],
-        'days_left': (row._mapping['end_date'] - datetime.now()).days,
-        'status': 'Active' if row._mapping['is_active'] else 'Paused'
-    } for row in active_promos]
+        # 3. Fetch Active Promotions
+        active_promos = conn.execute(
+            text("SELECT plan, start_date, end_date, is_active FROM sponsored_ads WHERE user_id = :uid AND end_date > NOW()"),
+            {"uid": user_id}
+        ).fetchall()
+        
+        active_promos_list = []
+        for row in active_promos:
+            if row._mapping['plan'] is None:
+                continue
+            active_promos_list.append({
+                'plan': row._mapping['plan'] or 'Unknown',
+                'days_left': max(0, (row._mapping['end_date'] - datetime.now()).days),
+                'status': 'Active' if row._mapping['is_active'] else 'Paused'
+            })
 
     # 4. Fetch Analytics (Static dummy data for now - connect your real analytics table)
     analytics = {'views': 1245, 'clicks': 329, 'calls': 54, 'whatsapp': 28, 'ctr': 13}
