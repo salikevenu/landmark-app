@@ -554,6 +554,7 @@ def terms_of_service():
 # ------------------------------
 if __name__ == "__main__":
     import sys
+    
     # Start scheduler from Master Agent if available
     try:
         scheduler = app.master_agent.agents.get('scheduler')
@@ -565,23 +566,9 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Failed to start scheduler: {e}")
 
-    # ✅ CLEAN PRODUCTION STARTUP
-    if __name__ == "__main__":
-        import sys
-        # Start scheduler from Master Agent if available
-        try:
-            scheduler = app.master_agent.agents.get('scheduler')
-            if scheduler and hasattr(scheduler, 'start'):
-                result = scheduler.start()
-                logging.info(f"Scheduler started: {result}")
-            else:
-                logging.warning("Scheduler agent not available or missing start() method")
-        except Exception as e:
-            logging.error(f"Failed to start scheduler: {e}")
-            
-
-        # Development: Use Flask built-in server
-        debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
-        port = int(os.getenv("PORT", 8000))
-        print("Starting Flask development server...")
-        app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    # Development: Use Flask built-in server
+    # (Gunicorn is used in production on Render, this runs locally)
+    debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
+    port = int(os.getenv("PORT", 8000))
+    print("Starting Flask development server...")
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)
