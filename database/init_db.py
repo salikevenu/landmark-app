@@ -312,6 +312,7 @@ def init_db():
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS sponsored_ads (
             id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
             listing_id INTEGER NOT NULL REFERENCES listings(id),
             plan TEXT,
             amount REAL,
@@ -443,3 +444,25 @@ def init_db():
 if __name__ == "__main__":
     init_db()
     logger.info("✅ PostgreSQL tables created with all indexes and default settings.")
+
+# Database connection (PostgreSQL via SQLAlchemy)
+from database.init_db import get_db_connection, init_db
+
+# ✅ Only run init_db() if we are NOT on localhost
+import os
+if os.getenv("RENDER") != "true":   # Render sets this env var automatically
+    print("🔧 Running locally - skipping database initialization (Render will do this)")
+else:
+    init_db()
+    print("✅ Database initialized on Render")
+
+    # ============================================
+    # 🔥 ONE-TIME FIX: Add user_id to sponsored_ads
+    # ============================================
+    from database.init_db import engine
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE sponsored_ads ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);"))
+        conn.commit()
+        print("✅ Verified: user_id column exists on sponsored_ads.")
+    # ============================================    
