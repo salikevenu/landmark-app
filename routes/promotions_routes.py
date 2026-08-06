@@ -41,8 +41,14 @@ def promotions():
             'status': 'Active' if row._mapping['is_active'] else 'Paused'
         })
 
-    # 4. Fetch Analytics (Static dummy data for now - connect your real analytics table)
-    analytics = {'views': 1245, 'clicks': 329, 'calls': 54, 'whatsapp': 28, 'ctr': 13}
+    # 4. Fetch Analytics (Safe dict format)
+    analytics = {
+        'views': 1245,
+        'clicks': 329,
+        'calls': 54,
+        'whatsapp': 28,
+        'ctr': 13
+    }
 
     # 5. Promotion Plans (From DB - or hardcoded as constants for now)
     promotion_plans = [
