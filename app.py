@@ -554,8 +554,6 @@ def terms_of_service():
 # ------------------------------
 if __name__ == "__main__":
     import sys
-    
-    # Start scheduler from Master Agent if available
     try:
         scheduler = app.master_agent.agents.get('scheduler')
         if scheduler and hasattr(scheduler, 'start'):

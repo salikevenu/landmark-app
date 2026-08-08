@@ -28,6 +28,14 @@ def create_jwt_token(user_id, user_role, secret_key, expires_days=30):
 
 def setup_admin():
     with engine.connect() as conn:
+        # =============================================
+        # ✅ TEMPORARY: Add missing logo_url column
+        # =============================================
+        conn.execute(text("ALTER TABLE businesses ADD COLUMN IF NOT EXISTS logo_url TEXT;"))
+        conn.commit()
+        print("✅ Column logo_url added successfully.")
+        # =============================================
+        
         # ✅ UPDATE YOUR OWN PHONE NUMBER TO ADMIN
         phone = "9959543954"  # <-- CHANGE THIS if your phone number is different
 
