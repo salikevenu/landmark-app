@@ -75,6 +75,9 @@ def promotions():
             'longitude': business._mapping.get('longitude') or 0,
         }
 
+    # 8. Chart data (for the analytics chart)
+    chart_data = [120, 190, 300, 450, 320, 400, 245]
+
     return render_template(
         'promotions/index.html',
         business=business_data,
@@ -85,6 +88,7 @@ def promotions():
         ai_score=ai_score,
         ai_recommendations=ai_recommendations,
         now=datetime.now()
+        chart_data=chart_data
     )
 
 @promotions_bp.route("/api/promotions/onboard", methods=["POST"])
