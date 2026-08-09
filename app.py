@@ -56,8 +56,13 @@ import os
 if os.getenv("RENDER") != "true":   # Render sets this env var automatically
     print("🔧 Running locally - skipping database initialization (Render will do this)")
 else:
-    init_db()
-    print("✅ Database initialized on Render")
+    try:
+        print("🔧 Attempting to connect to Render database...")
+        init_db()
+        print("✅ Database initialized on Render")
+    except Exception as e:
+        print(f"❌ Database initialization failed (app will continue startup): {e}")
+        # DO NOT raise here — let the app start even if DB is slow
 
     
 # Initialize Flask app
