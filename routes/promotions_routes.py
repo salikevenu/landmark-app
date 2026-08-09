@@ -87,7 +87,7 @@ def promotions():
         promotion_plans=promotion_plans,
         ai_score=ai_score,
         ai_recommendations=ai_recommendations,
-        now=datetime.now()
+        now=datetime.now(),
         chart_data=chart_data
     )
 
