@@ -1,8 +1,129 @@
 {% extends "layouts/layout_app.html" %}
+
 {% block title %}Analytics | LANDMARK{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    .analytics-container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; margin: 20px 0; }
+    .stat-card { background: rgba(20, 28, 45, 0.7); border-radius: 16px; padding: 20px; text-align: center; border: 1px solid #2a3a5a; backdrop-filter: blur(8px); }
+    .stat-card .number { font-size: 2.5rem; font-weight: 700; color: #0ff; }
+    .stat-card .label { color: #aac; font-size: 0.9rem; }
+    
+    .chart-container { background: rgba(20, 28, 45, 0.7); border-radius: 16px; padding: 20px; margin: 20px 0; border: 1px solid #2a3a5a; }
+    
+    .top-listings-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    .top-listings-table th, .top-listings-table td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #1a2a3a; }
+    .top-listings-table th { color: #aac; font-weight: 600; }
+    .rank-badge { background: #0fa; color: #000; padding: 2px 8px; border-radius: 10px; font-weight: bold; font-size: 0.8rem; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="dash-container">
-  <h2 style="color: var(--gold-primary);">📊 Analytics</h2>
-  <p style="color: var(--text-dark);">Views, clicks, leads – your growth data will be here.</p>
+<div class="analytics-container">
+    <h2 style="color: #fff; border-left: 4px solid #0ff; padding-left: 15px;">📊 Analytics Dashboard</h2>
+    <p style="color: var(--text-muted);">Views, clicks, leads – your growth data lives here.</p>
+
+    <!-- Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="number" id="totalViews">0</div>
+            <div class="label">👁️ Views</div>
+        </div>
+        <div class="stat-card">
+            <div class="number" id="totalClicks">0</div>
+            <div class="label">🖱️ Clicks</div>
+        </div>
+        <div class="stat-card">
+            <div class="number" id="totalCalls">0</div>
+            <div class="label">📞 Calls</div>
+        </div>
+        <div class="stat-card">
+            <div class="number" id="totalWhatsapp">0</div>
+            <div class="label">💬 WhatsApp</div>
+        </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="chart-container">
+        <canvas id="analyticsChart"></canvas>
+    </div>
+
+    <!-- Top Listings -->
+    <h3 style="color: #fff; margin-top: 30px;">🏆 Top Performing Listings</h3>
+    <table class="top-listings-table">
+        <thead>
+            <tr><th>#</th><th>Business</th><th>Views</th><th>Clicks</th><th>WhatsApp</th></tr>
+        </thead>
+        <tbody id="topListingsBody">
+            <tr><td colspan="5" style="text-align:center; color:#aac;">Loading data...</td></tr>
+        </tbody>
+    </table>
 </div>
+
+<script>
+    async function loadAnalytics() {
+        try {
+            const res = await fetch('/api/analytics/data');
+            const data = await res.json();
+
+            // Update stats
+            document.getElementById('totalViews').textContent = data.totals.views;
+            document.getElementById('totalClicks').textContent = data.totals.clicks;
+            document.getElementById('totalCalls').textContent = data.totals.calls;
+            document.getElementById('totalWhatsapp').textContent = data.totals.whatsapp;
+
+            // Render Chart
+            const ctx = document.getElementById('analyticsChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.daily.map(d => d.date),
+                    datasets: [{
+                        label: 'Views',
+                        data: data.daily.map(d => d.views),
+                        borderColor: '#0ff',
+                        backgroundColor: 'rgba(0, 255, 255, 0.1)',
+                        tension: 0.3,
+                        fill: true
+                    }, {
+                        label: 'Clicks',
+                        data: data.daily.map(d => d.clicks),
+                        borderColor: '#0fa',
+                        backgroundColor: 'rgba(0, 255, 255, 0.05)',
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aac' } },
+                        y: { ticks: { color: '#aac' } }
+                    }
+                }
+            });
+
+            // Update table
+            const tbody = document.getElementById('topListingsBody');
+            tbody.innerHTML = '';
+            data.top_listings.forEach((listing, i) => {
+                const row = `<tr>
+                    <td><span class="rank-badge">#${i+1}</span></td>
+                    <td>${listing.business_name}</td>
+                    <td>${listing.views}</td>
+                    <td>${listing.clicks}</td>
+                    <td>${listing.whatsapp_clicks}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+            });
+
+        } catch (err) {
+            console.error("Analytics Error:", err);
+        }
+    }
+    document.addEventListener('DOMContentLoaded', loadAnalytics);
+</script>
 {% endblock %}
