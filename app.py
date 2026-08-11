@@ -1,5 +1,4 @@
-﻿# app.py
-import os
+﻿import os
 print("====================================")
 print("LANDMARK STARTUP")
 print("PORT =", os.environ.get("PORT"))
@@ -31,11 +30,10 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies
 )
-# DEBUG_SMS forced reload - 2026-07-20
 from werkzeug.exceptions import HTTPException
 from pydantic_settings import BaseSettings
 from language.translations import TRANSLATIONS
-from extensions import init_extensions, limiter, get_razorpay_client
+from extensions import init_extensions
 from master_agent import MasterAgent
 import logging
 logging.basicConfig(
@@ -56,84 +54,29 @@ if missing_vars:
 # Database connection (PostgreSQL via SQLAlchemy)
 from database.init_db import get_db_connection, init_db
 
-# ✅ Only run init_db() if we are NOT on localhost
-import os
-if os.getenv("RENDER") != "true":   # Render sets this env var automatically
-    print("🔧 Running locally - skipping database initialization (Render will do this)")
-else:
+if os.getenv("RENDER") == "true":
     try:
         print("🔧 Attempting to connect to Render database...")
         init_db()
         print("✅ Database initialized on Render")
     except Exception as e:
         print(f"❌ Database initialization failed (app will continue startup): {e}")
-        # DO NOT raise here — let the app start even if DB is slow
+else:
+    print("🔧 Running locally - skipping database initialization")
 
-    
 # Initialize Flask app
 app = Flask(__name__)
 
-# ✅ Add this line to bind the port for Render's gunicorn
-port = int(os.environ.get("PORT", 10000))
-
-# fix
-
 # ==================== MASTER AGENT INITIALIZATION ====================
-# We initialize the master agent right here
-try:
-    from master_agent import MasterAgent
-    master_agent = MasterAgent(app)
-    app.master_agent = master_agent
-    logger.info("Master Agent initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize Master Agent: {e}")
-# ====================================================================
-# ... imports and app initialization ...
+# TEMPORARILY DISABLED FOR RENDER PORT DIAGNOSIS
+master_agent = None
+app.master_agent = None
+logger.info("Master Agent startup temporarily disabled for Render diagnosis.")
 
-# ==================== DEBUG ROUTES (MUST BE BEFORE BLUEPRINTS) ====================
-@app.route('/ping')
-def ping():
-    return "pong"
-
-# NOW register blueprints (AFTER debug routes)
-from routes import register_routes
-register_routes(app)
-
-# ... rest of your app ...
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-
-CORS(app, supports_credentials=True)
-app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
-
-# Use `getenv` to safely get the URL; it will be `None` if the variable isn't set.
-redis_url = os.getenv("REDIS_URL")
-
-# ============================================
-# RATE LIMITING - COMPLETELY DISABLED FOR TESTING
-# ============================================
-
-# Create a dummy limiter that does nothing
-class DummyLimiter:
-    def limit(self, *args, **kwargs):
-        return lambda x: x
-
-limiter = DummyLimiter()
-
-# Disable rate limit headers
-@app.after_request
-def add_rate_limit_headers(response):
-    return response
-
-print("WARNING: RATE LIMITING COMPLETELY DISABLED - FOR TESTING ONLY")
-
-# Initialize extensions (this will set the global limiter)
-init_extensions(app)
-
-# ------------------------------
-# Configuration (JWT & uploads)
-# ------------------------------
+# ==================== APP CONFIGURATION ====================
 app.config.update(
+    SEND_FILE_MAX_AGE_DEFAULT=0,
+    TEMPLATES_AUTO_RELOAD=True,
     MAX_CONTENT_LENGTH=20 * 1024 * 1024,
     UPLOAD_FOLDER="static/uploads",
     JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "your-secure-jwt-secret-key"),
@@ -147,32 +90,51 @@ app.config.update(
     JWT_REFRESH_COOKIE_NAME="refresh_token",
     JWT_REFRESH_COOKIE_PATH="/token/refresh",
 )
-
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365 * 10)  # 10 years
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365 * 10)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = True    # Ensure HTTPS in production
+app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-# Initialize JWT manager
+app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
+
+# CORS
+CORS(app, supports_credentials=True)
+
+# ==================== EXTENSIONS (ONLY ONCE) ====================
+limiter, razor_client = init_extensions(app)
+
+# ==================== JWT ====================
 jwt = JWTManager(app)
 
-# ------------------------------
-# Ensure required folders exist
-# ------------------------------
+# ==================== REGISTER ROUTES ====================
+from routes import register_routes
+register_routes(app)
+
+# ==================== DEBUG ROUTES ====================
+@app.route('/ping')
+def ping():
+    return jsonify({
+        "status": "ok",
+        "service": "LANDMARK",
+        "port": os.getenv("PORT"),
+        "render": os.getenv("RENDER"),
+        "render_service_type": os.getenv("RENDER_SERVICE_TYPE")
+    })
+
+# ==================== STATIC FOLDERS ====================
 os.makedirs("static/uploads", exist_ok=True)
 os.makedirs("static/images/listings", exist_ok=True)
 os.makedirs("static/qrcodes", exist_ok=True)
 
-# app.py – after app initialization, before routes
+# ==================== TRANSLATIONS ====================
 from functools import lru_cache
 
-# Optional: provide a module-level proxy that throws when accessed
 def __getattr__(name):
     if name == "redis_client":
         return get_redis_client()
     raise AttributeError(f"module {__name__} has no attribute {name}")
 
-@lru_cache(maxsize=10)   # cache translations for each language
+@lru_cache(maxsize=10)
 def get_translations(lang):
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"])
 
@@ -196,41 +158,25 @@ def inject_language():
             pass
     if not lang:
         lang = "en"
-    
     t = get_translations(lang)
     logger.debug(f"Language selected: {lang}")
-    return dict(
-        t=t,
-        current_lang=lang,
-        _=lambda key: t.get(key, key)
-    )
+    return dict(t=t, current_lang=lang, _=lambda key: t.get(key, key))
 
-# ------------------------------
-# Database helper (wrapper using text())
-# ------------------------------
+# ==================== HELPERS ====================
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
-    """Execute a SQLAlchemy text query and return results if requested."""
     from database.init_db import get_db_connection
     with get_db_connection() as conn:
         result = conn.execute(text(query), params or {})
-        if commit:
-            conn.commit()
-        if fetchone:
-            return result.fetchone()
-        elif fetchall:
-            return result.fetchall()
+        if commit: conn.commit()
+        if fetchone: return result.fetchone()
+        elif fetchall: return result.fetchall()
     return None
 
-# ------------------------------
-# Helper: subscription check
-# ------------------------------
 def is_subscription_active(user_dict):
     plan = user_dict.get("plan", "free")
-    if plan == "free":
-        return True   # free plan is always active
+    if plan == "free": return True
     expiry_str = user_dict.get("subscription_expiry")
-    if not expiry_str:
-        return False
+    if not expiry_str: return False
     try:
         expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
         return expiry_date >= datetime.utcnow()
@@ -248,13 +194,11 @@ def _execute_payout():
               AND status = 'locked'
               AND unlock_at <= NOW()
         """)).fetchall()
-
         released_count = 0
         for row in locked:
             uid = row._mapping["user_id"]
             amt = row._mapping["amount"]
             tid = row._mapping["id"]
-
             conn.execute(text("""
                 INSERT INTO wallet_balance (user_id, balance, updated_at)
                 VALUES (:uid, :amt, NOW())
@@ -262,32 +206,21 @@ def _execute_payout():
                 SET balance = wallet_balance.balance + :amt2,
                     updated_at = NOW()
             """), {"uid": uid, "amt": amt, "amt2": amt})
-
-            conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"),
-                         {"amt": amt, "uid": uid})
-
-            conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"),
-                         {"tid": tid})
-
+            conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"), {"amt": amt, "uid": uid})
+            conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"), {"tid": tid})
             released_count += 1
-
         conn.commit()
     return released_count
 
 @app.before_request
 def before_request_actions():
-    # 1. Logging (your existing code)
     logger.info(f"{request.method} {request.path}")
-    
-    # 2. Load language from cookie into session (if not already set)
     if 'lang' not in session and request.cookies.get('language'):
         lang_cookie = request.cookies.get('language')
-        if lang_cookie in TRANSLATIONS:   # use your TRANSLATIONS dict keys
+        if lang_cookie in TRANSLATIONS:
             session['lang'] = lang_cookie
 
-# ------------------------------
-# Web Routes (public)
-# ------------------------------
+# ==================== WEB ROUTES ====================
 @app.route("/")
 def index():
     lang = session.get("lang", "en")
@@ -297,9 +230,6 @@ def index():
 @app.route("/dashboard")
 def redirect_dashboard():
     return redirect("/api/user/dashboard")
-
-from flask import send_from_directory
-
 
 @app.route('/download/android')
 def download_apk():
@@ -348,38 +278,25 @@ def set_language():
         data = json.loads(raw_data)
     except:
         return jsonify({'error': 'Invalid JSON'}), 400
-    
     lang = data.get('lang') if data else None
     if not lang or lang not in TRANSLATIONS:
         return jsonify({'error': f'Unsupported language: {lang}'}), 400
-    
-    # ✅ Update session (so dropdown selected works)
     session['lang'] = lang
-    
-    # Set cookie for persistence across browser sessions
     resp = jsonify({'status': 'ok'})
     resp.set_cookie('lang', lang, max_age=31536000, httponly=False, samesite='Lax')
-    
-    # Update DB if user logged in
     try:
         verify_jwt_in_request(optional=True)
         user_id = get_jwt_identity()
         if user_id:
             from database.init_db import get_db_connection
             with get_db_connection() as conn:
-                conn.execute(
-                    text("UPDATE users SET language = :lang WHERE id = :uid"),
-                    {"lang": lang, "uid": user_id}
-                )
+                conn.execute(text("UPDATE users SET language = :lang WHERE id = :uid"), {"lang": lang, "uid": user_id})
                 conn.commit()
     except Exception:
         pass
-        
     return resp
 
-# ------------------------------
-# API Routes (JWT‑protected)
-# ------------------------------
+# ==================== API ROUTES ====================
 @app.route("/api/health")
 def api_health():
     return {"status": "ok"}
@@ -394,7 +311,7 @@ def readiness():
         return {"status": "ready"}, 200
     except Exception as e:
         return {"status": "not ready", "error": str(e)}, 503
-    
+
 @app.route("/api/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh():
@@ -402,14 +319,10 @@ def refresh():
     new_access_token = create_access_token(identity=current_user_id)
     return jsonify(access_token=new_access_token)
 
-from flask import send_from_directory
-
 @app.route('/download-app')
 def download_app():
     ref = request.args.get('ref')
     if ref:
-        # Optional: log download to a new table 'referral_downloads' for analytics
-        # We'll skip logging for now, but you can add later.
         pass
     apk_path = os.path.join(app.root_path, 'static', 'app')
     return send_from_directory(apk_path, 'landmark.apk', as_attachment=True)
@@ -431,45 +344,25 @@ def generate_qr(referral_code):
 def api_add_business():
     from database.init_db import get_db_connection
     user_id = get_jwt_identity()
-    
     with get_db_connection() as conn:
-        user = conn.execute(
-            text("SELECT * FROM users WHERE id = :uid"),
-            {"uid": user_id}
-        ).fetchone()
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-
+        user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {"uid": user_id}).fetchone()
+        if not user: return jsonify({"error": "User not found"}), 404
         user_dict = dict(user._mapping)
-
         if user_dict["plan"] == "free":
             return jsonify({"error": "This feature requires a paid plan. Please upgrade."}), 403
-
         if not is_subscription_active(user_dict):
             return jsonify({"error": "Your plan has expired. Please upgrade."}), 403
-
         if user_dict["role"] != "business_owner":
             return jsonify({"error": "Only business users can add businesses."}), 403
-
-        count_result = conn.execute(
-            text("SELECT COUNT(*) as cnt FROM businesses WHERE user_id = :uid"),
-            {"uid": user_id}
-        ).fetchone()
+        count_result = conn.execute(text("SELECT COUNT(*) as cnt FROM businesses WHERE user_id = :uid"), {"uid": user_id}).fetchone()
         count = count_result._mapping["cnt"]
-
         if count >= user_dict.get("business_limit", 0):
             return jsonify({"error": "Business limit reached. Upgrade your plan."}), 403
-
         name = request.json.get("name") if request.is_json else request.form.get("name")
         if not name:
             return jsonify({"error": "Business name required"}), 400
-
-        conn.execute(
-            text("INSERT INTO businesses (user_id, name) VALUES (:uid, :name)"),
-            {"uid": user_id, "name": name}
-        )
+        conn.execute(text("INSERT INTO businesses (user_id, name) VALUES (:uid, :name)"), {"uid": user_id, "name": name})
         conn.commit()
-    
     return jsonify({"message": "Business added successfully"}), 201
 
 @app.route("/api/wallet/overview")
@@ -479,42 +372,25 @@ def wallet_overview():
     from services.wallet_service import get_wallet_balance
     from services.referral_commission import next_saturday_6pm_ist
     user_id = get_jwt_identity()
-    
     with get_db_connection() as conn:
-        wallet = conn.execute(
-            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
-            {"uid": user_id}
-        ).fetchone()
+        wallet = conn.execute(text("SELECT balance FROM wallet_balance WHERE user_id = :uid"), {"uid": user_id}).fetchone()
         available = wallet._mapping["balance"] if wallet else 0.0
-        pending = conn.execute(
-            text("SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id = :uid AND status = 'locked' AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')"),
-            {"uid": user_id}
-        ).scalar()
-    
+        pending = conn.execute(text("SELECT COALESCE(SUM(amount),0) FROM wallet_transactions WHERE user_id = :uid AND status = 'locked' AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')"), {"uid": user_id}).scalar()
     next_payout = next_saturday_6pm_ist().strftime("%Y-%m-%d %H:%M IST") if next_saturday_6pm_ist else ""
     return jsonify({"available_balance": available, "pending_unlock": round(pending,2), "next_payout_ist": next_payout})
 
-# ------------------------------
-# Internal Saturday Payout (PostgreSQL)
-# ------------------------------
 @app.route('/internal/saturday-payout', methods=['POST'])
 def saturday_payout():
     token = request.headers.get('Authorization')
     if token != f"Bearer {os.getenv('SATURDAY_PAYOUT_SECRET')}":
         return jsonify({"error": "Unauthorized"}), 403
-
     released = _execute_payout()
     return jsonify({"released": released}), 200
 
 @app.route('/api/payment/webhook', methods=['POST'])
 def razorpay_webhook():
-    # Verify signature using webhook secret
-    # Update order status in database
     return {'status': 'ok'}, 200
 
-# ------------------------------
-# Static / Favicon / Well‑known
-# ------------------------------
 @app.route('/favicon.ico')
 def favicon():
     if os.path.exists("static/favicon.ico"):
@@ -529,9 +405,6 @@ def chrome_devtools():
 def well_known_ignore(filename):
     return '', 204
 
-# ------------------------------
-# Error handlers
-# ------------------------------
 @app.errorhandler(Exception)
 def handle_exception(e):
     if isinstance(e, HTTPException):
@@ -539,17 +412,8 @@ def handle_exception(e):
     logger.error(traceback.format_exc())
     return jsonify({"error": str(e)}), 500
 
-# ------------------------------
-# Security middleware
-# ------------------------------
 from middleware.security_headers import add_security_headers
 add_security_headers(app)
-
-# ------------------------------
-# Register blueprints (must be after app creation)
-# ------------------------------
-from extensions import init_extensions
-limiter, razor_client = init_extensions(app)
 
 @app.route("/privacy")
 def privacy_policy():
@@ -563,20 +427,11 @@ def terms_of_service():
 # Run the app
 # ------------------------------
 if __name__ == "__main__":
-    import sys
-    try:
-        scheduler = app.master_agent.agents.get('scheduler')
-        if scheduler and hasattr(scheduler, 'start'):
-            result = scheduler.start()
-            logging.info(f"Scheduler started: {result}")
-        else:
-            logging.warning("Scheduler agent not available or missing start() method")
-    except Exception as e:
-        logging.error(f"Failed to start scheduler: {e}")
-
-    # Development: Use Flask built-in server
-    # (Gunicorn is used in production on Render, this runs locally)
     debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
-    port = int(os.getenv("PORT", 8000))
-    print("Starting Flask development server...")
-    app.run(host="0.0.0.0", port=port, debug=debug_mode)
+    port = int(os.getenv("PORT", 10000))
+    print(f"Starting Flask development server on 0.0.0.0:{port}")
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=debug_mode
+    )
