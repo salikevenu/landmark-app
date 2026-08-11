@@ -1,5 +1,10 @@
 ﻿# app.py
 import os
+print("====================================")
+print("LANDMARK STARTUP")
+print("PORT =", os.environ.get("PORT"))
+print("HOST =", os.environ.get("HOST"))
+print("====================================")
 import requests
 import secrets
 import redis
