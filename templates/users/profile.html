@@ -20,6 +20,8 @@
   </div>
 </div>
 
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
 <style>
   .profile-container {
     max-width: 700px;
@@ -64,6 +66,10 @@
     flex-wrap: wrap;
     padding: 1rem 0;
     border-bottom: 1px solid rgba(0, 255, 255, 0.15);
+    gap: 0.75rem;
+  }
+  .info-row:last-child {
+    border-bottom: none;
   }
   .info-label {
     font-weight: 600;
@@ -75,21 +81,58 @@
     color: #f0f6ff;
     word-break: break-word;
     text-align: right;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    flex-wrap: wrap;
   }
-  .edit-name-btn {
+  .name-display {
+    cursor: pointer;
+    border-bottom: 1px dashed rgba(0, 255, 255, 0.45);
+    padding-bottom: 1px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .name-display:hover {
+    color: #0ff;
+    border-color: #0ff;
+  }
+  .name-input {
+    background: #0f1522;
+    border: 1px solid #0ff;
+    border-radius: 0.75rem;
+    color: #f0f6ff;
+    padding: 0.35rem 0.7rem;
+    font-size: 1rem;
+    font-weight: 500;
+    min-width: 160px;
+    max-width: 260px;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 255, 255, 0.12);
+  }
+  .referral-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+    color: #0ff;
+  }
+  .btn-copy {
     background: rgba(0, 255, 255, 0.1);
     border: 1px solid rgba(0, 255, 255, 0.4);
     border-radius: 2rem;
-    padding: 0.2rem 0.8rem;
-    font-size: 0.7rem;
+    padding: 0.25rem 0.85rem;
+    font-size: 0.75rem;
     color: #00ffff;
     cursor: pointer;
-    margin-left: 0.8rem;
     transition: 0.2s;
+    white-space: nowrap;
   }
-  .edit-name-btn:hover {
-    background: rgba(0, 255, 255, 0.3);
-    box-shadow: 0 0 6px #0ff;
+  .btn-copy:hover {
+    background: rgba(0, 255, 255, 0.28);
+    box-shadow: 0 0 8px rgba(0, 255, 255, 0.35);
+  }
+  .btn-copy:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .upgrade-section {
     text-align: center;
@@ -127,6 +170,32 @@
     text-align: center;
     color: #8ca3c0;
   }
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(10, 24, 36, 0.95);
+    color: #0ff;
+    border: 1px solid rgba(0, 255, 255, 0.45);
+    border-radius: 999px;
+    padding: 0.7rem 1.25rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 9999;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  .toast.error {
+    color: #ffb4b4;
+    border-color: rgba(255, 120, 120, 0.55);
+  }
   @media (max-width: 600px) {
     .info-row {
       flex-direction: column;
@@ -135,33 +204,216 @@
     }
     .info-value {
       text-align: left;
+      justify-content: flex-start;
+      width: 100%;
+    }
+    .name-input {
+      max-width: 100%;
+      width: 100%;
     }
   }
 </style>
 
 <script>
-  // Helper: escape HTML
+  let currentUser = null;
+  let savingName = false;
+
   function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/[&<>]/g, function(m) {
-      if (m === '&') return '&amp;';
-      if (m === '<') return '&lt;';
-      if (m === '>') return '&gt;';
-      return m;
+    if (str == null) return "";
+    return String(str).replace(/[&<>"']/g, function (m) {
+      return ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[m];
     });
   }
 
-  async function loadProfile() {
-    const token = localStorage.getItem("access_token");
+  function showToast(message, isError) {
+    const toast = document.getElementById("toast");
+    toast.textContent = message;
+    toast.classList.toggle("error", !!isError);
+    toast.classList.add("show");
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => toast.classList.remove("show"), 1800);
+  }
+
+  function getToken() {
+    return localStorage.getItem("access_token");
+  }
+
+  function authHeaders(json) {
+    const headers = { "Authorization": `Bearer ${getToken()}` };
+    if (json) headers["Content-Type"] = "application/json";
+    return headers;
+  }
+
+  function renderProfile(user) {
+    currentUser = user;
+    const displayName = user.name || user.phone || "User";
+    const referral = user.referral_code || "";
+
+    document.getElementById("profileData").innerHTML = `
+      <div class="info-row">
+        <div class="info-label">📱 Phone</div>
+        <div class="info-value">${escapeHtml(user.phone || "-")}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">👤 Name</div>
+        <div class="info-value" id="nameValue">
+          <span class="name-display" id="nameDisplay" title="Click to edit">${escapeHtml(displayName)}</span>
+        </div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">🎭 Role</div>
+        <div class="info-value">${escapeHtml(user.role || "User")}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">💎 Plan</div>
+        <div class="info-value">${escapeHtml(user.plan || "Free")}</div>
+      </div>
+      <div class="info-row">
+        <div class="info-label">🔗 Referral Code</div>
+        <div class="info-value">
+          <span class="referral-code" id="referralCode">${escapeHtml(referral || "—")}</span>
+          <button type="button" class="btn-copy" id="copyReferralBtn" ${referral ? "" : "disabled"}>
+            ${referral ? "Copy" : "N/A"}
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById("nameDisplay").addEventListener("click", startNameEdit);
+    const copyBtn = document.getElementById("copyReferralBtn");
+    if (referral) copyBtn.addEventListener("click", copyReferralCode);
+
+    const upgradeSection = document.getElementById("upgradeSection");
+    if (user.plan === "free" || user.role === "user") {
+      upgradeSection.style.display = "block";
+    } else {
+      upgradeSection.style.display = "none";
+    }
+  }
+
+  function startNameEdit() {
+    if (savingName) return;
+    const wrap = document.getElementById("nameValue");
+    const current = (currentUser && (currentUser.name || currentUser.phone)) || "";
+    wrap.innerHTML = `<input class="name-input" id="nameInput" type="text" maxlength="100" value="${escapeHtml(current)}" aria-label="Edit name">`;
+    const input = document.getElementById("nameInput");
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = async (save) => {
+      if (finished) return;
+      finished = true;
+      if (!save) {
+        renderProfile(currentUser);
+        return;
+      }
+      await saveName(input.value);
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
+  async function saveName(rawName) {
+    const newName = String(rawName || "").trim();
+    const previous = (currentUser && (currentUser.name || currentUser.phone)) || "";
+
+    if (!newName) {
+      showToast("Name cannot be empty", true);
+      renderProfile(currentUser);
+      return;
+    }
+    if (newName === previous) {
+      renderProfile(currentUser);
+      return;
+    }
+
+    const token = getToken();
     if (!token) {
-      document.getElementById("profileData").innerHTML = `<div class="info-row"><div class="info-label">Please login to view your profile.</div></div>`;
+      showToast("Please login again", true);
+      window.location.href = "/api/auth/public/login";
+      return;
+    }
+
+    savingName = true;
+    try {
+      const res = await fetch("/api/user/profile/update", {
+        method: "PUT",
+        headers: authHeaders(true),
+        body: JSON.stringify({ name: newName })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.error || "Update failed", true);
+        renderProfile(currentUser);
+        return;
+      }
+      currentUser = { ...currentUser, name: data.name || newName };
+      renderProfile(currentUser);
+      showToast("Saved!");
+    } catch (err) {
+      console.error(err);
+      showToast("Network error. Please try again.", true);
+      renderProfile(currentUser);
+    } finally {
+      savingName = false;
+    }
+  }
+
+  async function copyReferralCode() {
+    const code = (currentUser && currentUser.referral_code) || "";
+    if (!code) {
+      showToast("No referral code available", true);
+      return;
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = code;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      showToast("Referral code copied!");
+    } catch (err) {
+      console.error(err);
+      showToast("Could not copy referral code", true);
+    }
+  }
+
+  async function loadProfile() {
+    const token = getToken();
+    if (!token) {
+      document.getElementById("profileData").innerHTML =
+        `<div class="info-row"><div class="info-label">Please login to view your profile.</div></div>`;
       window.location.href = "/api/auth/public/login";
       return;
     }
 
     try {
       const response = await fetch("/api/user/profile", {
-        headers: { "Authorization": `Bearer ${token}` }
+        headers: authHeaders(false)
       });
 
       if (!response.ok) {
@@ -175,81 +427,11 @@
       }
 
       const user = await response.json();
-      // Fallback name: if backend returns empty name, we still show phone (but backend already handles)
-      const displayName = user.name || user.phone;
-
-      const container = document.getElementById("profileData");
-      container.innerHTML = `
-        <div class="info-row">
-          <div class="info-label">📱 Phone</div>
-          <div class="info-value">${escapeHtml(user.phone || "-")}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-label">👤 Name</div>
-          <div class="info-value">
-            ${escapeHtml(displayName)}
-            <button class="edit-name-btn" onclick="updateName()">✏️ Edit</button>
-          </div>
-        </div>
-        <div class="info-row">
-          <div class="info-label">🎭 Role</div>
-          <div class="info-value">${escapeHtml(user.role || "User")}</div>
-        </div>
-        <div class="info-row">
-          <div class="info-label">💎 Plan</div>
-          <div class="info-value">${escapeHtml(user.plan || "Free")}</div>
-        </div>
-      `;
-
-      const upgradeSection = document.getElementById("upgradeSection");
-      if (user.plan === "free" || user.role === "user") {
-        upgradeSection.style.display = "block";
-      } else {
-        upgradeSection.style.display = "none";
-      }
+      renderProfile(user);
     } catch (err) {
       console.error(err);
-      document.getElementById("profileData").innerHTML = `<div class="info-row"><div class="info-label">⚠️ Unable to load profile. Please try again later.</div></div>`;
-    }
-  }
-
-  async function updateName() {
-    const currentNameSpan = document.querySelector("#profileData .info-value");
-    let currentName = "User";
-    if (currentNameSpan) {
-      const text = currentNameSpan.innerText;
-      currentName = text.replace("✏️ Edit", "").trim();
-    }
-    const newName = prompt("Enter your new name:", currentName);
-    if (!newName) return;
-
-    const token = localStorage.getItem("access_token");
-    if (!token) {
-      alert("Please login again");
-      window.location.href = "/api/auth/public/login";
-      return;
-    }
-
-    try {
-      const res = await fetch("/api/user/profile/update", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({ name: newName })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        alert(data.message || "Name updated successfully");
-        loadProfile(); // refresh
-      } else {
-        alert(data.error || "Update failed");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Network error. Please try again.");
+      document.getElementById("profileData").innerHTML =
+        `<div class="info-row"><div class="info-label">⚠️ Unable to load profile. Please try again later.</div></div>`;
     }
   }
 
