@@ -1,43 +1,34 @@
 {% extends "layouts/layout_app.html" %}
 {% block title %}Invite Friends | LANDMARK{% endblock %}
-{% block content %}
-<div class="invite-container">
-  <div class="invite-card">
-    <h1>Invite <span class="gradient">Friends</span></h1>
-    <p>Share your referral link and earn rewards when they join!</p>
-    
-    <div class="ref-link-box">
-      <input type="text" id="referralLink" readonly>
-      <button onclick="copyLink()">📋 Copy</button>
-    </div>
-    
-    <button class="whatsapp-btn" onclick="shareWhatsApp()">💬 Invite via WhatsApp</button>
-  </div>
-</div>
 
+{% block extra_head %}
 <style>
   .invite-container {
     display: flex;
     justify-content: center;
-    align-items: center;
+    align-items: flex-start;
     min-height: 70vh;
-    background: radial-gradient(circle at 10% 30%, rgba(5,15,25,0.9), #03070f);
-    padding: 2rem;
+    padding: 1.5rem 1rem 3rem;
   }
-  .invite-card {
-    background: rgba(15, 25, 45, 0.7);
-    backdrop-filter: blur(12px);
-    border-radius: 2rem;
-    border: 1px solid rgba(0, 255, 255, 0.3);
-    padding: 2rem;
-    max-width: 500px;
+  .invite-stack {
     width: 100%;
-    text-align: center;
-    box-shadow: 0 20px 35px -15px rgba(0,0,0,0.3);
+    max-width: 520px;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
   }
+  .invite-card, .reward-card {
+    background: rgba(15, 25, 45, 0.72);
+    backdrop-filter: blur(14px);
+    border-radius: 1.5rem;
+    border: 1px solid rgba(0, 255, 255, 0.28);
+    padding: 1.6rem 1.5rem;
+    box-shadow: 0 20px 35px -15px rgba(0,0,0,0.45);
+  }
+  .invite-card { text-align: center; }
   h1 {
-    font-size: 2rem;
-    margin-bottom: 0.5rem;
+    font-size: 1.85rem;
+    margin-bottom: 0.4rem;
     color: #e0f2fe;
   }
   .gradient {
@@ -46,87 +37,243 @@
     background-clip: text;
     color: transparent;
   }
+  .lead {
+    color: #9bb;
+    font-size: 0.95rem;
+    margin-bottom: 0.4rem;
+  }
+  .reward-card h2 {
+    color: #0ff;
+    font-size: 1.15rem;
+    margin-bottom: 0.85rem;
+    letter-spacing: 0.02em;
+  }
+  .reward-card ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .reward-card li {
+    background: rgba(0, 255, 255, 0.06);
+    border: 1px solid rgba(0, 255, 255, 0.15);
+    border-radius: 0.9rem;
+    padding: 0.75rem 0.9rem;
+    color: #d7e8ff;
+    font-size: 0.92rem;
+    line-height: 1.4;
+  }
+  .reward-card .lock {
+    color: #ffd166;
+    border-color: rgba(255, 209, 102, 0.35);
+    background: rgba(255, 209, 102, 0.08);
+  }
   .ref-link-box {
     display: flex;
     gap: 0.5rem;
-    margin: 1.5rem 0;
+    margin: 1.25rem 0 1rem;
   }
   #referralLink {
     flex: 1;
-    padding: 0.7rem;
+    padding: 0.7rem 0.9rem;
     border-radius: 2rem;
     border: 1px solid #0ff;
     background: #0a0f1c;
     color: white;
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     text-align: center;
+    min-width: 0;
   }
-  button {
-    background: rgba(0, 255, 255, 0.15);
+  .invite-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    justify-content: center;
+  }
+  .invite-actions button, .invite-actions a.btn {
+    background: rgba(0, 255, 255, 0.12);
     border: 1px solid #0ff;
     border-radius: 2rem;
-    padding: 0.5rem 1rem;
+    padding: 0.65rem 1.1rem;
     color: #0ff;
     cursor: pointer;
+    font-weight: 700;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     transition: 0.2s;
   }
-  button:hover {
-    background: rgba(0, 255, 255, 0.3);
-    box-shadow: 0 0 8px #0ff;
+  .invite-actions button:hover, .invite-actions a.btn:hover {
+    background: rgba(0, 255, 255, 0.28);
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.45);
   }
   .whatsapp-btn {
-    background: #25D366;
-    border-color: #25D366;
-    color: white;
-    margin-top: 0.5rem;
+    background: #25D366 !important;
+    border-color: #25D366 !important;
+    color: #fff !important;
   }
   .whatsapp-btn:hover {
-    background: #128C7E;
-    box-shadow: 0 0 8px #25D366;
+    background: #128C7E !important;
+    box-shadow: 0 0 10px #25D366 !important;
+  }
+  .share-btn {
+    background: linear-gradient(135deg, rgba(139,92,246,0.25), rgba(0,255,255,0.18)) !important;
+  }
+  .copy-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%) translateY(16px);
+    background: rgba(8, 22, 34, 0.96);
+    color: #0ff;
+    border: 1px solid rgba(0, 255, 255, 0.5);
+    border-radius: 999px;
+    padding: 10px 18px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 4000;
+    box-shadow: 0 0 18px rgba(0, 255, 255, 0.25);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .copy-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 </style>
+{% endblock %}
 
+{% block content %}
+<div class="invite-container">
+  <div class="invite-stack">
+    <div class="reward-card">
+      <h2>💰 Referral Rewards</h2>
+      <ul>
+        <li>Earn 10% commission on your friend's first subscription.</li>
+        <li>Plus 5% recurring commission every month they stay active.</li>
+        <li class="lock">Payouts are locked until Saturday 6 PM IST.</li>
+      </ul>
+    </div>
+
+    <div class="invite-card">
+      <h1>Invite <span class="gradient">Friends</span></h1>
+      <p class="lead">Share your referral link and earn when they subscribe.</p>
+
+      <div class="ref-link-box">
+        <input type="text" id="referralLink" readonly>
+        <button type="button" id="copyBtn">📋 Copy</button>
+      </div>
+
+      <div class="invite-actions">
+        <button type="button" class="share-btn" id="shareBtn">📤 Share</button>
+        <a class="btn whatsapp-btn" id="whatsappBtn" href="https://wa.me/" target="_blank" rel="noopener">💬 WhatsApp</a>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="copy-toast" id="copyToast" role="status" aria-live="polite">Copied!</div>
+{% endblock %}
+
+{% block extra_scripts %}
 <script>
+(function () {
+  const linkInput = document.getElementById("referralLink");
+  const copyBtn = document.getElementById("copyBtn");
+  const shareBtn = document.getElementById("shareBtn");
+  const whatsappBtn = document.getElementById("whatsappBtn");
+  const toast = document.getElementById("copyToast");
+  let toastTimer = null;
+
+  function shareText(link) {
+    return "Join me on LANDMARK! Earn local business rewards. Use my referral link: " + link;
+  }
+
+  function currentLink() {
+    const link = (linkInput.value || "").trim();
+    if (!link || link.indexOf("http") !== 0) return "";
+    return link;
+  }
+
+  function updateWhatsApp() {
+    const link = currentLink();
+    const msg = shareText(link || "https://landmarkvts.in");
+    whatsappBtn.href = "https://wa.me/?text=" + encodeURIComponent(msg);
+  }
+
+  function showCopiedToast() {
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toast.classList.remove("show");
+    }, 1800);
+  }
+
   async function loadReferral() {
     const token = localStorage.getItem("access_token");
     if (!token) {
-        window.location.href = "/api/auth/public/login";
-        return;
+      window.location.href = "/api/auth/public/login";
+      return;
     }
     try {
-        const res = await fetch("/api/user/api/invite", {
-            headers: { "Authorization": `Bearer ${token}` }
-        });
-        const data = await res.json();
-        console.log("Full response from /api/user/api/invite:", data);
-        if (data.referral_code) {
-            const link = `${window.location.origin}/register?ref=${data.referral_code}`;
-            document.getElementById("referralLink").value = link;
-        } else {
-            document.getElementById("referralLink").value = "No referral code available";
-        }
+      const res = await fetch("/api/user/api/invite", {
+        headers: { "Authorization": "Bearer " + token }
+      });
+      const data = await res.json();
+      if (data.referral_code) {
+        linkInput.value = window.location.origin + "/register?ref=" + data.referral_code;
+      } else {
+        linkInput.value = "No referral code available";
+      }
     } catch (err) {
-        console.error("Fetch error:", err);
-        document.getElementById("referralLink").value = "Error loading referral code";
+      linkInput.value = "Error loading referral code";
     }
-} 
-
-  function copyLink() {
-    const input = document.getElementById("referralLink");
-    input.select();
-    document.execCommand("copy");
-    alert("Referral link copied!");
+    updateWhatsApp();
   }
 
-  function shareWhatsApp() {
-    const link = document.getElementById("referralLink").value;
-    if (link && link !== "No referral code available") {
-      window.open(`https://wa.me/?text=${encodeURIComponent("Join me on LANDMARK! 🎉 Use my referral link: " + link)}`, "_blank");
+  async function copyLink() {
+    const link = currentLink();
+    if (!link) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        linkInput.select();
+        document.execCommand("copy");
+      }
+      showCopiedToast();
+    } catch (err) {
+      linkInput.select();
+      document.execCommand("copy");
+      showCopiedToast();
+    }
+  }
+
+  async function nativeShare() {
+    const link = currentLink();
+    if (!link) return;
+    const payload = {
+      title: "Join LANDMARK",
+      text: shareText(link),
+      url: link
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(payload);
+      } catch (err) {
+        if (err && err.name !== "AbortError") copyLink();
+      }
     } else {
-      alert("Referral code not ready yet. Please refresh.");
+      copyLink();
     }
   }
 
-  document.addEventListener("DOMContentLoaded", loadReferral);
+  copyBtn.addEventListener("click", copyLink);
+  shareBtn.addEventListener("click", nativeShare);
+  loadReferral();
+})();
 </script>
 {% endblock %}
