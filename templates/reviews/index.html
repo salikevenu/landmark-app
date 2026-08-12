@@ -277,12 +277,20 @@
     <div id="reviewsContainer" class="review-list">
         <div class="state-msg"><div class="spinner"></div>Loading reviews…</div>
     </div>
+    <div class="toolbar" id="pager" style="justify-content:center; display:none; margin-top:16px;">
+        <button type="button" class="secondary" id="prevPage">← Prev</button>
+        <span id="pageLabel" style="color:#aac; align-self:center;"></span>
+        <button type="button" class="secondary" id="nextPage">Next →</button>
+    </div>
 </div>
 
 <script>
 (function () {
     const $ = (id) => document.getElementById(id);
     let openReplyId = null;
+    let currentPage = 1;
+    let hasMore = false;
+    let totalReviews = 0;
 
     function stars(n) {
         const full = Math.round(Number(n) || 0);
@@ -397,7 +405,7 @@
             .replace(/'/g, "&#39;");
     }
 
-    function queryParams() {
+    function queryParams(page) {
         const params = new URLSearchParams();
         const q = $("searchInput").value.trim();
         const rating = $("ratingFilter").value;
@@ -407,7 +415,20 @@
         if (rating) params.set("rating", rating);
         if (from) params.set("from", from);
         if (to) params.set("to", to);
+        params.set("page", String(page || currentPage));
         return params.toString();
+    }
+
+    function updatePager() {
+        const pager = $("pager");
+        if (totalReviews <= 0) {
+            pager.style.display = "none";
+            return;
+        }
+        pager.style.display = "flex";
+        $("pageLabel").textContent = `Page ${currentPage} · ${totalReviews} total`;
+        $("prevPage").disabled = currentPage <= 1;
+        $("nextPage").disabled = !hasMore;
     }
 
     async function loadStats() {
@@ -415,15 +436,20 @@
         renderStats(data.stats);
     }
 
-    async function loadReviews() {
+    async function loadReviews(page) {
+        if (page) currentPage = page;
         const box = $("reviewsContainer");
         box.innerHTML = `<div class="state-msg"><div class="spinner"></div>Loading reviews…</div>`;
         try {
-            const qs = queryParams();
-            const data = await apiGet("/api/reviews/list" + (qs ? `?${qs}` : ""));
+            const data = await apiGet("/api/reviews/list?" + queryParams(currentPage));
+            hasMore = !!data.has_more;
+            totalReviews = Number(data.total || 0);
+            currentPage = Number(data.page || currentPage);
             renderReviews(data.reviews || []);
+            updatePager();
         } catch (err) {
             box.innerHTML = `<div class="state-msg error">${escapeHtml(err.message || "Failed to load reviews")}</div>`;
+            $("pager").style.display = "none";
         }
     }
 
@@ -475,16 +501,22 @@
         }
     });
 
-    $("applyFilters").addEventListener("click", loadReviews);
+    $("applyFilters").addEventListener("click", () => loadReviews(1));
     $("clearFilters").addEventListener("click", () => {
         $("searchInput").value = "";
         $("ratingFilter").value = "";
         $("dateFrom").value = "";
         $("dateTo").value = "";
-        loadReviews();
+        loadReviews(1);
     });
     $("searchInput").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") loadReviews();
+        if (e.key === "Enter") loadReviews(1);
+    });
+    $("prevPage").addEventListener("click", () => {
+        if (currentPage > 1) loadReviews(currentPage - 1);
+    });
+    $("nextPage").addEventListener("click", () => {
+        if (hasMore) loadReviews(currentPage + 1);
     });
 
     document.addEventListener("DOMContentLoaded", refreshAll);

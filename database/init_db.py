@@ -340,6 +340,8 @@ def init_db():
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_created ON reviews(created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating)"))
     conn.execute(text(
         "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS owner_reply TEXT"
     ))

@@ -9,51 +9,83 @@ from database.init_db import get_db_connection
 
 reviews_api_bp = Blueprint("reviews_api", __name__, url_prefix="/api/reviews")
 
+PAGE_SIZE = 10
+_reply_columns_ready = False
 
-def _ensure_reply_columns(conn):
-    """Idempotent schema guard for older Render DBs."""
+
+def _ensure_reply_columns_once(conn):
+    """Run schema guards at most once per worker — never on every request."""
+    global _reply_columns_ready
+    if _reply_columns_ready:
+        return
     conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS owner_reply TEXT"))
     conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_created ON reviews(created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating)"))
     conn.commit()
+    _reply_columns_ready = True
 
 
-@reviews_api_bp.route("/list", methods=["GET"])
-@jwt_required()
-def list_reviews():
-    """Fetch reviews for listings owned by the current user."""
-    user_id = get_jwt_identity()
+def _list_filters(user_id):
     rating_filter = request.args.get("rating", type=int)
     search = (request.args.get("q") or "").strip()
     date_from = (request.args.get("from") or "").strip()
     date_to = (request.args.get("to") or "").strip()
 
+    clauses = ["l.user_id = :uid"]
+    params = {"uid": user_id}
+
+    if rating_filter and 1 <= rating_filter <= 5:
+        clauses.append("r.rating = :rating")
+        params["rating"] = rating_filter
+
+    if search:
+        clauses.append(
+            "(COALESCE(r.review, '') ILIKE :q OR COALESCE(u.name, '') ILIKE :q "
+            "OR COALESCE(l.business_name, '') ILIKE :q OR COALESCE(r.user_phone, '') ILIKE :q)"
+        )
+        params["q"] = f"%{search}%"
+
+    # Range predicates keep idx_reviews_created usable (avoid DATE(created_at))
+    if date_from:
+        clauses.append("r.created_at >= CAST(:date_from AS date)")
+        params["date_from"] = date_from
+
+    if date_to:
+        clauses.append("r.created_at < (CAST(:date_to AS date) + INTERVAL '1 day')")
+        params["date_to"] = date_to
+
+    return " AND ".join(clauses), params
+
+
+@reviews_api_bp.route("/list", methods=["GET"])
+@jwt_required()
+def list_reviews():
+    """Fetch a page of reviews for listings owned by the current user."""
+    user_id = get_jwt_identity()
+    page = max(1, request.args.get("page", default=1, type=int) or 1)
+    offset = (page - 1) * PAGE_SIZE
+
     try:
         conn = get_db_connection()
-        _ensure_reply_columns(conn)
+        _ensure_reply_columns_once(conn)
 
-        clauses = ["l.user_id = :uid"]
-        params = {"uid": user_id}
+        where_sql, params = _list_filters(user_id)
+        params["limit"] = PAGE_SIZE
+        params["offset"] = offset
 
-        if rating_filter and 1 <= rating_filter <= 5:
-            clauses.append("r.rating = :rating")
-            params["rating"] = rating_filter
+        total = conn.execute(
+            text(f"""
+                SELECT COUNT(*)::int AS cnt
+                FROM reviews r
+                JOIN listings l ON l.id = r.listing_id
+                LEFT JOIN users u ON u.phone = r.user_phone
+                WHERE {where_sql}
+            """),
+            {k: v for k, v in params.items() if k not in ("limit", "offset")},
+        ).scalar() or 0
 
-        if search:
-            clauses.append(
-                "(COALESCE(r.review, '') ILIKE :q OR COALESCE(u.name, '') ILIKE :q "
-                "OR COALESCE(l.business_name, '') ILIKE :q OR COALESCE(r.user_phone, '') ILIKE :q)"
-            )
-            params["q"] = f"%{search}%"
-
-        if date_from:
-            clauses.append("DATE(r.created_at) >= :date_from")
-            params["date_from"] = date_from
-
-        if date_to:
-            clauses.append("DATE(r.created_at) <= :date_to")
-            params["date_to"] = date_to
-
-        where_sql = " AND ".join(clauses)
         rows = conn.execute(
             text(f"""
                 SELECT
@@ -72,7 +104,7 @@ def list_reviews():
                 LEFT JOIN users u ON u.phone = r.user_phone
                 WHERE {where_sql}
                 ORDER BY r.created_at DESC
-                LIMIT 200
+                LIMIT :limit OFFSET :offset
             """),
             params,
         ).fetchall()
@@ -95,7 +127,15 @@ def list_reviews():
                 "created_at": created.isoformat() if created else None,
             })
 
-        return jsonify({"success": True, "reviews": reviews, "count": len(reviews)})
+        return jsonify({
+            "success": True,
+            "reviews": reviews,
+            "count": len(reviews),
+            "page": page,
+            "page_size": PAGE_SIZE,
+            "total": int(total),
+            "has_more": (page * PAGE_SIZE) < int(total),
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -107,7 +147,7 @@ def review_stats():
     user_id = get_jwt_identity()
     try:
         conn = get_db_connection()
-        _ensure_reply_columns(conn)
+        _ensure_reply_columns_once(conn)
 
         totals = conn.execute(
             text("""
@@ -174,7 +214,7 @@ def reply_to_review():
 
     try:
         conn = get_db_connection()
-        _ensure_reply_columns(conn)
+        _ensure_reply_columns_once(conn)
 
         owned = conn.execute(
             text("""
