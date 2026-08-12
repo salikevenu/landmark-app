@@ -1,9 +1,15 @@
 ﻿import os
-print("====================================")
-print("LANDMARK STARTUP")
-print("PORT =", os.environ.get("PORT"))
-print("HOST =", os.environ.get("HOST"))
-print("====================================")
+import sys
+
+def _boot(msg):
+    """Flushing boot tracer — next Render deploy will show the last step that ran."""
+    print(f"[BOOT] {msg}", file=sys.stderr, flush=True)
+    print(f"[BOOT] {msg}", flush=True)
+
+_boot("STARTING APP INIT")
+_boot(f"PORT={os.environ.get('PORT')!r} RENDER={os.environ.get('RENDER')!r}")
+
+_boot("import: stdlib/third-party")
 import requests
 import secrets
 import redis
@@ -41,8 +47,10 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s %(message)s'
 )
 logger = logging.getLogger(__name__)
+_boot("imports complete")
 
 # Load environment variables
+_boot("load_dotenv()")
 load_dotenv()
 
 # === PRODUCTION VALIDATION ===
@@ -50,37 +58,45 @@ REQUIRED_ENV_VARS = ["SECRET_KEY", "JWT_SECRET_KEY", "DATABASE_URL"]
 missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
 if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+_boot("required env vars present")
+_boot(f"DATABASE_URL set={bool(os.getenv('DATABASE_URL'))} host_hint={str(os.getenv('DATABASE_URL','')).split('@')[-1][:60]!r}")
 
-# Database connection (PostgreSQL via SQLAlchemy)
-# Do NOT call init_db() at import time — it blocks Gunicorn from binding
-# the port on Render and causes "No open ports detected".
+# Database module import MUST NOT run migrations/connect at import time.
+# (A previous trailing block in database/init_db.py called init_db() when RENDER=true
+#  and hung the gunicorn worker before it could finish booting.)
+_boot("import database.init_db (must be non-blocking)")
 from database.init_db import get_db_connection, init_db
+_boot("database.init_db imported OK")
 
 # Initialize Flask app
+_boot("Flask(__name__)")
 app = Flask(__name__)
 
 def _run_init_db_async():
-    """Run schema init in a background thread after the server can bind."""
+    """Schema init only AFTER the worker has finished importing the app."""
     try:
-        print("🔧 Background init_db starting...")
+        _boot("background init_db: starting")
         init_db()
-        print("✅ Database initialized")
+        _boot("background init_db: done")
     except Exception as e:
-        print(f"❌ Database initialization failed (app continues): {e}")
+        _boot(f"background init_db: FAILED (app continues): {e}")
 
+# Defer DB work — never block module import / worker boot
 if os.getenv("RENDER") == "true":
     import threading
-    threading.Thread(target=_run_init_db_async, daemon=True).start()
+    threading.Thread(target=_run_init_db_async, daemon=True, name="init_db").start()
+    _boot("scheduled background init_db thread")
 else:
-    print("🔧 Running locally - skipping database initialization")
+    _boot("local mode — skipping init_db")
 
 # ==================== MASTER AGENT INITIALIZATION ====================
-# TEMPORARILY DISABLED FOR RENDER PORT DIAGNOSIS
+# Disabled: MasterAgent pulls in SchedulerAgent / APScheduler at init.
 master_agent = None
 app.master_agent = None
-logger.info("Master Agent startup temporarily disabled for Render diagnosis.")
+_boot("MasterAgent disabled")
 
 # ==================== APP CONFIGURATION ====================
+_boot("app.config / secret_key")
 app.config.update(
     SEND_FILE_MAX_AGE_DEFAULT=0,
     TEMPLATES_AUTO_RELOAD=True,
@@ -105,17 +121,23 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
 # CORS
+_boot("CORS")
 CORS(app, supports_credentials=True)
 
 # ==================== EXTENSIONS (ONLY ONCE) ====================
+_boot("init_extensions (DummyLimiter + Razorpay client object only)")
 limiter, razor_client = init_extensions(app)
+_boot("init_extensions done")
 
 # ==================== JWT ====================
+_boot("JWTManager")
 jwt = JWTManager(app)
 
 # ==================== REGISTER ROUTES ====================
+_boot("import routes / register_routes")
 from routes import register_routes
 register_routes(app)
+_boot("register_routes done")
 
 # ==================== DEBUG ROUTES ====================
 @app.route('/ping')
@@ -129,6 +151,7 @@ def ping():
     })
 
 # ==================== STATIC FOLDERS ====================
+_boot("makedirs static folders")
 os.makedirs("static/uploads", exist_ok=True)
 os.makedirs("static/images/listings", exist_ok=True)
 os.makedirs("static/qrcodes", exist_ok=True)
@@ -430,28 +453,15 @@ def privacy_policy():
 def terms_of_service():
     return render_template("terms.html")
 
-# ============================================
-# 🔥 BULLETPROOF RENDER PORT DETECTION FIX
-# ============================================
-if os.getenv("RENDER") == "true":
-    import threading
-    def start_dummy_server():
-        from flask import Flask
-        dummy_app = Flask(__name__)
-        @dummy_app.route("/")
-        def ping():
-            return "port-alive"
-        dummy_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False, use_reloader=False)
-    threading.Thread(target=start_dummy_server, daemon=True).start()
-# ============================================
+_boot("APP INIT COMPLETE — module finished; gunicorn worker can accept requests")
 
 # ------------------------------
-# Run the app
+# Run the app (local / non-gunicorn only)
 # ------------------------------
 if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_DEBUG", "False").lower() == "true"
     port = int(os.getenv("PORT", 10000))
-    print(f"Starting Flask development server on 0.0.0.0:{port}")
+    _boot(f"__main__ app.run host=0.0.0.0 port={port}")
     app.run(
         host="0.0.0.0",
         port=port,

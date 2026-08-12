@@ -437,32 +437,16 @@ def init_db():
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_otp_phone ON otp_verifications(phone)"))
-    
+
+    # Safe for older DBs that created sponsored_ads without user_id
+    conn.execute(text(
+        "ALTER TABLE sponsored_ads "
+        "ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)"
+    ))
+
     conn.commit()
     conn.close()
-    
+
 if __name__ == "__main__":
     init_db()
     logger.info("✅ PostgreSQL tables created with all indexes and default settings.")
-
-# Database connection (PostgreSQL via SQLAlchemy)
-from database.init_db import get_db_connection, init_db
-
-# ✅ Only run init_db() if we are NOT on localhost
-import os
-if os.getenv("RENDER") != "true":   # Render sets this env var automatically
-    print("🔧 Running locally - skipping database initialization (Render will do this)")
-else:
-    init_db()
-    print("✅ Database initialized on Render")
-
-    # ============================================
-    # 🔥 ONE-TIME FIX: Add user_id to sponsored_ads
-    # ============================================
-    from database.init_db import engine
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        conn.execute(text("ALTER TABLE sponsored_ads ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);"))
-        conn.commit()
-        print("✅ Verified: user_id column exists on sponsored_ads.")
-    # ============================================    
