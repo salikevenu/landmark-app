@@ -269,7 +269,7 @@ def download_apk():
 
 @app.route("/browse")
 def browse():
-    return redirect("/api/user/browse")
+    return render_template("nearby/map.html")
 
 @app.route("/create-listing")
 def redirect_create_listing():

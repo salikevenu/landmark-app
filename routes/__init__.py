@@ -52,3 +52,8 @@ def register_routes(app):
         "(page) and /api/transactions (list|stats)",
         flush=True,
     )
+    print(
+        "[BOOT] nearby map APIs at /api/nearby/businesses and /api/nearby/search",
+        flush=True,
+    )
+
