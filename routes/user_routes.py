@@ -25,48 +25,101 @@ razor_client = razorpay.Client(auth=(
 def get_user_by_id(user_id):
     conn = get_db_connection()
     user = conn.execute(
-        text("SELECT name, phone, role, plan, referral_code, subscription_expiry FROM users WHERE id = :uid"),
-        {"uid": user_id}
+        text("""
+            SELECT id, name, phone, role, plan, referral_code, subscription_expiry
+            FROM users
+            WHERE id = :uid
+        """),
+        {"uid": user_id},
     ).fetchone()
     return dict(user._mapping) if user else None
 
+
+def _profile_payload(user):
+    return {
+        "id": user["id"],
+        "phone": user["phone"],
+        "name": user["name"] or user["phone"] or "",
+        "role": user["role"] or "user",
+        "plan": user["plan"] or "free",
+        "referral_code": user.get("referral_code") or "",
+    }
+
+
 # ------------------------------------------------------------
 # Profile pages & API
+# Blueprint prefix is /api/user → final paths:
+#   GET  /api/user/profile
+#   PUT  /api/user/profile/update
+#   GET  /api/user/profile/data
 # ------------------------------------------------------------
-@user_bp.route("/profile")
-def profile_page():
+@user_bp.route("/profile", methods=["GET"])
+def profile():
+    """
+    Browser navigation (no Bearer) → HTML page.
+    Authenticated fetch (Authorization: Bearer …) → JSON profile
+    (matches templates/users/profile.html).
+    """
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            from flask_jwt_extended import verify_jwt_in_request
+            verify_jwt_in_request()
+        except Exception:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        user_id = get_jwt_identity()
+        try:
+            user = get_user_by_id(user_id)
+            if not user:
+                return jsonify({"error": "User not found"}), 404
+            return jsonify(_profile_payload(user)), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     return render_template("users/profile.html", role="", plan="")
 
-@user_bp.route("/api/profile")
-@jwt_required()
-def api_profile():
-    user_id = get_jwt_identity()
-    user = get_user_by_id(user_id)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-    return jsonify({
-        "name": user["name"] or user["phone"],
-        "phone": user["phone"],
-        "role": user["role"],
-        "plan": user["plan"],
-        "referral_code": user.get("referral_code", "")
-    })
 
-@user_bp.route("/api/profile/update", methods=["PUT"])
+@user_bp.route("/profile/data", methods=["GET"])
+@jwt_required()
+def profile_data():
+    """Optional explicit JSON profile endpoint."""
+    user_id = get_jwt_identity()
+    try:
+        user = get_user_by_id(user_id)
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify(_profile_payload(user)), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route("/profile/update", methods=["PUT"])
 @jwt_required()
 def update_profile():
+    """Update the current user's display name."""
     user_id = get_jwt_identity()
-    data = request.json
-    name = data.get("name")
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+
     if not name:
         return jsonify({"error": "Name required"}), 400
-    conn = get_db_connection()
-    conn.execute(
-        text("UPDATE users SET name = :name WHERE id = :uid"),
-        {"name": name, "uid": user_id}
-    )
-    conn.commit()
-    return jsonify({"message": "Profile updated"}), 200
+    if len(name) > 100:
+        return jsonify({"error": "Name must be 100 characters or fewer"}), 400
+
+    try:
+        conn = get_db_connection()
+        result = conn.execute(
+            text("UPDATE users SET name = :name WHERE id = :uid RETURNING id"),
+            {"name": name, "uid": user_id},
+        ).fetchone()
+        conn.commit()
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+        return jsonify({"message": "Name updated successfully", "name": name}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @user_bp.route("/logout", methods=["POST"])
 def logout():
