@@ -153,6 +153,7 @@ def ping():
 # ==================== STATIC FOLDERS ====================
 _boot("makedirs static folders")
 os.makedirs("static/uploads", exist_ok=True)
+os.makedirs("static/uploads/avatars", exist_ok=True)
 os.makedirs("static/images/listings", exist_ok=True)
 os.makedirs("static/qrcodes", exist_ok=True)
 

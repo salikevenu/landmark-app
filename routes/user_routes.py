@@ -22,11 +22,22 @@ razor_client = razorpay.Client(auth=(
 # ------------------------------------------------------------
 # Helper: get user by ID
 # ------------------------------------------------------------
+_avatar_column_ready = False
+
+
 def get_user_by_id(user_id):
+    global _avatar_column_ready
     conn = get_db_connection()
+    if not _avatar_column_ready:
+        try:
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
+            conn.commit()
+            _avatar_column_ready = True
+        except Exception:
+            pass
     user = conn.execute(
         text("""
-            SELECT id, name, phone, role, plan, referral_code, subscription_expiry
+            SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
             FROM users
             WHERE id = :uid
         """),
@@ -43,6 +54,7 @@ def _profile_payload(user):
         "role": user["role"] or "user",
         "plan": user["plan"] or "free",
         "referral_code": user.get("referral_code") or "",
+        "avatar_url": user.get("avatar_url") or "",
     }
 
 
@@ -117,6 +129,62 @@ def update_profile():
         if not result:
             return jsonify({"error": "User not found"}), 404
         return jsonify({"message": "Name updated successfully", "name": name}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@user_bp.route("/profile/avatar", methods=["POST"])
+@jwt_required()
+def upload_profile_avatar():
+    """Upload/replace the current user's profile picture."""
+    from werkzeug.utils import secure_filename
+    from flask import current_app
+
+    user_id = get_jwt_identity()
+    file = request.files.get("avatar") or request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "No image file provided"}), 400
+
+    filename = secure_filename(file.filename)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    allowed = {"jpg", "jpeg", "png", "webp", "gif"}
+    if ext not in allowed:
+        return jsonify({"error": "Invalid image type. Use jpg, png, webp, or gif"}), 400
+
+    # Soft size guard (~2MB) in addition to app MAX_CONTENT_LENGTH
+    file.stream.seek(0, os.SEEK_END)
+    size = file.stream.tell()
+    file.stream.seek(0)
+    if size > 2 * 1024 * 1024:
+        return jsonify({"error": "Image must be 2MB or smaller"}), 400
+
+    try:
+        upload_root = current_app.config.get("UPLOAD_FOLDER", "static/uploads")
+        avatar_dir = os.path.join(upload_root, "avatars")
+        os.makedirs(avatar_dir, exist_ok=True)
+
+        stored_name = f"user_{user_id}_{int(time())}.{ext}"
+        abs_path = os.path.join(avatar_dir, stored_name)
+        file.save(abs_path)
+
+        # Public URL path served by Flask static
+        avatar_url = f"/static/uploads/avatars/{stored_name}"
+
+        conn = get_db_connection()
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
+        result = conn.execute(
+            text("UPDATE users SET avatar_url = :url WHERE id = :uid RETURNING id"),
+            {"url": avatar_url, "uid": user_id},
+        ).fetchone()
+        conn.commit()
+        if not result:
+            return jsonify({"error": "User not found"}), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Avatar updated",
+            "avatar_url": avatar_url,
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

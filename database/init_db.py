@@ -59,6 +59,7 @@ def init_db():
             is_active INTEGER DEFAULT 1,
             is_blocked INTEGER DEFAULT 0,
             language TEXT DEFAULT 'en',
+            avatar_url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
@@ -70,6 +71,7 @@ def init_db():
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_grid ON users(lat_grid, lng_grid)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_active ON users(is_active)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_location ON users(latitude, longitude)"))
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
 
     # =====================================================
     # WALLET_BALANCE TABLE
