@@ -189,6 +189,7 @@
             font-size: 0.78rem;
         }
         .user-avatar-img { display: none; border: 1px solid rgba(0,255,255,0.35); }
+        .user-avatar-img.is-visible { display: block !important; }
         .user-menu-meta {
             display: flex;
             flex-direction: column;
@@ -671,26 +672,42 @@
           return map[plan] || map[role] || plan || role || 'Free';
         }
 
+        let uploadingAvatar = false;
+
+        function cacheBust(url) {
+          if (!url) return '';
+          const sep = url.indexOf('?') >= 0 ? '&' : '?';
+          return url + sep + 't=' + Date.now();
+        }
+
+        function showAvatar(url) {
+          if (!url) {
+            avatarImg.removeAttribute('src');
+            avatarImg.classList.remove('is-visible');
+            avatarImg.style.display = 'none';
+            avatarInitials.style.display = 'flex';
+            return;
+          }
+          avatarImg.onload = function() {
+            avatarImg.classList.add('is-visible');
+            avatarImg.style.display = 'block';
+            avatarInitials.style.display = 'none';
+          };
+          avatarImg.onerror = function() {
+            avatarImg.classList.remove('is-visible');
+            avatarImg.style.display = 'none';
+            avatarInitials.style.display = 'flex';
+          };
+          avatarImg.src = url;
+        }
+
         function renderUser(p) {
-          profile = p || profile;
+          profile = Object.assign({}, profile, p || {});
           const displayName = (profile.name || '').trim() || 'User';
           nameEl.textContent = displayName;
           planEl.textContent = planLabel(profile.plan, profile.role);
           avatarInitials.textContent = initials(displayName);
-
-          if (profile.avatar_url) {
-            avatarImg.src = profile.avatar_url;
-            avatarImg.style.display = 'block';
-            avatarInitials.style.display = 'none';
-            avatarImg.onerror = function() {
-              avatarImg.style.display = 'none';
-              avatarInitials.style.display = 'flex';
-            };
-          } else {
-            avatarImg.removeAttribute('src');
-            avatarImg.style.display = 'none';
-            avatarInitials.style.display = 'flex';
-          }
+          showAvatar(profile.avatar_url ? cacheBust(profile.avatar_url) : '');
         }
 
         function closeMenu() {
@@ -713,7 +730,7 @@
             return;
           }
           try {
-            const res = await fetch('/api/user/profile', { headers: authHeaders(false), credentials: 'include' });
+            const res = await fetch('/api/user/profile/data', { headers: authHeaders(false), credentials: 'include' });
             if (!res.ok) throw new Error('profile fetch failed');
             const data = await res.json();
             renderUser(data);
@@ -757,6 +774,10 @@
 
         async function uploadAvatar(file) {
           if (!file) return;
+          uploadingAvatar = true;
+          const preview = URL.createObjectURL(file);
+          showAvatar(preview);
+
           const fd = new FormData();
           fd.append('avatar', file);
           try {
@@ -768,11 +789,15 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.error || 'Upload failed');
-            renderUser(Object.assign({}, profile, { avatar_url: data.avatar_url }));
+            renderUser({ avatar_url: data.avatar_url });
             closeMenu();
             showToast('Photo updated');
           } catch (err) {
+            showAvatar(profile.avatar_url ? cacheBust(profile.avatar_url) : '');
             showToast(err.message || 'Upload failed', true);
+          } finally {
+            uploadingAvatar = false;
+            URL.revokeObjectURL(preview);
           }
         }
 
@@ -828,9 +853,8 @@
 
         loadProfile();
         document.addEventListener('visibilitychange', function() {
-          if (document.visibilityState === 'visible') loadProfile();
+          if (document.visibilityState === 'visible' && !uploadingAvatar) loadProfile();
         });
-        window.addEventListener('focus', loadProfile);
       })();
     </script>
 

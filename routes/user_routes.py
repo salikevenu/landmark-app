@@ -25,8 +25,16 @@ razor_client = razorpay.Client(auth=(
 _avatar_column_ready = False
 
 
+def _as_user_id(identity):
+    try:
+        return int(identity)
+    except (TypeError, ValueError):
+        return identity
+
+
 def get_user_by_id(user_id):
     global _avatar_column_ready
+    user_id = _as_user_id(user_id)
     conn = get_db_connection()
     if not _avatar_column_ready:
         try:
@@ -110,7 +118,7 @@ def profile_data():
 @jwt_required()
 def update_profile():
     """Update the current user's display name."""
-    user_id = get_jwt_identity()
+    user_id = _as_user_id(get_jwt_identity())
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
 
@@ -140,7 +148,7 @@ def upload_profile_avatar():
     from werkzeug.utils import secure_filename
     from flask import current_app
 
-    user_id = get_jwt_identity()
+    user_id = _as_user_id(get_jwt_identity())
     file = request.files.get("avatar") or request.files.get("file")
     if not file or not file.filename:
         return jsonify({"error": "No image file provided"}), 400
@@ -160,14 +168,13 @@ def upload_profile_avatar():
 
     try:
         upload_root = current_app.config.get("UPLOAD_FOLDER", "static/uploads")
-        avatar_dir = os.path.join(upload_root, "avatars")
+        avatar_dir = os.path.join(current_app.root_path, upload_root, "avatars")
         os.makedirs(avatar_dir, exist_ok=True)
 
         stored_name = f"user_{user_id}_{int(time())}.{ext}"
         abs_path = os.path.join(avatar_dir, stored_name)
         file.save(abs_path)
 
-        # Public URL path served by Flask static
         avatar_url = f"/static/uploads/avatars/{stored_name}"
 
         conn = get_db_connection()
