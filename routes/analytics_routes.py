@@ -4,14 +4,18 @@ from database.init_db import get_db_connection
 from sqlalchemy import text
 from datetime import datetime, timedelta
 
-analytics_bp = Blueprint('analytics', __name__)
+# url_prefix='/analytics' + route '/' matches promotions/reviews/transactions:
+# both /analytics and /analytics/ resolve (slash redirect), instead of
+# bare '/analytics' which 404s on trailing-slash requests.
+analytics_bp = Blueprint('analytics', __name__, url_prefix='/analytics')
+analytics_api_bp = Blueprint('analytics_api', __name__, url_prefix='/api/analytics')
 
-@analytics_bp.route('/analytics')
+@analytics_bp.route('/')
 @jwt_required()
 def analytics_page():
     return render_template('analytics/index.html')
 
-@analytics_bp.route('/api/analytics/data')
+@analytics_api_bp.route('/data')
 @jwt_required()
 def get_analytics_data():
     user_id = get_jwt_identity()
