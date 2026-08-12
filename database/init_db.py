@@ -334,10 +334,18 @@ def init_db():
             user_phone TEXT,
             rating INTEGER CHECK(rating BETWEEN 1 AND 5),
             review TEXT,
+            owner_reply TEXT,
+            replied_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)"))
+    conn.execute(text(
+        "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS owner_reply TEXT"
+    ))
+    conn.execute(text(
+        "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP"
+    ))
 
     # =====================================================
     # BUSINESS LEADS
