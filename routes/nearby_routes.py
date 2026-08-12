@@ -113,6 +113,35 @@ def list_map_businesses():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@nearby_bp.route("/businesses/<int:listing_id>", methods=["GET"])
+@jwt_required(optional=True)
+def get_map_business(listing_id):
+    """Single listing for View on Map / flyTo."""
+    try:
+        conn = get_db_connection()
+        row = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    business_name,
+                    category,
+                    COALESCE(rating, 0) AS rating,
+                    latitude,
+                    longitude,
+                    user_phone AS phone,
+                    whatsapp
+                FROM listings
+                WHERE id = :id AND is_active = 1
+            """),
+            {"id": listing_id},
+        ).fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+        return jsonify({"success": True, "business": _row_to_business(row)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @nearby_bp.route("/search", methods=["GET"])
 @jwt_required(optional=True)
 def search_map_businesses():

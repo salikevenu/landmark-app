@@ -534,6 +534,7 @@ function renderBusinesses(listings) {
                     <a href="tel:${biz.phone || ''}" class="action-link" onclick="track(${biz.id}, 'call')">📞 Call</a>
                     <a href="https://wa.me/${biz.whatsapp || ''}" target="_blank" class="action-link" onclick="track(${biz.id}, 'whatsapp')">💬 WhatsApp</a>
                     <a href="/listing/${biz.id}" class="action-link">⟁ Details</a>
+                    <a href="/map?id=${biz.id}" class="action-link">🗺️ View on Map</a>
                 </div>
             </div>
         `;

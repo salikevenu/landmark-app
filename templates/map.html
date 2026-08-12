@@ -13,7 +13,7 @@
         width: 100%;
         height: 600px;
         min-height: 600px;
-        background: #0a0c10;
+        background: #e8eef4;
         border: 1px solid rgba(0, 255, 255, 0.25);
         border-radius: 12px;
         z-index: 1;
@@ -63,16 +63,52 @@
     }
     .map-popup .call { background: #0ff; color: #031018; }
     .map-popup .wa { background: #25d366; color: #fff; }
+    .pulse-icon { background: transparent; border: none; }
+    .pulse-pin {
+        position: relative;
+        width: 22px;
+        height: 22px;
+    }
+    .pulse-pin .dot {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        margin: -7px 0 0 -7px;
+        background: #e11d48;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        z-index: 2;
+        box-shadow: 0 0 8px rgba(225, 29, 72, 0.8);
+    }
+    .pulse-pin .ring {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        margin: -7px 0 0 -7px;
+        border-radius: 50%;
+        background: rgba(225, 29, 72, 0.45);
+        animation: landmark-pulse 1.6s ease-out infinite;
+        z-index: 1;
+    }
+    @keyframes landmark-pulse {
+        0% { transform: scale(1); opacity: 0.7; }
+        70% { transform: scale(3.4); opacity: 0; }
+        100% { transform: scale(3.4); opacity: 0; }
+    }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="map-wrap">
-    <div class="map-toolbar">
-        <input type="search" id="mapSearch" placeholder="Search by name or category…" autocomplete="off">
+    <form class="map-toolbar" id="mapSearchForm">
+        <input type="search" id="mapSearch" placeholder="Search a business name and press Enter…" autocomplete="off">
         <button type="button" class="locate" id="locateBtn">📍 My location</button>
-        <button type="button" id="searchBtn">Search</button>
-    </div>
+        <button type="submit" id="searchBtn">Search</button>
+    </form>
     <div id="map"></div>
     <p class="map-status" id="mapStatus">Loading map…</p>
 </div>
@@ -83,8 +119,10 @@
 <script>
 (function () {
     const INDIA = [20.5937, 78.9629];
+    const STREET_ZOOM = 16;
     const statusEl = document.getElementById('mapStatus');
     const mapEl = document.getElementById('map');
+    const searchInput = document.getElementById('mapSearch');
 
     function setStatus(msg) {
         if (statusEl) statusEl.textContent = msg;
@@ -100,16 +138,25 @@
     }
 
     const map = L.map(mapEl, { zoomControl: true }).setView(INDIA, 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap'
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(map);
 
     setTimeout(function () { map.invalidateSize(); }, 200);
     window.addEventListener('resize', function () { map.invalidateSize(); });
 
     const markers = L.layerGroup().addTo(map);
+    const pulseIcon = L.divIcon({
+        className: 'pulse-icon',
+        html: '<div class="pulse-pin"><span class="ring"></span><span class="dot"></span></div>',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+        popupAnchor: [0, -12]
+    });
+
     let allBusinesses = [];
+    let focusMarker = null;
 
     function authHeaders() {
         const h = {};
@@ -145,31 +192,116 @@
             + '</div>';
     }
 
+    function coords(b) {
+        const lat = Number(b.latitude);
+        const lng = Number(b.longitude);
+        if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return null;
+        return [lat, lng];
+    }
+
     function renderMarkers(list) {
         markers.clearLayers();
         (list || []).forEach(function (b) {
-            const lat = Number(b.latitude);
-            const lng = Number(b.longitude);
-            if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return;
-            L.marker([lat, lng]).bindPopup(popupHtml(b)).addTo(markers);
+            const ll = coords(b);
+            if (!ll) return;
+            L.marker(ll).bindPopup(popupHtml(b)).addTo(markers);
         });
         setStatus((list || []).length + ' businesses on map');
         map.invalidateSize();
     }
 
-    async function loadBusinesses(q) {
-        const url = q
-            ? '/api/nearby/search?q=' + encodeURIComponent(q)
-            : '/api/nearby/businesses';
+    function pickBestMatch(list, q) {
+        if (!list || !list.length) return null;
+        const needle = (q || '').trim().toLowerCase();
+        if (!needle) return list[0];
+        const exact = list.find(function (b) {
+            return (b.business_name || '').toLowerCase() === needle;
+        });
+        if (exact) return exact;
+        const starts = list.find(function (b) {
+            return (b.business_name || '').toLowerCase().indexOf(needle) === 0;
+        });
+        return starts || list[0];
+    }
+
+    function flyToBusiness(b) {
+        const ll = coords(b);
+        if (!ll) {
+            setStatus('That business has no map coordinates');
+            return;
+        }
+        if (focusMarker) {
+            map.removeLayer(focusMarker);
+            focusMarker = null;
+        }
+        focusMarker = L.marker(ll, { icon: pulseIcon, zIndexOffset: 1000 })
+            .bindPopup(popupHtml(b), { autoPan: true })
+            .addTo(map);
+
+        map.flyTo(ll, STREET_ZOOM, { animate: true, duration: 1.75, easeLinearity: 0.25 });
+        map.once('moveend', function () {
+            if (focusMarker) focusMarker.openPopup();
+            map.invalidateSize();
+        });
+        setStatus('Flying to ' + (b.business_name || 'business'));
+    }
+
+    async function fetchJson(url) {
+        const res = await fetch(url, { headers: authHeaders(), credentials: 'include' });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok || data.success === false) throw new Error(data.error || 'Request failed');
+        return data;
+    }
+
+    async function loadBusinesses() {
         setStatus('Loading businesses…');
         try {
-            const res = await fetch(url, { headers: authHeaders(), credentials: 'include' });
-            const data = await res.json().catch(function () { return {}; });
-            const list = Array.isArray(data) ? data : (data.businesses || []);
-            allBusinesses = q ? allBusinesses : list;
-            renderMarkers(list);
+            const data = await fetchJson('/api/nearby/businesses');
+            allBusinesses = Array.isArray(data) ? data : (data.businesses || []);
+            renderMarkers(allBusinesses);
         } catch (err) {
             setStatus(err.message || 'Could not load businesses');
+        }
+    }
+
+    async function searchAndFly(q) {
+        q = (q || '').trim();
+        if (!q) {
+            renderMarkers(allBusinesses);
+            setStatus((allBusinesses.length || 0) + ' businesses on map');
+            return;
+        }
+        setStatus('Searching…');
+        try {
+            const data = await fetchJson('/api/nearby/search?q=' + encodeURIComponent(q));
+            const list = Array.isArray(data) ? data : (data.businesses || []);
+            renderMarkers(list.length ? list : allBusinesses);
+            const target = pickBestMatch(list, q);
+            if (!target) {
+                setStatus('No business matched “' + q + '”');
+                return;
+            }
+            flyToBusiness(target);
+        } catch (err) {
+            const local = allBusinesses.filter(function (b) {
+                return (b.business_name || '').toLowerCase().indexOf(q.toLowerCase()) >= 0
+                    || (b.category || '').toLowerCase().indexOf(q.toLowerCase()) >= 0;
+            });
+            renderMarkers(local);
+            const target = pickBestMatch(local, q);
+            if (target) flyToBusiness(target);
+            else setStatus(err.message || 'Search failed');
+        }
+    }
+
+    async function flyToId(id) {
+        try {
+            const data = await fetchJson('/api/nearby/businesses/' + encodeURIComponent(id));
+            const b = data.business || data;
+            if (!b || !b.latitude) throw new Error('Business not found');
+            flyToBusiness(b);
+        } catch (err) {
+            setStatus(err.message || 'Could not open that listing');
         }
     }
 
@@ -181,36 +313,39 @@
         setStatus('Finding your location…');
         navigator.geolocation.getCurrentPosition(
             function (pos) {
-                map.setView([pos.coords.latitude, pos.coords.longitude], 14);
-                L.circleMarker([pos.coords.latitude, pos.coords.longitude], {
+                const ll = [pos.coords.latitude, pos.coords.longitude];
+                map.flyTo(ll, 14, { animate: true, duration: 1.4 });
+                L.circleMarker(ll, {
                     radius: 8,
-                    color: '#ffd700',
-                    fillColor: '#ffd700',
+                    color: '#2563eb',
+                    fillColor: '#3b82f6',
                     fillOpacity: 0.9
                 }).addTo(map).bindPopup('You are here');
-                map.invalidateSize();
                 setStatus('Centered on your location');
             },
             function () {
-                map.setView(INDIA, 5);
                 setStatus('Location denied — showing India');
             },
             { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
         );
     }
 
-    document.getElementById('searchBtn').addEventListener('click', function () {
-        loadBusinesses(document.getElementById('mapSearch').value.trim());
-    });
-    document.getElementById('mapSearch').addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            loadBusinesses(this.value.trim());
-        }
+    document.getElementById('mapSearchForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        searchAndFly(searchInput.value);
     });
     document.getElementById('locateBtn').addEventListener('click', locateUser);
 
-    loadBusinesses().then(locateUser);
+    const params = new URLSearchParams(window.location.search);
+    const deepId = params.get('id');
+    const deepQ = params.get('q') || params.get('search');
+    if (deepQ) searchInput.value = deepQ;
+
+    loadBusinesses().then(function () {
+        if (deepId) return flyToId(deepId);
+        if (deepQ) return searchAndFly(deepQ);
+        locateUser();
+    });
 })();
 </script>
 {% endblock %}
