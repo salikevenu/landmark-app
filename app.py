@@ -430,6 +430,21 @@ def privacy_policy():
 def terms_of_service():
     return render_template("terms.html")
 
+# ============================================
+# 🔥 BULLETPROOF RENDER PORT DETECTION FIX
+# ============================================
+if os.getenv("RENDER") == "true":
+    import threading
+    def start_dummy_server():
+        from flask import Flask
+        dummy_app = Flask(__name__)
+        @dummy_app.route("/")
+        def ping():
+            return "port-alive"
+        dummy_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False, use_reloader=False)
+    threading.Thread(target=start_dummy_server, daemon=True).start()
+# ============================================
+
 # ------------------------------
 # Run the app
 # ------------------------------
