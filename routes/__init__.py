@@ -11,7 +11,7 @@ from .promotions_routes import promotions_bp
 from .analytics_routes import analytics_bp, analytics_api_bp
 from .review_routes import review_bp
 from .reviews_routes import reviews_api_bp
-from .transaction_routes import transaction_bp
+from .transaction_routes import transaction_bp, transactions_api_bp
 from .wallet_routes import wallet_bp
 
 def register_routes(app):
@@ -33,6 +33,7 @@ def register_routes(app):
     app.register_blueprint(review_bp)
     app.register_blueprint(reviews_api_bp)
     app.register_blueprint(transaction_bp)
+    app.register_blueprint(transactions_api_bp)
     app.register_blueprint(wallet_bp)
 
     # Visible in Render logs so a missing analytics mount cannot stay silent
@@ -44,5 +45,10 @@ def register_routes(app):
     print(
         "[BOOT] reviews blueprint registered at /reviews (page) "
         "and /api/reviews (list|stats|reply)",
+        flush=True,
+    )
+    print(
+        "[BOOT] transactions blueprint registered at /transactions "
+        "(page) and /api/transactions (list|stats)",
         flush=True,
     )

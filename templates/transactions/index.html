@@ -1,8 +1,371 @@
 {% extends "layouts/layout_app.html" %}
+
 {% block title %}Transactions | LANDMARK{% endblock %}
+
+{% block extra_head %}
+<style>
+    .tx-dash { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    .tx-dash h2 {
+        color: #fff;
+        border-left: 4px solid #0ff;
+        padding-left: 15px;
+        margin-bottom: 6px;
+    }
+    .tx-dash .subtitle { color: #aac; margin-bottom: 22px; }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+        margin-bottom: 20px;
+    }
+    .stat-card {
+        background: rgba(20, 28, 45, 0.7);
+        border: 1px solid #2a3a5a;
+        border-radius: 16px;
+        padding: 18px;
+        backdrop-filter: blur(8px);
+        text-align: center;
+    }
+    .stat-card .number {
+        font-size: 1.9rem;
+        font-weight: 800;
+        color: #0ff;
+        line-height: 1.1;
+        margin: 6px 0;
+    }
+    .stat-card.debit .number { color: #f88; }
+    .stat-card.locked .number { color: #ffd700; }
+    .stat-card .label { color: #aac; font-size: 0.88rem; }
+
+    .panel {
+        background: rgba(20, 28, 45, 0.7);
+        border: 1px solid #2a3a5a;
+        border-radius: 16px;
+        padding: 16px;
+        backdrop-filter: blur(8px);
+    }
+
+    .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+        align-items: center;
+    }
+    .toolbar input, .toolbar select {
+        background: #0f1522;
+        border: 1px solid #2a3a5a;
+        color: #eef5ff;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 0.92rem;
+        outline: none;
+    }
+    .toolbar input:focus, .toolbar select:focus { border-color: #0ff; }
+    .toolbar input[type="search"] { flex: 1; min-width: 180px; }
+    .toolbar button {
+        background: #0ff;
+        color: #031018;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 16px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .toolbar button.secondary {
+        background: transparent;
+        color: #0ff;
+        border: 1px solid #0ff;
+    }
+    .toolbar button:disabled {
+        opacity: 0.45;
+        cursor: default;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table.tx-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 680px;
+    }
+    .tx-table th, .tx-table td {
+        padding: 12px 14px;
+        text-align: left;
+        border-bottom: 1px solid #1a2a3a;
+        font-size: 0.92rem;
+    }
+    .tx-table th { color: #aac; font-weight: 600; white-space: nowrap; }
+    .tx-table td { color: #e7eef8; }
+    .tx-table tr:hover td { background: rgba(0, 255, 255, 0.04); }
+
+    .badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    .badge.credit { background: rgba(0, 255, 170, 0.15); color: #0fa; border: 1px solid rgba(0,255,170,.35); }
+    .badge.debit { background: rgba(255, 100, 100, 0.15); color: #f88; border: 1px solid rgba(255,120,120,.35); }
+    .badge.lock { background: rgba(255, 215, 0, 0.12); color: #ffd700; border: 1px solid rgba(255,215,0,.35); }
+    .badge.locked, .badge.pending { background: rgba(255, 215, 0, 0.12); color: #ffd700; border: 1px solid rgba(255,215,0,.3); }
+    .badge.released, .badge.completed, .badge.success { background: rgba(0, 255, 255, 0.12); color: #0ff; border: 1px solid rgba(0,255,255,.3); }
+
+    .amt-credit { color: #0fa; font-weight: 700; }
+    .amt-debit { color: #f88; font-weight: 700; }
+    .amt-lock { color: #ffd700; font-weight: 700; }
+
+    .state-msg { text-align: center; color: #aac; padding: 28px 12px; }
+    .state-msg.error { color: #f88; }
+    .spinner {
+        width: 28px; height: 28px;
+        border: 3px solid #1f2a40;
+        border-top-color: #0ff;
+        border-radius: 50%;
+        margin: 0 auto 10px;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 640px) {
+        .tx-dash { padding: 14px; }
+        .stat-card .number { font-size: 1.55rem; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="dash-container">
-  <h2 style="color: var(--gold-primary);">🧾 Transactions</h2>
-  <p style="color: var(--text-dark);">Your wallet transaction history will be listed here.</p>
+<div class="tx-dash">
+    <h2>🧾 Transactions</h2>
+    <p class="subtitle">Wallet credits, debits, and locked rewards in one place.</p>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="label">Total Credits</div>
+            <div class="number" id="totalCredits">₹0</div>
+        </div>
+        <div class="stat-card debit">
+            <div class="label">Total Debits</div>
+            <div class="number" id="totalDebits">₹0</div>
+        </div>
+        <div class="stat-card locked">
+            <div class="label">Pending / Locked</div>
+            <div class="number" id="totalLocked">₹0</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">All Transactions</div>
+            <div class="number" id="totalCount" style="color:#cfe;">0</div>
+        </div>
+    </div>
+
+    <div class="toolbar panel">
+        <input type="search" id="searchInput" placeholder="Search source, type, status…">
+        <select id="typeFilter">
+            <option value="">All types</option>
+            <option value="credit">Credit</option>
+            <option value="debit">Debit</option>
+            <option value="lock">Lock</option>
+        </select>
+        <select id="statusFilter">
+            <option value="">All statuses</option>
+            <option value="locked">Locked</option>
+            <option value="pending">Pending</option>
+            <option value="released">Released</option>
+            <option value="completed">Completed</option>
+        </select>
+        <button type="button" id="applyFilters">Apply</button>
+        <button type="button" class="secondary" id="clearFilters">Clear</button>
+    </div>
+
+    <div class="panel table-wrap">
+        <div id="txContainer">
+            <div class="state-msg"><div class="spinner"></div>Loading transactions…</div>
+        </div>
+    </div>
+
+    <div class="toolbar" id="pager" style="justify-content:center; display:none; margin-top:16px;">
+        <button type="button" class="secondary" id="prevPage">← Prev</button>
+        <span id="pageLabel" style="color:#aac; align-self:center;"></span>
+        <button type="button" class="secondary" id="nextPage">Next →</button>
+    </div>
 </div>
+
+<script>
+(function () {
+    const $ = (id) => document.getElementById(id);
+    let currentPage = 1;
+    let hasMore = false;
+    let totalRows = 0;
+
+    function escapeHtml(str) {
+        return String(str ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function formatMoney(n) {
+        const v = Number(n) || 0;
+        return "₹" + v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    }
+
+    function formatDate(iso) {
+        if (!iso) return "—";
+        try {
+            return new Date(iso).toLocaleString(undefined, {
+                year: "numeric", month: "short", day: "numeric",
+                hour: "2-digit", minute: "2-digit"
+            });
+        } catch (_) { return iso; }
+    }
+
+    function prettySource(src) {
+        if (!src) return "—";
+        return String(src).replace(/_/g, " ");
+    }
+
+    async function apiGet(url) {
+        const token = localStorage.getItem("access_token");
+        const headers = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        const res = await fetch(url, { credentials: "include", headers });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+            window.location.href = "/api/auth/public/login";
+            throw new Error("Unauthorized");
+        }
+        if (!res.ok || data.success === false) {
+            throw new Error(data.error || data.msg || (`HTTP ${res.status}`));
+        }
+        return data;
+    }
+
+    function queryParams(page) {
+        const params = new URLSearchParams();
+        const q = $("searchInput").value.trim();
+        const type = $("typeFilter").value;
+        const status = $("statusFilter").value;
+        if (q) params.set("q", q);
+        if (type) params.set("type", type);
+        if (status) params.set("status", status);
+        params.set("page", String(page || currentPage));
+        return params.toString();
+    }
+
+    function renderStats(stats) {
+        $("totalCredits").textContent = formatMoney(stats.total_credits);
+        $("totalDebits").textContent = formatMoney(stats.total_debits);
+        $("totalLocked").textContent = formatMoney(stats.total_locked);
+        $("totalCount").textContent = String(stats.total_count || 0);
+    }
+
+    function amountClass(type) {
+        if (type === "debit") return "amt-debit";
+        if (type === "lock") return "amt-lock";
+        return "amt-credit";
+    }
+
+    function renderTable(rows) {
+        const box = $("txContainer");
+        if (!rows.length) {
+            box.innerHTML = `<div class="state-msg">No transactions match your filters.</div>`;
+            return;
+        }
+        const body = rows.map(r => {
+            const t = (r.type || "").toLowerCase();
+            const s = (r.status || "").toLowerCase();
+            const prefix = t === "debit" ? "−" : (t === "credit" ? "+" : "");
+            return `<tr>
+                <td>${escapeHtml(formatDate(r.created_at))}</td>
+                <td><span class="badge ${escapeHtml(t)}">${escapeHtml(t || "—")}</span></td>
+                <td>${escapeHtml(prettySource(r.source))}</td>
+                <td class="${amountClass(t)}">${prefix}${formatMoney(Math.abs(r.amount || 0))}</td>
+                <td><span class="badge ${escapeHtml(s)}">${escapeHtml(s || "—")}</span></td>
+            </tr>`;
+        }).join("");
+
+        box.innerHTML = `
+            <table class="tx-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Source</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>${body}</tbody>
+            </table>`;
+    }
+
+    function updatePager() {
+        const pager = $("pager");
+        if (totalRows <= 0) {
+            pager.style.display = "none";
+            return;
+        }
+        pager.style.display = "flex";
+        $("pageLabel").textContent = `Page ${currentPage} · ${totalRows} total`;
+        $("prevPage").disabled = currentPage <= 1;
+        $("nextPage").disabled = !hasMore;
+    }
+
+    async function loadStats() {
+        const data = await apiGet("/api/transactions/stats");
+        renderStats(data.stats || {});
+    }
+
+    async function loadList(page) {
+        if (page) currentPage = page;
+        const box = $("txContainer");
+        box.innerHTML = `<div class="state-msg"><div class="spinner"></div>Loading transactions…</div>`;
+        try {
+            const data = await apiGet("/api/transactions/list?" + queryParams(currentPage));
+            hasMore = !!data.has_more;
+            totalRows = Number(data.total || 0);
+            currentPage = Number(data.page || currentPage);
+            renderTable(data.transactions || []);
+            updatePager();
+        } catch (err) {
+            box.innerHTML = `<div class="state-msg error">${escapeHtml(err.message || "Failed to load")}</div>`;
+            $("pager").style.display = "none";
+        }
+    }
+
+    async function refreshAll() {
+        try {
+            await Promise.all([loadStats(), loadList(1)]);
+        } catch (err) {
+            $("totalCredits").textContent = "—";
+            $("txContainer").innerHTML =
+                `<div class="state-msg error">${escapeHtml(err.message || "Failed to load")}</div>`;
+        }
+    }
+
+    $("applyFilters").addEventListener("click", () => loadList(1));
+    $("clearFilters").addEventListener("click", () => {
+        $("searchInput").value = "";
+        $("typeFilter").value = "";
+        $("statusFilter").value = "";
+        loadList(1);
+    });
+    $("searchInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") loadList(1);
+    });
+    $("prevPage").addEventListener("click", () => {
+        if (currentPage > 1) loadList(currentPage - 1);
+    });
+    $("nextPage").addEventListener("click", () => {
+        if (hasMore) loadList(currentPage + 1);
+    });
+
+    document.addEventListener("DOMContentLoaded", refreshAll);
+})();
+</script>
 {% endblock %}

@@ -115,6 +115,10 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_user ON wallet_transactions(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_created ON wallet_transactions(created_at DESC)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_type ON wallet_transactions(type)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_status ON wallet_transactions(status)"))
 
     # =====================================================
     # BUSINESSES TABLE (legacy)
