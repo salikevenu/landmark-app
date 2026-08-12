@@ -52,20 +52,27 @@ if missing_vars:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 # Database connection (PostgreSQL via SQLAlchemy)
+# Do NOT call init_db() at import time — it blocks Gunicorn from binding
+# the port on Render and causes "No open ports detected".
 from database.init_db import get_db_connection, init_db
-
-if os.getenv("RENDER") == "true":
-    try:
-        print("🔧 Attempting to connect to Render database...")
-        init_db()
-        print("✅ Database initialized on Render")
-    except Exception as e:
-        print(f"❌ Database initialization failed (app will continue startup): {e}")
-else:
-    print("🔧 Running locally - skipping database initialization")
 
 # Initialize Flask app
 app = Flask(__name__)
+
+def _run_init_db_async():
+    """Run schema init in a background thread after the server can bind."""
+    try:
+        print("🔧 Background init_db starting...")
+        init_db()
+        print("✅ Database initialized")
+    except Exception as e:
+        print(f"❌ Database initialization failed (app continues): {e}")
+
+if os.getenv("RENDER") == "true":
+    import threading
+    threading.Thread(target=_run_init_db_async, daemon=True).start()
+else:
+    print("🔧 Running locally - skipping database initialization")
 
 # ==================== MASTER AGENT INITIALIZATION ====================
 # TEMPORARILY DISABLED FOR RENDER PORT DIAGNOSIS

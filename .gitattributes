@@ -1,0 +1,5 @@
+start.sh text eol=lf
+Procfile text eol=lf
+gunicorn.conf.py text eol=lf
+render.yaml text eol=lf
+*.sh text eol=lf
