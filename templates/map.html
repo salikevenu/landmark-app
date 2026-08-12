@@ -1,0 +1,216 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Map | LANDMARK{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+    .map-wrap {
+        width: 100%;
+        min-height: 600px;
+    }
+    #map {
+        width: 100%;
+        height: 600px;
+        min-height: 600px;
+        background: #0a0c10;
+        border: 1px solid rgba(0, 255, 255, 0.25);
+        border-radius: 12px;
+        z-index: 1;
+    }
+    .map-toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .map-toolbar input {
+        flex: 1;
+        min-width: 180px;
+        background: #0c121e;
+        border: 1px solid rgba(0, 255, 255, 0.35);
+        color: #eef5ff;
+        border-radius: 999px;
+        padding: 10px 16px;
+        outline: none;
+    }
+    .map-toolbar button {
+        border: 1px solid #0ff;
+        background: #0ff;
+        color: #031018;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 10px 16px;
+        cursor: pointer;
+    }
+    .map-toolbar .locate {
+        background: transparent;
+        color: #0ff;
+    }
+    .map-status { color: #9ab; font-size: 0.85rem; margin-top: 8px; }
+    .map-popup h3 { margin: 0 0 6px; font-size: 1rem; }
+    .map-popup p { margin: 0 0 4px; font-size: 0.85rem; }
+    .map-popup a {
+        display: inline-block;
+        margin-right: 6px;
+        margin-top: 6px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 0.8rem;
+    }
+    .map-popup .call { background: #0ff; color: #031018; }
+    .map-popup .wa { background: #25d366; color: #fff; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="map-wrap">
+    <div class="map-toolbar">
+        <input type="search" id="mapSearch" placeholder="Search by name or category…" autocomplete="off">
+        <button type="button" class="locate" id="locateBtn">📍 My location</button>
+        <button type="button" id="searchBtn">Search</button>
+    </div>
+    <div id="map"></div>
+    <p class="map-status" id="mapStatus">Loading map…</p>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+    const INDIA = [20.5937, 78.9629];
+    const statusEl = document.getElementById('mapStatus');
+    const mapEl = document.getElementById('map');
+
+    function setStatus(msg) {
+        if (statusEl) statusEl.textContent = msg;
+    }
+
+    if (typeof L === 'undefined') {
+        setStatus('Leaflet failed to load. Check your network and refresh.');
+        return;
+    }
+    if (!mapEl) {
+        setStatus('Map container missing.');
+        return;
+    }
+
+    const map = L.map(mapEl, { zoomControl: true }).setView(INDIA, 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    setTimeout(function () { map.invalidateSize(); }, 200);
+    window.addEventListener('resize', function () { map.invalidateSize(); });
+
+    const markers = L.layerGroup().addTo(map);
+    let allBusinesses = [];
+
+    function authHeaders() {
+        const h = {};
+        const token = localStorage.getItem('access_token');
+        if (token) h['Authorization'] = 'Bearer ' + token;
+        return h;
+    }
+
+    function escapeHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function digits(phone) {
+        return String(phone || '').replace(/\D/g, '');
+    }
+
+    function popupHtml(b) {
+        const phone = digits(b.phone);
+        const wa = digits(b.whatsapp || b.phone);
+        const rating = Number(b.rating || 0).toFixed(1);
+        const callHref = phone ? ('tel:' + phone) : '#';
+        const waHref = wa ? ('https://wa.me/' + (wa.length === 10 ? '91' + wa : wa)) : '#';
+        return '<div class="map-popup">'
+            + '<h3>' + escapeHtml(b.business_name || 'Business') + '</h3>'
+            + '<p>' + escapeHtml(b.category || '') + ' · ★ ' + rating + '</p>'
+            + '<p>' + escapeHtml(b.phone || 'No phone listed') + '</p>'
+            + '<a class="call" href="' + callHref + '">Call</a>'
+            + '<a class="wa" href="' + waHref + '" target="_blank" rel="noopener">WhatsApp</a>'
+            + '</div>';
+    }
+
+    function renderMarkers(list) {
+        markers.clearLayers();
+        (list || []).forEach(function (b) {
+            const lat = Number(b.latitude);
+            const lng = Number(b.longitude);
+            if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return;
+            L.marker([lat, lng]).bindPopup(popupHtml(b)).addTo(markers);
+        });
+        setStatus((list || []).length + ' businesses on map');
+        map.invalidateSize();
+    }
+
+    async function loadBusinesses(q) {
+        const url = q
+            ? '/api/nearby/search?q=' + encodeURIComponent(q)
+            : '/api/nearby/businesses';
+        setStatus('Loading businesses…');
+        try {
+            const res = await fetch(url, { headers: authHeaders(), credentials: 'include' });
+            const data = await res.json().catch(function () { return {}; });
+            const list = Array.isArray(data) ? data : (data.businesses || []);
+            allBusinesses = q ? allBusinesses : list;
+            renderMarkers(list);
+        } catch (err) {
+            setStatus(err.message || 'Could not load businesses');
+        }
+    }
+
+    function locateUser() {
+        if (!navigator.geolocation) {
+            setStatus('Geolocation not supported');
+            return;
+        }
+        setStatus('Finding your location…');
+        navigator.geolocation.getCurrentPosition(
+            function (pos) {
+                map.setView([pos.coords.latitude, pos.coords.longitude], 14);
+                L.circleMarker([pos.coords.latitude, pos.coords.longitude], {
+                    radius: 8,
+                    color: '#ffd700',
+                    fillColor: '#ffd700',
+                    fillOpacity: 0.9
+                }).addTo(map).bindPopup('You are here');
+                map.invalidateSize();
+                setStatus('Centered on your location');
+            },
+            function () {
+                map.setView(INDIA, 5);
+                setStatus('Location denied — showing India');
+            },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
+    }
+
+    document.getElementById('searchBtn').addEventListener('click', function () {
+        loadBusinesses(document.getElementById('mapSearch').value.trim());
+    });
+    document.getElementById('mapSearch').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            loadBusinesses(this.value.trim());
+        }
+    });
+    document.getElementById('locateBtn').addEventListener('click', locateUser);
+
+    loadBusinesses().then(locateUser);
+})();
+</script>
+{% endblock %}

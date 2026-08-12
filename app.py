@@ -267,9 +267,10 @@ def download_apk():
     directory = os.path.join(app.root_path, 'static', 'downloads')
     return send_from_directory(directory, 'LANDMARK.apk', as_attachment=True)
 
+@app.route("/map")
 @app.route("/browse")
 def browse():
-    return render_template("nearby/map.html")
+    return render_template("map.html")
 
 @app.route("/create-listing")
 def redirect_create_listing():
