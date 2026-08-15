@@ -5,7 +5,7 @@ import string
 import logging
 from datetime import timedelta
 
-from flask import Blueprint, request, jsonify, current_app, render_template, redirect
+from flask import Blueprint, request, jsonify, current_app, render_template, redirect, session
 from sqlalchemy import text
 from dotenv import load_dotenv
 
@@ -205,6 +205,16 @@ def send_otp():
 
         full_phone = COUNTRY_CODE + phone
 
+        ref = (request.args.get("ref") or "").strip()
+        if ref:
+            with engine.connect() as conn:
+                referrer = conn.execute(
+                    text("SELECT id FROM users WHERE referral_code = :code"),
+                    {"code": ref},
+                ).fetchone()
+            if referrer:
+                session["ref_code"] = ref
+
         # Cooldown check
         existing = get_verification(full_phone)
         if existing:
@@ -293,7 +303,7 @@ def verify_otp():
         with engine.connect() as conn:
             
             user = conn.execute(
-                text("SELECT id, phone, name, role, referral_code FROM users WHERE phone = :phone"),
+                text("SELECT id, phone, name, role, referral_code, referred_by FROM users WHERE phone = :phone"),
                 {"phone": phone}
             ).fetchone()
 
@@ -320,8 +330,33 @@ def verify_otp():
                     "name": "",
                     "role": "free",
                     "referral_code": referral_code,
+                    "referred_by": None,
                 }
                 status = "new"
+
+            try:
+                if status == "new" and user_data.get("referred_by") is None:
+                    ref_code = session.get("ref_code")
+                    if ref_code:
+                        referrer = conn.execute(
+                            text("SELECT id FROM users WHERE referral_code = :code"),
+                            {"code": ref_code},
+                        ).fetchone()
+                        if referrer:
+                            referrer_id = referrer._mapping["id"]
+                            if referrer_id != user_data["id"]:
+                                conn.execute(
+                                    text("""
+                                        UPDATE users
+                                        SET referred_by = :rid
+                                        WHERE id = :uid AND referred_by IS NULL
+                                    """),
+                                    {"rid": referrer_id, "uid": user_data["id"]},
+                                )
+                                conn.commit()
+                                user_data["referred_by"] = referrer_id
+            finally:
+                session.pop("ref_code", None)
 
             # Generate JWT tokens
             if remember_me:
