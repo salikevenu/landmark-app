@@ -14,7 +14,11 @@ from services.payment_service import (
     ensure_payments_plan_column,
     finalize_paid_order,
 )
+from services.referral_commission import process_referral_commission
 from database.init_db import get_db_connection
+import logging
+
+logger = logging.getLogger(__name__)
 
 payment_bp = Blueprint("payment", __name__)
 
@@ -28,6 +32,45 @@ def _json_from_result(result):
     if result.get("success"):
         return jsonify(result), 200
     return jsonify(result), http or 400
+
+
+def _payment_amount_paise(user_id, order_id, payment_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute(text("""
+            SELECT amount FROM payments
+            WHERE user_id = :uid
+              AND (order_id = :oid OR payment_id = :oid OR payment_id = :pid)
+            ORDER BY id DESC
+            LIMIT 1
+        """), {
+            "uid": int(user_id) if str(user_id).isdigit() else user_id,
+            "oid": order_id or "",
+            "pid": payment_id or "",
+        }).fetchone()
+        if row and row._mapping.get("amount") is not None:
+            return int(row._mapping["amount"])
+    except Exception:
+        logger.exception("Could not load payment amount for referral commission")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return None
+
+
+def _credit_referral_after_payment(result, user_id, amount_paise):
+    """Queue locked referral commission after a new activation (not duplicates)."""
+    if not result or not result.get("success") or result.get("duplicate"):
+        return
+    if user_id is None or amount_paise is None:
+        return
+    try:
+        rupees = float(amount_paise) / 100.0
+        process_referral_commission(int(user_id), rupees)
+    except Exception:
+        logger.exception("Referral commission failed after payment for user %s", user_id)
 
 
 @payment_bp.route("/create-order-debug", methods=["POST"])
@@ -160,6 +203,12 @@ def verify_payment():
         return jsonify({"success": False, "error": "Authentication required."}), 401
     data = request.get_json(silent=True) or {}
     result = verify_payment_service(data, user_id)
+    amount_paise = _payment_amount_paise(
+        user_id,
+        data.get("razorpay_order_id"),
+        data.get("razorpay_payment_id"),
+    )
+    _credit_referral_after_payment(result, user_id, amount_paise)
     return _json_from_result(result)
 
 
@@ -240,6 +289,7 @@ def razorpay_webhook():
         duration_days=duration_days,
     )
     if result.get("success"):
+        _credit_referral_after_payment(result, m.get("user_id"), amount)
         status_out = "already_processed" if result.get("duplicate") else "captured"
         return jsonify({"success": True, "status": status_out}), 200
     return jsonify({"success": False, "error": result.get("error", "Could not record payment")}), 400

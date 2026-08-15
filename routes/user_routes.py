@@ -322,9 +322,42 @@ def api_browse():
 
         # Base query with optional distance calculation
         query = text("""
-            SELECT *,
-            CASE 
-                WHEN :lat IS NOT NULL AND :lng IS NOT NULL THEN (
+            SELECT
+                id,
+                business_name,
+                business_name AS name,
+                category,
+                city,
+                state,
+                user_phone AS phone,
+                whatsapp,
+                COALESCE(image, image_url, logo_url) AS image,
+                rating,
+                COALESCE(total_reviews, rating_count, 0) AS reviews,
+                COALESCE(is_featured, 0) AS featured,
+                COALESCE(is_verified, 0) AS verified,
+                COALESCE(is_premium, 0) AS premium,
+                latitude,
+                longitude,
+                CASE
+                    WHEN :lat IS NOT NULL AND :lng IS NOT NULL THEN (
+                        6371 * acos(
+                            cos(radians(:lat)) *
+                            cos(radians(latitude)) *
+                            cos(radians(longitude) - radians(:lng)) +
+                            sin(radians(:lat)) *
+                            sin(radians(latitude))
+                        )
+                    )
+                    ELSE NULL
+                END as distance
+            FROM listings
+            WHERE is_active = 1
+            AND (status IS NULL OR status = 'approved')
+            AND (:search = '' OR business_name ILIKE :search OR category ILIKE :search)
+            AND (:category = '' OR category = :category)
+            AND (:distance IS NULL OR (
+                :lat IS NOT NULL AND :lng IS NOT NULL AND (
                     6371 * acos(
                         cos(radians(:lat)) *
                         cos(radians(latitude)) *
@@ -332,23 +365,9 @@ def api_browse():
                         sin(radians(:lat)) *
                         sin(radians(latitude))
                     )
-                )
-                ELSE NULL
-            END as distance
-            FROM businesses
-            WHERE is_active = 1
-            AND (:search = '' OR business_name ILIKE :search)
-            AND (:category = '' OR category = :category)
-            AND (:distance IS NULL OR (
-                6371 * acos(
-                    cos(radians(:lat)) *
-                    cos(radians(latitude)) *
-                    cos(radians(longitude) - radians(:lng)) +
-                    sin(radians(:lat)) *
-                    sin(radians(latitude))
-                )
-            ) <= :distance)
-            ORDER BY featured DESC, premium DESC, distance ASC
+                ) <= :distance
+            ))
+            ORDER BY featured DESC, premium DESC, distance ASC NULLS LAST
             LIMIT :limit OFFSET :offset
         """)
 

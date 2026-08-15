@@ -4,7 +4,6 @@ from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.referral_commission import next_saturday_6pm_ist
 from services.wallet_service import (
-    get_wallet_transactions,
     get_wallet_balance,
     debit_wallet
 )
@@ -19,8 +18,22 @@ def wallet_page():
 @jwt_required()
 def wallet_transactions():
     user_id = get_jwt_identity()
-    data = get_wallet_transactions(user_id)
-    return jsonify(data)
+    conn = get_db_connection()
+    rows = conn.execute(text("""
+        SELECT id, amount, type, source, status, created_at
+        FROM wallet_transactions
+        WHERE user_id = :uid
+        ORDER BY id DESC
+        LIMIT 50
+    """), {"uid": user_id}).fetchall()
+    items = []
+    for r in rows:
+        m = dict(r._mapping)
+        created = m.get("created_at")
+        if hasattr(created, "isoformat"):
+            m["created_at"] = created.isoformat()
+        items.append(m)
+    return jsonify(items)
 
 @wallet_bp.route("/api/wallet/overview")
 @jwt_required()

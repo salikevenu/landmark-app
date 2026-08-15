@@ -118,22 +118,26 @@ def process_referral(user_id, purchase_amount):
 def get_wallet_transactions(user_id):
     conn = get_db_connection()
     rows = conn.execute(text("""
-        SELECT type, amount, description, created_at
+        SELECT id, amount, type, source, status, created_at
         FROM wallet_transactions
         WHERE user_id = :uid
         ORDER BY id DESC
-        LIMIT 20
+        LIMIT 50
     """), {"uid": user_id}).fetchall()
 
-    return [
-        {
-            "type": r._mapping["type"],
-            "amount": r._mapping["amount"],
-            "description": r._mapping["description"],
-            "date": r._mapping["created_at"]
-        }
-        for r in rows
-    ]
+    items = []
+    for r in rows:
+        m = r._mapping
+        created = m["created_at"]
+        items.append({
+            "id": m["id"],
+            "amount": m["amount"],
+            "type": m["type"],
+            "source": m["source"],
+            "status": m["status"],
+            "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
+        })
+    return items
 
 # =========================
 # ADD PENDING REFERRAL REWARD

@@ -463,6 +463,33 @@ class PaymentRouteTests(unittest.TestCase):
         self.assertEqual(payload["notes"]["duration_days"], "365")
 
 
+class ReferralAndWalletWiringTests(unittest.TestCase):
+    def test_first_bonus_source_matches_saturday_payout(self):
+        commission = (ROOT / "services" / "referral_commission.py").read_text(encoding="utf-8")
+        payout = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("'referral_first_bonus'", commission)
+        self.assertNotIn("'5%_base_+_5%_activation'", commission)
+        self.assertIn("'referral_first_bonus'", payout)
+        self.assertIn("'referral_recurring'", commission)
+        self.assertIn("'referral_recurring'", payout)
+
+    def test_wallet_transactions_do_not_select_description(self):
+        wallet_routes = (ROOT / "routes" / "wallet_routes.py").read_text(encoding="utf-8")
+        wallet_service = (ROOT / "services" / "wallet_service.py").read_text(encoding="utf-8")
+        self.assertIn("SELECT id, amount, type, source, status, created_at", wallet_routes)
+        self.assertNotIn("description", wallet_service.split("def get_wallet_transactions")[1].split("def add_pending")[0])
+
+    def test_login_passes_ref_to_send_otp(self):
+        html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
+        self.assertIn("/api/auth/send-otp' + referralQuery()", html)
+
+    def test_user_browse_queries_listings(self):
+        src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
+        browse = src.split("def api_browse")[1].split("def ")[0]
+        self.assertIn("FROM listings", browse)
+        self.assertNotIn("FROM businesses", browse)
+
+
 class LegacyAddBusinessTests(unittest.TestCase):
     def test_free_user_cannot_bypass_via_add_business(self):
         body, code = legacy_add_business_gone()

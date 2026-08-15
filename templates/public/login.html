@@ -375,6 +375,12 @@ const RESEND_COOLDOWN_SECONDS = 30;
 const PHONE_REGEX = /^[6-9]\d{9}$/;   // real Indian mobile numbers only
 const OTP_REGEX = /^\d{6}$/;
 
+function referralQuery() {
+    const ref = new URLSearchParams(window.location.search).get("ref");
+    if (!ref || !ref.trim()) return "";
+    return "?ref=" + encodeURIComponent(ref.trim());
+}
+
 // DOM ELEMENTS
 const phoneInput = document.getElementById("phoneInput");
 const otpGroup = document.getElementById("otpGroup");
@@ -474,7 +480,7 @@ async function sendOTP() {
     setStatus('Sending OTP...', 'info');
 
     try {
-        const response = await fetch('/api/auth/send-otp', {
+        const response = await fetch('/api/auth/send-otp' + referralQuery(), {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -571,7 +577,7 @@ async function handleResend() {
     setStatus('Resending OTP...', 'info');
 
     try {
-        const response = await fetch('/api/auth/resend-otp', {
+        const response = await fetch('/api/auth/resend-otp' + referralQuery(), {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },

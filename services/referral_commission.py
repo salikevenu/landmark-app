@@ -37,7 +37,7 @@ def process_referral_commission(referred_user_id, payment_amount):
             conn.execute(text("""
                 INSERT INTO wallet_transactions
                 (user_id, amount, type, source, reference_id, status, unlock_at, created_at)
-                VALUES (:referrer_id, :bonus, 'credit', '5%_base_+_5%_activation', :ref_id, 'locked', :unlock_at, CURRENT_TIMESTAMP)
+                VALUES (:referrer_id, :bonus, 'credit', 'referral_first_bonus', :ref_id, 'locked', :unlock_at, CURRENT_TIMESTAMP)
             """), {
                 "referrer_id": referrer_id,
                 "bonus": bonus,

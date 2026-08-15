@@ -451,7 +451,7 @@ def browse_api():
                 "category": rm["category"],
                 "city": rm["city"],
                 "state": rm["state"],
-                "phone": rm.get("phone"),
+                "phone": rm.get("user_phone") or rm.get("phone"),
                 "whatsapp": rm.get("whatsapp"),
                 "image": rm["main_image"] or "/static/default.jpg",
                 "video": rm.get("video"),

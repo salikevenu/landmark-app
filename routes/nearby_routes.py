@@ -37,6 +37,7 @@ def _fetch_businesses(search=None, limit=500):
     conn = get_db_connection()
     clauses = [
         "is_active = 1",
+        "(status IS NULL OR status = 'approved')",
         "latitude IS NOT NULL",
         "longitude IS NOT NULL",
         "latitude <> 0",
@@ -135,6 +136,7 @@ def get_map_business(listing_id):
                     whatsapp
                 FROM listings
                 WHERE id = :id AND is_active = 1
+                  AND (status IS NULL OR status = 'approved')
             """),
             {"id": listing_id},
         ).fetchone()
