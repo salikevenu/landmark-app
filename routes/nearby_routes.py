@@ -5,8 +5,10 @@ from services.geo_service import find_nearby_friends
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from database.init_db import get_db_connection
+import logging
 
 nearby_bp = Blueprint("nearby", __name__)
+logger = logging.getLogger(__name__)
 
 
 def safe_limit(limit_value):
@@ -110,7 +112,8 @@ def list_map_businesses():
         businesses = _fetch_businesses()
         return jsonify({"success": True, "businesses": businesses, "count": len(businesses)})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("list_map_businesses error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
 
 
 @nearby_bp.route("/businesses/<int:listing_id>", methods=["GET"])
@@ -139,7 +142,8 @@ def get_map_business(listing_id):
             return jsonify({"success": False, "error": "Business not found"}), 404
         return jsonify({"success": True, "business": _row_to_business(row)})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("get_map_business error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
 
 
 @nearby_bp.route("/search", methods=["GET"])
@@ -165,4 +169,5 @@ def search_map_businesses():
             "category": category,
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("search_map_businesses error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500

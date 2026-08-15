@@ -1,4 +1,5 @@
-# setup_admin.py (PostgreSQL version) – Updated for your phone number
+# setup_admin.py (PostgreSQL version)
+import argparse
 import jwt
 import datetime
 import os
@@ -26,7 +27,15 @@ def create_jwt_token(user_id, user_role, secret_key, expires_days=30):
     token = jwt.encode(payload, secret_key, algorithm='HS256')
     return token
 
-def setup_admin():
+def setup_admin(phone=None):
+    phone = (phone or os.getenv("ADMIN_PHONE") or "").strip()
+    if not phone:
+        raise SystemExit("Admin phone required: pass --phone or set ADMIN_PHONE in the environment.")
+
+    secret_key = os.environ.get("JWT_SECRET_KEY")
+    if not secret_key:
+        raise SystemExit("JWT_SECRET_KEY is not set. Refusing to mint an admin token.")
+
     with engine.connect() as conn:
         # =============================================
         # ✅ TEMPORARY: Add missing logo_url column
@@ -35,9 +44,6 @@ def setup_admin():
         conn.commit()
         print("✅ Column logo_url added successfully.")
         # =============================================
-        
-        # ✅ UPDATE YOUR OWN PHONE NUMBER TO ADMIN
-        phone = "9959543954"  # <-- CHANGE THIS if your phone number is different
 
         # Check if user exists
         user = conn.execute(text("SELECT id, phone, role FROM users WHERE phone = :phone"), {"phone": phone}).fetchone()
@@ -72,9 +78,6 @@ def setup_admin():
             else:
                 logger.info(f"✅ User {admin_phone} is already an admin")
 
-    # IMPORTANT: Use the SAME JWT_SECRET_KEY as your Flask app
-    secret_key = os.environ.get('JWT_SECRET_KEY', 'hlecFd2cJQY0UCyXcq5Fpo1UCLyBERNEu2hUiv_kM60')
-
     token = create_jwt_token(admin_id, admin_role, secret_key)
 
     logger.info("\n" + "="*60)
@@ -88,4 +91,11 @@ def setup_admin():
     return token
 
 if __name__ == "__main__":
-    setup_admin()
+    parser = argparse.ArgumentParser(description="Create or promote an admin user.")
+    parser.add_argument(
+        "--phone",
+        default=os.getenv("ADMIN_PHONE"),
+        help="10-digit admin phone. Or set ADMIN_PHONE in the environment.",
+    )
+    args = parser.parse_args()
+    setup_admin(args.phone)
