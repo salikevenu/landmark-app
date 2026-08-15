@@ -544,13 +544,12 @@ function renderBusinesses(listings) {
 
 // Track interaction (optional, uses token if available)
 function track(id, action) {
-    const token = localStorage.getItem('access_token');
     fetch('/api/track', {
         method: 'POST',
-        headers: { 
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
+        credentials: 'include',
+        headers: window.LandmarkSession
+            ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': LandmarkSession.csrfToken() }
+            : { 'Content-Type': 'application/json' },
         body: JSON.stringify({ business_id: id, action: action })
     }).catch(() => {});
 }

@@ -5,24 +5,13 @@
 <div id="listingContainer"></div>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-const authHeaders = {
-  "Content-Type": "application/json",
-  "Authorization": "Bearer " + token
-};
-
 async function loadListings() {
   try {
-    const res = await fetch("/api/admin/listings", { headers: authHeaders });
+    const res = await LandmarkSession.authFetch("/api/admin/listings");
     if (!res.ok) {
-      if (res.status === 401) {
-        alert("Session expired. Please login again.");
-        window.location.href = "/admin/login";
+      if (res.status === 401) return;
+      if (res.status === 403) {
+        alert("Admin access required");
         return;
       }
       throw new Error("Failed to load");
@@ -60,9 +49,9 @@ async function loadListings() {
 
 async function verifyListing(id) {
   try {
-    const res = await fetch(`/api/admin/listings/${id}/verify`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/listings/${id}/verify`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadListings();
     else alert("Verification failed");
@@ -72,9 +61,9 @@ async function verifyListing(id) {
 async function disableListing(id) {
   if (!confirm("Disable this listing?")) return;
   try {
-    const res = await fetch(`/api/admin/listings/${id}/disable`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/listings/${id}/disable`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadListings();
     else alert("Disable failed");
@@ -84,9 +73,8 @@ async function disableListing(id) {
 async function deleteListing(id) {
   if (!confirm("Delete listing permanently?")) return;
   try {
-    const res = await fetch(`/api/admin/listings/${id}/delete`, {
-      method: "DELETE",
-      headers: authHeaders
+    const res = await LandmarkSession.authFetch(`/api/admin/listings/${id}/delete`, {
+      method: "DELETE"
     });
     if (res.ok) loadListings();
     else alert("Delete failed");

@@ -157,9 +157,6 @@ let currentSort = 'smart';   // ✅ Default sort
 let allListings = [];
 let moveTimer = null;
 
-// Parse token for protected endpoints (heatmap)
-const token = localStorage.getItem("access_token");
-
 function initMap(lat, lng) {
   map = L.map("map").setView([lat, lng], 13);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -301,9 +298,7 @@ function filterList() {
 
 // Optional heatmap (JWT protected, but won't break if unauthorized)
 function loadHeatmap() {
-  fetch("/api/heatmap", {
-    headers: token ? { "Authorization": "Bearer " + token } : {}
-  })
+  fetch("/api/heatmap", { credentials: "include" })
   .then(res => {
     if (!res.ok) throw new Error("Unauthorized");
     return res.json();

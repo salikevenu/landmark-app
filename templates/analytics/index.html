@@ -65,7 +65,7 @@
 <script>
     async function loadAnalytics() {
         try {
-            const res = await fetch('/api/analytics/data');
+            const res = await LandmarkSession.authFetch('/api/analytics/data');
             const data = await res.json();
 
             // Update stats

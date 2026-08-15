@@ -159,10 +159,7 @@
     let focusMarker = null;
 
     function authHeaders() {
-        const h = {};
-        const token = localStorage.getItem('access_token');
-        if (token) h['Authorization'] = 'Bearer ' + token;
-        return h;
+        return {};
     }
 
     function escapeHtml(str) {

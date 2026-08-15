@@ -10,27 +10,11 @@
 </div>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-const authHeaders = {
-  "Content-Type": "application/json",
-  "Authorization": "Bearer " + token
-};
-
-// Load all settings on page load
 async function loadSettings() {
   try {
-    const res = await fetch("/api/admin/settings", { headers: authHeaders });
+    const res = await LandmarkSession.authFetch("/api/admin/settings");
     if (!res.ok) {
-      if (res.status === 401) {
-        alert("Session expired. Please login again.");
-        window.location.href = "/admin/login";
-        return;
-      }
+      if (res.status === 401) return;
       throw new Error("Failed to load settings");
     }
 
@@ -74,9 +58,9 @@ async function updateSetting(key) {
 
   document.getElementById("settingsStatus").innerText = "Saving...";
   try {
-    const res = await fetch("/api/admin/settings", {
+    const res = await LandmarkSession.authFetch("/api/admin/settings", {
       method: "POST",
-      headers: authHeaders,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: key, value: newValue })
     });
 

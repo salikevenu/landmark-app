@@ -407,6 +407,7 @@
 </div>
 
 <!-- SCRIPTS -->
+<script src="{{ url_for('static', filename='js/session.js') }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
   // (All your previous JS functions — they remain the same)
@@ -419,7 +420,7 @@
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     try {
-      const res = await fetch('/api/admin/trigger-payout', { method: 'POST' });
+      const res = await LandmarkSession.authFetch('/api/admin/trigger-payout', { method: 'POST' });
       const data = await res.json();
       const count = data.released ?? 0;
       document.getElementById('payoutResult').innerHTML = `<span class="text-success">✓ ${count} released</span>`;
@@ -435,8 +436,8 @@
   async function loadStats() {
     try {
       const [statsRes, chartRes] = await Promise.all([
-        fetch('/api/admin/stats'),
-        fetch('/api/admin/stats/chart')
+        LandmarkSession.authFetch('/api/admin/stats'),
+        LandmarkSession.authFetch('/api/admin/stats/chart')
       ]);
       const stats = await statsRes.json();
       const chart = await chartRes.json();
@@ -466,7 +467,7 @@
     const container = document.getElementById('pendingListingsContainer');
     container.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Loading…</td></tr>';
     try {
-      const res = await fetch('/api/admin/listings?status=pending&limit=20');
+      const res = await LandmarkSession.authFetch('/api/admin/listings?status=pending&limit=20');
       const data = await res.json();
       if (!data.listings || data.listings.length === 0) {
         container.innerHTML = '<tr><td colspan="3" class="text-success text-center">No pending listings</td></tr>';
@@ -488,12 +489,12 @@
   }
 
   async function approveListing(id) {
-    await fetch(`/api/admin/listings/${id}/approve`, { method: 'POST' });
+    await LandmarkSession.authFetch(`/api/admin/listings/${id}/approve`, { method: 'POST' });
     document.getElementById(`listing-${id}`).remove();
   }
   async function rejectListing(id) {
     if (!confirm('Reject?')) return;
-    await fetch(`/api/admin/listings/${id}/disable`, { method: 'POST' });
+    await LandmarkSession.authFetch(`/api/admin/listings/${id}/disable`, { method: 'POST' });
     document.getElementById(`listing-${id}`).remove();
   }
   document.getElementById('refreshPendingBtn').addEventListener('click', loadPendingListings);
@@ -502,7 +503,7 @@
   async function loadAuditLog() {
     const container = document.getElementById('auditLogContainer');
     try {
-      const res = await fetch('/api/admin/audit-log?limit=5');
+      const res = await LandmarkSession.authFetch('/api/admin/audit-log?limit=5');
       const data = await res.json();
       if (!data.logs || data.logs.length === 0) {
         container.innerHTML = '<li class="list-group-item text-muted">No activity</li>';
@@ -521,7 +522,7 @@
   async function loadRecentUsers() {
     const tbody = document.getElementById('recentUsersTable');
     try {
-      const res = await fetch('/api/admin/users?limit=5');
+      const res = await LandmarkSession.authFetch('/api/admin/users?limit=5');
       const data = await res.json();
       const users = data.users || [];
       let html = '';
@@ -539,7 +540,7 @@
     const status = document.getElementById('activationStatus');
     if (!phone) { status.innerText = 'Phone required'; return; }
     try {
-      const res = await fetch('/api/admin/activate', {
+      const res = await LandmarkSession.authFetch('/api/admin/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, plan })

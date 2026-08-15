@@ -313,7 +313,9 @@
     }
 
     async function apiGet(url) {
-        const res = await fetch(url, { credentials: "include" });
+        const res = window.LandmarkSession
+            ? await LandmarkSession.authFetch(url, { authRedirect: false })
+            : await fetch(url, { credentials: "include" });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.success === false) {
             throw new Error(data.error || data.msg || (`HTTP ${res.status}`));
@@ -322,12 +324,18 @@
     }
 
     async function apiPost(url, body) {
-        const res = await fetch(url, {
-            method: "POST",
-            credentials: "include",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body)
-        });
+        const res = window.LandmarkSession
+            ? await LandmarkSession.authFetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+              })
+            : await fetch(url, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+              });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.success === false) {
             throw new Error(data.error || data.msg || (`HTTP ${res.status}`));

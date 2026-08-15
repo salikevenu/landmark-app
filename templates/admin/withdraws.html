@@ -27,17 +27,6 @@
 </div>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-const authHeaders = {
-  "Content-Type": "application/json",
-  "Authorization": "Bearer " + token
-};
-
 async function loadWithdraws() {
   const start = document.getElementById("startDate").value;
     const end = document.getElementById("endDate").value;
@@ -47,7 +36,7 @@ async function loadWithdraws() {
     if (end) params.append("end_date", end);
     if (params.toString()) url += "?" + params.toString();
   try {
-    const res = await fetch("/api/admin/withdrawals", { headers: authHeaders });
+    const res = await LandmarkSession.authFetch("/api/admin/withdrawals");
     if (!res.ok) {
       if (res.status === 401) {
         alert("Session expired. Please login again.");
@@ -101,9 +90,9 @@ function getActions(w) {
 async function approveWithdraw(id) {
   if (!confirm("Approve this withdrawal?")) return;
   try {
-    const res = await fetch(`/api/admin/withdrawals/${id}/approve`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/withdrawals/${id}/approve`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadWithdraws();
     else alert("Approval failed");
@@ -113,9 +102,9 @@ async function approveWithdraw(id) {
 async function rejectWithdraw(id) {
   if (!confirm("Reject this withdrawal?")) return;
   try {
-    const res = await fetch(`/api/admin/withdrawals/${id}/reject`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/withdrawals/${id}/reject`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadWithdraws();
     else alert("Rejection failed");
@@ -125,9 +114,9 @@ async function rejectWithdraw(id) {
 async function markPaid(id) {
   if (!confirm("Mark this withdrawal as paid?")) return;
   try {
-    const res = await fetch(`/api/admin/withdrawals/${id}/paid`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/withdrawals/${id}/paid`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadWithdraws();
     else alert("Action failed");

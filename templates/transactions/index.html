@@ -230,15 +230,12 @@
     }
 
     async function apiGet(url) {
-        const token = localStorage.getItem("access_token");
-        const headers = {};
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-        const res = await fetch(url, { credentials: "include", headers });
+        const res = window.LandmarkSession
+            ? await LandmarkSession.authFetch(url)
+            : await fetch(url, { credentials: "include" });
         const data = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-            window.location.href = "/api/auth/public/login";
-            throw new Error("Unauthorized");
-        }
+        if (res.status === 401) throw new Error("Unauthorized");
+        if (res.status === 403) throw new Error(data.error || "Not allowed");
         if (!res.ok || data.success === false) {
             throw new Error(data.error || data.msg || (`HTTP ${res.status}`));
         }

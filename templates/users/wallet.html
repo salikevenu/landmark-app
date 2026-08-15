@@ -221,7 +221,8 @@
   // (All fetch functions remain exactly as they were)
   async function loadWalletOverview() {
     try {
-      const res = await fetch("/api/wallet/overview");
+      const res = await LandmarkSession.authFetch("/api/wallet/overview");
+      if (!res.ok) return;
       const data = await res.json();
       document.getElementById("availableBalance").innerText = data.available_balance || 0;
       document.getElementById("pendingAmount").innerText = '₹' + (data.pending_unlock || 0);
@@ -236,7 +237,8 @@
 
   async function loadTransactions() {
     try {
-      const res = await fetch("/api/wallet/transactions");
+      const res = await LandmarkSession.authFetch("/api/wallet/transactions", { authRedirect: false });
+      if (!res.ok) return;
       const data = await res.json();
       const list = document.getElementById("transactions");
       list.innerHTML = "";
@@ -288,7 +290,7 @@
     }
 
     try {
-      const res = await fetch("/api/withdraw/request", {
+      const res = await LandmarkSession.authFetch("/api/withdraw/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

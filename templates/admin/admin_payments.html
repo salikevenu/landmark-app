@@ -18,21 +18,15 @@
 </table>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-fetch("/api/admin/payments", {
-  headers: { "Authorization": "Bearer " + token }
-})
+fetch("/api/admin/payments", { credentials: "include" })
 .then(res => {
   if (!res.ok) {
     if (res.status === 401) {
-      alert("Session expired. Please login again.");
-      window.location.href = "/api/auth/public/login";
+      window.location.href = "/admin/login";
       throw new Error("Unauthorized");
+    }
+    if (res.status === 403) {
+      throw new Error("Admin access required");
     }
     throw new Error("Failed to load");
   }

@@ -240,12 +240,12 @@
     showToast._timer = setTimeout(() => toast.classList.remove("show"), 1800);
   }
 
-  function getToken() {
-    return localStorage.getItem("access_token");
-  }
-
   function authHeaders(json) {
-    const headers = { "Authorization": `Bearer ${getToken()}` };
+    const headers = {};
+    if (window.LandmarkSession) {
+      const csrf = LandmarkSession.csrfToken();
+      if (csrf) headers["X-CSRF-TOKEN"] = csrf;
+    }
     if (json) headers["Content-Type"] = "application/json";
     return headers;
   }
@@ -343,20 +343,20 @@
       return;
     }
 
-    const token = getToken();
-    if (!token) {
-      showToast("Please login again", true);
-      window.location.href = "/api/auth/public/login";
-      return;
-    }
-
     savingName = true;
     try {
-      const res = await fetch("/api/user/profile/update", {
-        method: "PUT",
-        headers: authHeaders(true),
-        body: JSON.stringify({ name: newName })
-      });
+      const res = window.LandmarkSession
+        ? await LandmarkSession.authFetch("/api/user/profile/update", {
+            method: "PUT",
+            headers: authHeaders(true),
+            body: JSON.stringify({ name: newName })
+          })
+        : await fetch("/api/user/profile/update", {
+            method: "PUT",
+            credentials: "include",
+            headers: authHeaders(true),
+            body: JSON.stringify({ name: newName })
+          });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         showToast(data.error || "Update failed", true);
@@ -403,24 +403,15 @@
   }
 
   async function loadProfile() {
-    const token = getToken();
-    if (!token) {
-      document.getElementById("profileData").innerHTML =
-        `<div class="info-row"><div class="info-label">Please login to view your profile.</div></div>`;
-      window.location.href = "/api/auth/public/login";
-      return;
-    }
-
     try {
-      const response = await fetch("/api/user/profile", {
-        headers: authHeaders(false)
-      });
+      const response = window.LandmarkSession
+        ? await LandmarkSession.authFetch("/api/user/profile/data")
+        : await fetch("/api/user/profile/data", { credentials: "include" });
 
       if (!response.ok) {
         if (response.status === 401) {
-          localStorage.removeItem("access_token");
-          localStorage.removeItem("refresh_token");
-          window.location.href = "/api/auth/public/login";
+          if (window.LandmarkSession) LandmarkSession.redirectToLogin();
+          else window.location.href = "/api/auth/public/login";
           return;
         }
         throw new Error("Failed to fetch profile");

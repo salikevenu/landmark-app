@@ -354,19 +354,17 @@
     });
   }
 
-  const token = localStorage.getItem("access_token");
-  if (!token) {
-    window.location.href = "/api/auth/public/login";
-  }
-
   async function deleteListing(id) {
     if (!confirm("⚠️ Delete this listing permanently? This action cannot be undone.")) return;
     try {
-      const res = await fetch(`/api/listing/delete-listing/${id}`, {
-        method: "DELETE",
-        headers: { "Authorization": `Bearer ${token}` }
+      const res = await LandmarkSession.authFetch(`/api/listing/delete-listing/${id}`, {
+        method: "DELETE"
       });
       const data = await res.json();
+      if (res.status === 403) {
+        alert(data.error || "Not allowed");
+        return;
+      }
       alert(data.message || "Listing deleted successfully");
       location.reload();
     } catch (err) {
@@ -391,9 +389,7 @@
   document.addEventListener("DOMContentLoaded", async () => {
     const container = document.getElementById("listingContainer");
     try {
-      const res = await fetch("/api/listing/my-listings-data", {
-        headers: { "Authorization": `Bearer ${token}` }
-      });
+      const res = await LandmarkSession.authFetch("/api/listing/my-listings-data");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 

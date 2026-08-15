@@ -47,17 +47,6 @@
 </div>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-const authHeaders = {
-  "Content-Type": "application/json",
-  "Authorization": "Bearer " + token
-};
-
 async function loadUsers() {
   const search = document.getElementById("searchInput").value.trim();
   const role = document.getElementById("roleFilter").value;
@@ -69,11 +58,11 @@ async function loadUsers() {
   if (params.toString()) url += "?" + params.toString();
 
   try {
-    const res = await fetch(url, { headers: authHeaders });
+    const res = await LandmarkSession.authFetch(url);
     if (!res.ok) {
-      if (res.status === 401) {
-        alert("Session expired. Please login again.");
-        window.location.href = "/admin/login";
+      if (res.status === 401) return;
+      if (res.status === 403) {
+        alert("Admin access required");
         return;
       }
       throw new Error("Failed to load");
@@ -117,9 +106,9 @@ async function loadUsers() {
 async function toggleUser(userId) {
   if (!confirm("Change user status?")) return;
   try {
-    const res = await fetch(`/api/admin/users/${userId}/ban`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/ban`, {
       method: "POST",
-      headers: authHeaders
+      headers: { "Content-Type": "application/json" }
     });
     if (res.ok) loadUsers();
     else alert("Action failed");
@@ -129,9 +118,8 @@ async function toggleUser(userId) {
 async function deleteUser(userId) {
   if (!confirm("Delete this user permanently?")) return;
   try {
-    const res = await fetch(`/api/admin/users/${userId}/delete`, {
-      method: "DELETE",
-      headers: authHeaders
+    const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/delete`, {
+      method: "DELETE"
     });
     if (res.ok) loadUsers();
     else alert("Delete failed");
@@ -140,13 +128,10 @@ async function deleteUser(userId) {
 
 async function viewAsUser(userId) {
     try {
-        const res = await fetch(`/api/admin/users/${userId}/impersonate`, {
-            method: "POST",
-            headers: { "Authorization": "Bearer " + token }
+        const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/impersonate`, {
+            method: "POST"
         });
         if (!res.ok) throw new Error("Failed");
-        const data = await res.json();
-        localStorage.setItem("impersonated_token", data.access_token);
         window.open("/api/user/dashboard", "_blank");
     } catch (err) {
         alert("Impersonation failed");
@@ -154,9 +139,7 @@ async function viewAsUser(userId) {
 }
 
 async function showReferralTree(userId) {
-    const res = await fetch(`/api/admin/users/${userId}/referral-tree`, {
-        headers: { "Authorization": "Bearer " + token }
-    });
+    const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/referral-tree`);
     const data = await res.json();
 
     let html = `<p><strong>User:</strong> ${data.user.phone} (${data.user.name || ''})</p>`;

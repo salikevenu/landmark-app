@@ -24,6 +24,9 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 
+    <!-- Canonical session helper (cookie JWT; do not use localStorage for tokens) -->
+    <script src="{{ url_for('static', filename='js/session.js') }}"></script>
+
     <!-- Razorpay -->
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 
@@ -512,7 +515,7 @@
             <a href="/api/user/profile" title="{{ _('profile') }}">👤 {{ _('profile') }}</a>
             <a href="/transactions" title="{{ _('transactions') }}">🧾 {{ _('transactions') }}</a>
             <a href="/pricing" title="{{ _('upgrade') }}">⭐ {{ _('upgrade') }}</a>
-            <a href="/api/auth/logout" id="logoutLink" title="{{ _('logout') }}">🚪 {{ _('logout') }}</a>
+            <a href="/logout" id="logoutLink" title="{{ _('logout') }}">🚪 {{ _('logout') }}</a>
         </aside>
 
         <!-- MAIN CONTENT -->
@@ -579,10 +582,8 @@
         // Logout
         const logoutLink = document.getElementById('logoutLink');
         if (logoutLink) {
-          logoutLink.addEventListener('click', function(e) {
-            // Let the browser navigate to the href normally
-            localStorage.removeItem('access_token');
-            localStorage.removeItem('refresh_token');
+          logoutLink.addEventListener('click', function() {
+            if (window.LandmarkSession) LandmarkSession.clearLegacyClientTokens();
           });
         }
 
@@ -604,7 +605,10 @@
           const lang = this.value;
           fetch('/set-language', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            headers: window.LandmarkSession
+              ? { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': LandmarkSession.csrfToken() }
+              : { 'Content-Type': 'application/json' },
             body: JSON.stringify({ lang: lang })
           }).then(() => location.reload());
         });
@@ -648,8 +652,10 @@
 
         function authHeaders(json) {
           const h = {};
-          const token = localStorage.getItem('access_token');
-          if (token) h['Authorization'] = 'Bearer ' + token;
+          if (window.LandmarkSession) {
+            const csrf = LandmarkSession.csrfToken();
+            if (csrf) h['X-CSRF-TOKEN'] = csrf;
+          }
           if (json) h['Content-Type'] = 'application/json';
           return h;
         }
@@ -724,28 +730,18 @@
         }
 
         async function loadProfile() {
-          const token = localStorage.getItem('access_token');
-          if (!token) {
-            renderUser({ name: 'User', plan: 'free', avatar_url: '' });
-            return;
-          }
           try {
-            const res = await fetch('/api/user/profile/data', { headers: authHeaders(false), credentials: 'include' });
-            if (!res.ok) throw new Error('profile fetch failed');
+            const res = window.LandmarkSession
+              ? await LandmarkSession.authFetch('/api/user/profile/data', { authRedirect: false })
+              : await fetch('/api/user/profile/data', { credentials: 'include' });
+            if (!res.ok) {
+              renderUser({ name: 'User', plan: 'free', avatar_url: '' });
+              return;
+            }
             const data = await res.json();
             renderUser(data);
           } catch (e) {
-            try {
-              const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-              renderUser({
-                name: payload.name || 'User',
-                plan: payload.plan || payload.role || 'free',
-                role: payload.role,
-                avatar_url: ''
-              });
-            } catch (_) {
-              renderUser({ name: 'User', plan: 'free', avatar_url: '' });
-            }
+            renderUser({ name: 'User', plan: 'free', avatar_url: '' });
           }
         }
 
@@ -756,10 +752,9 @@
             return;
           }
           try {
-            const res = await fetch('/api/user/profile/update', {
+            const res = await LandmarkSession.authFetch('/api/user/profile/update', {
               method: 'PUT',
               headers: authHeaders(true),
-              credentials: 'include',
               body: JSON.stringify({ name: name })
             });
             const data = await res.json().catch(() => ({}));
@@ -781,10 +776,9 @@
           const fd = new FormData();
           fd.append('avatar', file);
           try {
-            const res = await fetch('/api/user/profile/avatar', {
+            const res = await LandmarkSession.authFetch('/api/user/profile/avatar', {
               method: 'POST',
               headers: authHeaders(false),
-              credentials: 'include',
               body: fd
             });
             const data = await res.json().catch(() => ({}));
@@ -846,8 +840,7 @@
 
         if (headerLogout) {
           headerLogout.addEventListener('click', function() {
-            localStorage.removeItem('access_token');
-            localStorage.removeItem('refresh_token');
+            if (window.LandmarkSession) LandmarkSession.clearLegacyClientTokens();
           });
         }
 

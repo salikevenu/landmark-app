@@ -29,99 +29,64 @@
 </div>
 
 
-<script src="/static/js/auth.js">
-
+<script>
 const listingId = window.location.pathname.split("/").pop();
 
-
 document.addEventListener("DOMContentLoaded", function(){
-
-const token = localStorage.getItem("token");
-
-if(!token){
-alert("Please login first");
-window.location.href="/login";
-return;
-}
-
-fetch(`/api/listing/${listingId}`,{
-headers:{
-"Authorization":"Bearer " + token
-}
-})
-.then(res=>res.json())
-.then(data=>{
-
-document.getElementById("business_name").value = data.business_name || "";
-document.getElementById("category").value = data.category || "";
-document.getElementById("city").value = data.city || "";
-document.getElementById("state").value = data.state || "";
-document.getElementById("description").value = data.description || "";
-
+  LandmarkSession.authFetch(`/api/listing/listing/${listingId}`)
+    .then(res => res.json())
+    .then(data => {
+      document.getElementById("business_name").value = data.business_name || "";
+      document.getElementById("category").value = data.category || "";
+      document.getElementById("city").value = data.city || "";
+      document.getElementById("state").value = data.state || "";
+      document.getElementById("description").value = data.description || "";
+    })
+    .catch(() => {
+      document.getElementById("statusMessage").innerText = "Unable to load listing.";
+    });
 });
-
-});
-
 
 function updateListing(){
+  const business_name = document.getElementById("business_name").value.trim();
+  const category = document.getElementById("category").value.trim();
+  const city = document.getElementById("city").value.trim();
+  const state = document.getElementById("state").value.trim();
+  const description = document.getElementById("description").value.trim();
+  const status = document.getElementById("statusMessage");
 
-const token = localStorage.getItem("token");
+  if(!business_name || !category){
+    status.innerText = "Business name and category are required.";
+    return;
+  }
 
-const business_name = document.getElementById("business_name").value.trim();
-const category = document.getElementById("category").value.trim();
-const city = document.getElementById("city").value.trim();
-const state = document.getElementById("state").value.trim();
-const description = document.getElementById("description").value.trim();
-
-const status = document.getElementById("statusMessage");
-
-if(!business_name || !category){
-
-status.innerText = "Business name and category are required.";
-return;
-
+  LandmarkSession.authFetch(`/api/listing/update-listing/${listingId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      business_name,
+      category,
+      city,
+      state,
+      description
+    })
+  })
+  .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
+  .then(({ ok, status: http, data }) => {
+    if (http === 403) {
+      status.innerText = data.error || "Not allowed";
+      return;
+    }
+    if (ok) {
+      status.innerText = data.message || "Listing updated";
+    } else {
+      status.innerText = data.error || "Update failed";
+    }
+  })
+  .catch(() => {
+    status.innerText = "Network error";
+  });
 }
-
-fetch(`/api/update-listing/${listingId}`,{
-
-method:"PUT",
-
-headers:{
-"Content-Type":"application/json",
-"Authorization":"Bearer " + token
-},
-
-body:JSON.stringify({
-business_name,
-category,
-city,
-state,
-description
-})
-
-})
-.then(res=>res.json())
-.then(data=>{
-
-status.innerText = data.message || data.error;
-
-if(data.message){
-
-setTimeout(function(){
-window.location.href="/my-listings";
-},800);
-
-}
-
-})
-.catch(()=>{
-
-status.innerText="Update failed.";
-
-});
-
-}
-
 </script>
 
 {% endblock %}

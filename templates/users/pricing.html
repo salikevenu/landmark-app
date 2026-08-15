@@ -104,12 +104,27 @@
     return match ? decodeURIComponent(match.pop()) : '';
   }
 
+  function paymentHeaders() {
+    const headers = {
+      "Content-Type": "application/json"
+    };
+    const csrf = window.LandmarkSession
+      ? LandmarkSession.csrfToken()
+      : (function() {
+          const match = document.cookie.match('(^|;)\\s*csrf_access_token\\s*=\\s*([^;]+)');
+          return match ? decodeURIComponent(match.pop()) : '';
+        })();
+    if (csrf) headers["X-CSRF-TOKEN"] = csrf;
+    return headers;
+  }
+
   async function loadPlans() {
     // Fetch current user role from subscription-status endpoint
     let userRole = "free";
     try {
       const res = await fetch("/api/user/subscription-status", {
-        credentials: "include"
+        credentials: "include",
+        headers: paymentHeaders()
       });
       if (res.ok) {
         const data = await res.json();
@@ -152,10 +167,7 @@
     try {
       const res = await fetch("/api/payment/create-order", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-TOKEN": getCookie("csrf_access_token")
-        },
+        headers: paymentHeaders(),
         credentials: "include",
         body: JSON.stringify({
           plan: planName
@@ -182,22 +194,18 @@
           try {
             const verifyRes = await fetch("/api/payment/verify-payment", {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-CSRF-TOKEN": getCookie("csrf_access_token")
-              },
+              headers: paymentHeaders(),
               credentials: "include",
               body: JSON.stringify({
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
-                razorpay_signature: response.razorpay_signature,
-                plan: planName
+                razorpay_signature: response.razorpay_signature
               })
             });
 
             const verifyData = await verifyRes.json();
 
-            if (verifyData.success) {
+            if (verifyRes.ok && verifyData.success) {
               alert(verifyData.message || "Payment successful!");
               window.location.href = verifyData.redirect || "/dashboard";
             } else {

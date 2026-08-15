@@ -317,53 +317,23 @@
   </div>
 </div>
 
-<!-- ===== SCRIPTS (keep your auth logic) ===== -->
+<!-- ===== SCRIPTS ===== -->
 <script>
-  function getAccessToken() { return localStorage.getItem("access_token"); }
-  function getRefreshToken() { return localStorage.getItem("refresh_token"); }
-
-  function redirectToLogin() {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    window.location.href = "/api/auth/public/login";
-  }
-
   async function authFetch(url, options = {}) {
-    const token = getAccessToken();
-    if (!token) {
-      redirectToLogin();
-      throw new Error("No token");
+    if (window.LandmarkSession) {
+      return LandmarkSession.authFetch(url, options);
     }
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-      ...options.headers
-    };
-    const response = await fetch(url, { ...options, headers });
-    if (response.status === 401) {
-      const refresh = getRefreshToken();
-      if (refresh) {
-        const refreshRes = await fetch("/api/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: refresh })
-        });
-        if (refreshRes.ok) {
-          const newData = await refreshRes.json();
-          localStorage.setItem("access_token", newData.access_token);
-          return authFetch(url, options);
-        }
-      }
-      redirectToLogin();
-      throw new Error("Unauthorized");
-    }
-    return response;
+    return fetch(url, Object.assign({ credentials: "include" }, options));
   }
 
   async function loadWallet() {
     try {
       let balance = 0, referralEarn = 0;
-      const res = await authFetch("/api/payment/wallet");
+      const res = await authFetch("/api/payment/wallet", { authRedirect: false });
+      if (res.status === 401) {
+        if (window.LandmarkSession) LandmarkSession.redirectToLogin();
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         balance = data.wallet_balance || data.balance || 0;
@@ -377,16 +347,13 @@
     }
   }
 
-  // Global logout (if needed by sidebar)
   window.logout = function() {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    window.location.href = "/api/auth/public/login";
+    if (window.LandmarkSession) LandmarkSession.clearLegacyClientTokens();
+    window.location.href = "/logout";
   };
 
   document.addEventListener("DOMContentLoaded", () => {
-    if (!getAccessToken()) redirectToLogin();
-    else loadWallet();
+    loadWallet();
   });
 </script>
 

@@ -22,26 +22,11 @@
 </div>
 
 <script>
-const token = localStorage.getItem("access_token");
-if (!token) {
-  alert("Admin login required");
-  window.location.href = "/admin/login";
-}
-
-const authHeaders = {
-  "Content-Type": "application/json",
-  "Authorization": "Bearer " + token
-};
-
 async function loadReferrals() {
   try {
-    const res = await fetch("/api/admin/referrals", { headers: authHeaders });
+    const res = await LandmarkSession.authFetch("/api/admin/referrals");
     if (!res.ok) {
-      if (res.status === 401) {
-        alert("Session expired. Please login again.");
-        window.location.href = "/api/auth/public/login";
-        return;
-      }
+      if (res.status === 401) return;
       throw new Error("Failed to load");
     }
 

@@ -22,15 +22,18 @@
 
 
 <script>
-    // Clear JWT tokens (the ones used in your app)
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    // Optional: clear any other old keys
-    localStorage.removeItem("user");
-    localStorage.removeItem("token");
-    localStorage.removeItem("role");
+    if (window.LandmarkSession) LandmarkSession.clearLegacyClientTokens();
+    else {
+        try {
+            localStorage.removeItem("access_token");
+            localStorage.removeItem("refresh_token");
+            localStorage.removeItem("user");
+            localStorage.removeItem("token");
+            localStorage.removeItem("role");
+            localStorage.removeItem("impersonated_token");
+        } catch (e) {}
+    }
 
-    // Redirect to login page after a short delay
     setTimeout(function(){
         window.location.href = "/api/auth/public/login";
     }, 2000);

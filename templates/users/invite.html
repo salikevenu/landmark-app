@@ -213,15 +213,8 @@
   }
 
   async function loadReferral() {
-    const token = localStorage.getItem("access_token");
-    if (!token) {
-      window.location.href = "/api/auth/public/login";
-      return;
-    }
     try {
-      const res = await fetch("/api/user/api/invite", {
-        headers: { "Authorization": "Bearer " + token }
-      });
+      const res = await LandmarkSession.authFetch("/api/user/api/invite");
       const data = await res.json();
       if (data.referral_code) {
         linkInput.value = window.location.origin + "/register?ref=" + data.referral_code;
