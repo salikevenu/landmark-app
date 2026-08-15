@@ -18,7 +18,7 @@ class MessageCentralSMS:
         self.customer_id = os.environ.get('MESSAGE_CENTRAL_CUSTOMER_ID')
         self.auth_token = os.environ.get('MESSAGE_CENTRAL_AUTH_TOKEN')
         self.country = os.environ.get('MESSAGE_CENTRAL_COUNTRY', '91')
-        self.debug_mode = os.environ.get('DEBUG_SMS', 'False').lower() == 'true'
+        self.debug_mode = os.getenv('DEBUG_SMS', 'false').lower() == 'true'
         
         # ✅ Fail fast if required environment variables are missing
         if not self.customer_id:
@@ -125,6 +125,7 @@ class MessageCentralSMS:
             }
 
             response = self.session.get(url, params=params, headers=headers, timeout=20)
+            logger.info(f"Raw response from Message Central: {response.text}")
 
             safe_headers = dict(response.request.headers)
             if "authToken" in safe_headers:
