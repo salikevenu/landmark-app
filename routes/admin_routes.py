@@ -1,7 +1,7 @@
 import io
 import os
-from flask import Blueprint, jsonify, render_template, request, send_file, redirect
-from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token
+from flask import Blueprint, jsonify, render_template, request, send_file, redirect, make_response
+from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token, set_access_cookies
 from database.init_db import get_db_connection
 from functools import wraps
 from datetime import timedelta, datetime
@@ -411,7 +411,13 @@ def impersonate_user(user_id):
         },
         expires_delta=timedelta(minutes=10)
     )
-    return jsonify({"access_token": token, "phone": user._mapping["phone"]})
+    resp = make_response(jsonify({
+        "success": True,
+        "phone": user._mapping["phone"],
+        "redirect": "/api/user/dashboard",
+    }))
+    set_access_cookies(resp, token, max_age=600)
+    return resp
 
 @admin_bp.route("/api/admin/stats/chart")
 @admin_required
@@ -539,7 +545,8 @@ def verify_referral(ref_id):
         return jsonify({"message": "Referral verified and rewards credited"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("verify_referral error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # ============================
@@ -585,7 +592,8 @@ def mark_withdraw_paid_with_flag(wid):
         return jsonify({"message": "Withdrawal marked as paid"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("mark_withdraw_paid_with_flag error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # ============================
@@ -641,7 +649,8 @@ def run_withdrawal_policy_migration():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("run_withdrawal_policy_migration error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
     
 @admin_bp.route("/api/send-sms", methods=["POST"])
 @jwt_required()
@@ -700,7 +709,7 @@ def send_otp():
             return jsonify({
                 "success": True,
                 "message": "OTP sent",
-                "otp": otp if os.getenv('DEBUG_SMS') == 'True' else None
+                "otp": otp if os.getenv('DEBUG_SMS', 'false').lower() == 'true' else None
             }), 200
         else:
             return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
@@ -757,23 +766,15 @@ def test_sms_ui():
                 result.className = '';
                 
                 try {
-                    const token = localStorage.getItem('access_token');
-                    
-                    if (!token) {
-                        result.innerHTML = '❌ Please login first. No JWT token found.';
-                        result.className = 'error';
-                        return;
-                    }
-                    
                     const phone = document.getElementById('phone').value;
                     const formattedPhone = phone.replace(/[^0-9]/g, '');
-                    
-                    const response = await fetch('/api/send-sms', {
+                    const fetchFn = window.LandmarkSession ? LandmarkSession.authFetch.bind(LandmarkSession) : fetch;
+                    const response = await fetchFn('/api/send-sms', {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
+                            'Content-Type': 'application/json'
                         },
+                        credentials: 'include',
                         body: JSON.stringify({
                             phone: formattedPhone,
                             message: document.getElementById('message').value

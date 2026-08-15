@@ -7,9 +7,12 @@ from time import time
 import razorpay
 import os
 import secrets
+import logging
 from routes.decorators import requires_active_plan
+from services.subscription_access import is_subscription_active
 
 user_bp = Blueprint("user", __name__)
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------
 # Razorpay client (uses environment variables from .env)
@@ -95,7 +98,8 @@ def profile():
                 return jsonify({"error": "User not found"}), 404
             return jsonify(_profile_payload(user)), 200
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.exception("profile error")
+            return jsonify({"error": "Something went wrong. Please try again."}), 500
 
     return render_template("users/profile.html", role="", plan="")
 
@@ -111,7 +115,8 @@ def profile_data():
             return jsonify({"error": "User not found"}), 404
         return jsonify(_profile_payload(user)), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("profile_data error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 @user_bp.route("/profile/update", methods=["PUT"])
@@ -138,7 +143,8 @@ def update_profile():
             return jsonify({"error": "User not found"}), 404
         return jsonify({"message": "Name updated successfully", "name": name}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("update_profile error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 @user_bp.route("/profile/avatar", methods=["POST"])
@@ -193,7 +199,8 @@ def upload_profile_avatar():
             "avatar_url": avatar_url,
         }), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("upload_profile_avatar error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 @user_bp.route("/logout", methods=["POST"])
@@ -211,101 +218,48 @@ PLAN_DETAILS = {
 }
 
 # ------------------------------------------------------------
-# VERIFY PAYMENT
+# VERIFY PAYMENT (legacy URL — canonical flow is /api/payment/verify-payment)
 # ------------------------------------------------------------
 @user_bp.route("/verify-payment", methods=["POST"])
 @jwt_required()
 def verify_payment():
     user_id = get_jwt_identity()
-    data = request.get_json()
-    payment_id = data.get("razorpay_payment_id")
-    order_id = data.get("razorpay_order_id")
-    signature = data.get("razorpay_signature")
+    data = request.get_json(silent=True) or {}
     plan_type = data.get("plan")
 
-    if not all([payment_id, order_id, signature, plan_type]):
-        return jsonify({"error": "Missing payment details"}), 400
-    if plan_type not in PLAN_DETAILS:
-        return jsonify({"error": "Invalid plan"}), 400
-
-    plan_info = PLAN_DETAILS[plan_type]
-
-    # Verify signature
-    params = {
-        "razorpay_order_id": order_id,
-        "razorpay_payment_id": payment_id,
-        "razorpay_signature": signature
-    }
-    try:
-        razor_client.utility.verify_payment_signature(params)
-    except razorpay.errors.SignatureVerificationError:
-        return jsonify({"error": "Invalid payment signature"}), 400
-
-    conn = get_db_connection()
-
-    # ----- Extra business purchase -----
+    # extra_business is not on /pricing; keep the existing slot purchase path
     if plan_type == "extra_business":
+        payment_id = data.get("razorpay_payment_id")
+        order_id = data.get("razorpay_order_id")
+        signature = data.get("razorpay_signature")
+        if not all([payment_id, order_id, signature]):
+            return jsonify({"success": False, "error": "Missing payment details"}), 400
+        params = {
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": signature,
+        }
+        try:
+            razor_client.utility.verify_payment_signature(params)
+        except razorpay.errors.SignatureVerificationError:
+            return jsonify({"success": False, "error": "Invalid payment signature"}), 400
+        conn = get_db_connection()
         conn.execute(
             text("UPDATE users SET extra_businesses_purchased = extra_businesses_purchased + 1 WHERE id = :uid"),
-            {"uid": user_id}
+            {"uid": user_id},
         )
         conn.commit()
-        return jsonify({"message": "Extra business slot purchased successfully", "redirect": "/create-listing"})
+        return jsonify({
+            "success": True,
+            "message": "Extra business slot purchased successfully",
+            "redirect": "/create-listing",
+        })
 
-    # ----- Normal plan upgrade -----
-    expiry_date = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
-    if plan_type == "service":
-        business_limit = 0
-    elif plan_type == "basic":
-        business_limit = 1
-    elif plan_type == "premium":
-        business_limit = 3
-    else:
-        business_limit = 0
-
-    conn.execute(
-        text("UPDATE users SET role = :role, plan = :plan, subscription_expiry = :expiry, business_limit = :blimit WHERE id = :uid"),
-        {
-            "role": plan_info["role"],
-            "plan": plan_info["plan"],
-            "expiry": expiry_date,
-            "blimit": business_limit,
-            "uid": user_id
-        }
-    )
-    conn.commit()
-
-    # Process referral commission
-    from services.referral_commission import process_referral_commission
-    process_referral_commission(user_id, plan_info["amount"] / 100)
-
-    # Record transaction
-    conn.execute(text("""
-        INSERT INTO payment_transactions 
-        (user_id, razorpay_order_id, razorpay_payment_id, amount, status) 
-        VALUES (:uid, :order_id, :payment_id, :amount, :status)
-    """), {
-        "uid": user_id,
-        "order_id": order_id,
-        "payment_id": payment_id,
-        "amount": plan_info["amount"],
-        "status": "captured"
-    })
-    conn.commit()
-
-    # Generate new JWT with updated role
-    user = get_user_by_id(user_id)
-    user_phone = user["phone"] if user else ""
-    new_token = create_access_token(
-        identity=str(user_id),
-        additional_claims={"role": plan_info["role"], "phone": user_phone}
-    )
-
-    return jsonify({
-        "message": "Payment successful, plan upgraded",
-        "access_token": new_token,
-        "redirect": "/dashboard"
-    }), 200
+    from services.payment_service import verify_payment_service
+    result = verify_payment_service(data, user_id)
+    http = 200 if result.get("success") else result.pop("_http", 400)
+    result.pop("_http", None)
+    return jsonify(result), http
 
 # ------------------------------------------------------------
 # Protected pages
@@ -315,7 +269,7 @@ def user_dashboard():
     return render_template("users/dashboard.html", wallet=0, user=None)
 
 @user_bp.route('/create-listing')
-@requires_active_plan('business_basic', 'business_premium')
+@requires_active_plan('service_provider', 'business_basic', 'business_premium')
 def create_listing():
     user_id = get_jwt_identity()
     db = get_db_connection()
@@ -416,7 +370,8 @@ def api_browse():
             "has_more": len(rows) == limit
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.exception("browse listings error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 # ------------------------------------------------------------
 # Invite & referral
@@ -487,25 +442,14 @@ def subscription_status():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    expiry_str = user._mapping["subscription_expiry"]
-    is_active = False
-    if expiry_str:
-        try:
-            expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-            if expiry_date >= date.today():
-                is_active = True
-        except (ValueError, TypeError):
-            pass
-
-    role = user._mapping["role"]
-    plan = user._mapping["plan"]
-    allowed_roles = ["service_provider", "business_basic", "business_premium"]
-    can_create = (role in allowed_roles and is_active)
+    user_dict = dict(user._mapping)
+    is_active = is_subscription_active(user_dict)
+    can_create = is_active
 
     return jsonify({
         "can_create_listing": can_create,
-        "role": role,
-        "plan": plan,
+        "role": user_dict.get("role"),
+        "plan": user_dict.get("plan"),
         "subscription_active": is_active
     })
 

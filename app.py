@@ -97,6 +97,7 @@ _boot("MasterAgent disabled")
 
 # ==================== APP CONFIGURATION ====================
 _boot("app.config / secret_key")
+_cookie_secure = os.getenv("RENDER") == "true"
 app.config.update(
     SEND_FILE_MAX_AGE_DEFAULT=0,
     TEMPLATES_AUTO_RELOAD=True,
@@ -106,23 +107,42 @@ app.config.update(
     JWT_ACCESS_TOKEN_EXPIRES=timedelta(minutes=15),
     JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=7),
     JWT_TOKEN_LOCATION=["cookies", "headers"],
-    JWT_COOKIE_SECURE=True,
+    JWT_COOKIE_SECURE=_cookie_secure,
+    JWT_COOKIE_SAMESITE="Lax",
+    JWT_COOKIE_HTTPONLY=True,
     JWT_COOKIE_CSRF_PROTECT=True,
     JWT_ACCESS_COOKIE_PATH="/",
     JWT_ACCESS_COOKIE_NAME="access_token",
     JWT_REFRESH_COOKIE_NAME="refresh_token",
-    JWT_REFRESH_COOKIE_PATH="/token/refresh",
+    JWT_REFRESH_COOKIE_PATH="/api/refresh",
+    JWT_ACCESS_CSRF_COOKIE_NAME="csrf_access_token",
+    JWT_REFRESH_CSRF_COOKIE_NAME="csrf_refresh_token",
+    JWT_ACCESS_CSRF_COOKIE_PATH="/",
+    JWT_REFRESH_CSRF_COOKIE_PATH="/",
 )
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365 * 10)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SECURE'] = _cookie_secure
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 app.secret_key = os.getenv("SECRET_KEY", "landmark-super-secret-change-me")
 
-# CORS
+# CORS — explicit origin allowlist (credentialed cookies). Override via ALLOWED_ORIGINS.
 _boot("CORS")
-CORS(app, supports_credentials=True)
+_default_cors_origins = (
+    "https://landmarkvts.in,"
+    "https://www.landmarkvts.in,"
+    "http://localhost:8000,"
+    "http://localhost:10000,"
+    "http://127.0.0.1:8000,"
+    "http://127.0.0.1:10000"
+)
+_allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", _default_cors_origins).split(",")
+    if origin.strip()
+]
+CORS(app, supports_credentials=True, origins=_allowed_origins)
 
 # ==================== EXTENSIONS (ONLY ONCE) ====================
 _boot("init_extensions (DummyLimiter + Razorpay client object only)")
@@ -132,6 +152,28 @@ _boot("init_extensions done")
 # ==================== JWT ====================
 _boot("JWTManager")
 jwt = JWTManager(app)
+
+def _wants_html_login_redirect():
+    accept = request.headers.get("Accept") or ""
+    return request.method == "GET" and "text/html" in accept
+
+@jwt.unauthorized_loader
+def _jwt_missing(reason):
+    if _wants_html_login_redirect():
+        return redirect("/api/auth/public/login")
+    return jsonify({"success": False, "error": "Authentication required"}), 401
+
+@jwt.expired_token_loader
+def _jwt_expired(jwt_header, jwt_payload):
+    if _wants_html_login_redirect():
+        return redirect("/api/auth/public/login")
+    return jsonify({"success": False, "error": "Session expired"}), 401
+
+@jwt.invalid_token_loader
+def _jwt_invalid(reason):
+    if _wants_html_login_redirect():
+        return redirect("/api/auth/public/login")
+    return jsonify({"success": False, "error": "Invalid session"}), 401
 
 # ==================== REGISTER ROUTES ====================
 _boot("import routes / register_routes")
@@ -203,16 +245,7 @@ def execute_query(query, params=None, fetchone=False, fetchall=False, commit=Fal
         elif fetchall: return result.fetchall()
     return None
 
-def is_subscription_active(user_dict):
-    plan = user_dict.get("plan", "free")
-    if plan == "free": return True
-    expiry_str = user_dict.get("subscription_expiry")
-    if not expiry_str: return False
-    try:
-        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
-        return expiry_date >= datetime.utcnow()
-    except:
-        return False
+from services.subscription_access import legacy_add_business_gone
 
 def _execute_payout():
     from database.init_db import get_db_connection
@@ -347,9 +380,32 @@ def readiness():
 @app.route("/api/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh():
+    from flask_jwt_extended import get_jwt
     current_user_id = get_jwt_identity()
-    new_access_token = create_access_token(identity=current_user_id)
-    return jsonify(access_token=new_access_token)
+    remember_me = bool(get_jwt().get("remember_me"))
+    role = "free"
+    phone = ""
+    try:
+        from database.init_db import get_db_connection
+        with get_db_connection() as conn:
+            row = conn.execute(
+                text("SELECT role, phone FROM users WHERE id = :uid"),
+                {"uid": current_user_id},
+            ).fetchone()
+            if row:
+                role = row._mapping.get("role") or "free"
+                phone = row._mapping.get("phone") or ""
+    except Exception:
+        pass
+    access_expires = timedelta(days=30) if remember_me else timedelta(minutes=15)
+    new_access_token = create_access_token(
+        identity=str(current_user_id),
+        additional_claims={"role": role, "phone": phone, "remember_me": remember_me},
+        expires_delta=access_expires,
+    )
+    response = jsonify({"success": True})
+    set_access_cookies(response, new_access_token, max_age=int(access_expires.total_seconds()))
+    return response
 
 @app.route('/download-app')
 def download_app():
@@ -374,28 +430,11 @@ def generate_qr(referral_code):
 @app.route("/api/add-business", methods=["POST"])
 @jwt_required()
 def api_add_business():
-    from database.init_db import get_db_connection
-    user_id = get_jwt_identity()
-    with get_db_connection() as conn:
-        user = conn.execute(text("SELECT * FROM users WHERE id = :uid"), {"uid": user_id}).fetchone()
-        if not user: return jsonify({"error": "User not found"}), 404
-        user_dict = dict(user._mapping)
-        if user_dict["plan"] == "free":
-            return jsonify({"error": "This feature requires a paid plan. Please upgrade."}), 403
-        if not is_subscription_active(user_dict):
-            return jsonify({"error": "Your plan has expired. Please upgrade."}), 403
-        if user_dict["role"] != "business_owner":
-            return jsonify({"error": "Only business users can add businesses."}), 403
-        count_result = conn.execute(text("SELECT COUNT(*) as cnt FROM businesses WHERE user_id = :uid"), {"uid": user_id}).fetchone()
-        count = count_result._mapping["cnt"]
-        if count >= user_dict.get("business_limit", 0):
-            return jsonify({"error": "Business limit reached. Upgrade your plan."}), 403
-        name = request.json.get("name") if request.is_json else request.form.get("name")
-        if not name:
-            return jsonify({"error": "Business name required"}), 400
-        conn.execute(text("INSERT INTO businesses (user_id, name) VALUES (:uid, :name)"), {"uid": user_id, "name": name})
-        conn.commit()
-    return jsonify({"message": "Business added successfully"}), 201
+    # Legacy: wrote to `businesses`, inverted free-plan check, unused by current listing UI.
+    # Disabled (410) so unpaid users cannot bypass canonical listing authorization.
+    # Canonical path: POST /api/listing/create-listing
+    body, code = legacy_add_business_gone()
+    return jsonify(body), code
 
 @app.route("/api/wallet/overview")
 @jwt_required()
@@ -420,8 +459,12 @@ def saturday_payout():
     return jsonify({"released": released}), 200
 
 @app.route('/api/payment/webhook', methods=['POST'])
-def razorpay_webhook():
-    return {'status': 'ok'}, 200
+def razorpay_webhook_dummy():
+    """Unsigned path. Must not activate subscriptions or record payments."""
+    return jsonify({
+        "success": False,
+        "error": "Use the signed webhook at /api/payment/razorpay/webhook",
+    }), 403
 
 @app.route('/favicon.ico')
 def favicon():
@@ -442,7 +485,7 @@ def handle_exception(e):
     if isinstance(e, HTTPException):
         return e.get_response()
     logger.error(traceback.format_exc())
-    return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 from middleware.security_headers import add_security_headers
 add_security_headers(app)

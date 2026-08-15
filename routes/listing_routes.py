@@ -1,7 +1,6 @@
 import os
 import time
 import traceback
-from datetime import datetime
 
 from flask import Blueprint, request, jsonify, render_template, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
@@ -11,6 +10,7 @@ from sqlalchemy import text
 
 from database.init_db import get_db_connection
 from services.listing_service import add_review_service, get_reviews_service
+from services.subscription_access import is_subscription_active
 import logging
 logger = logging.getLogger(__name__)
 # ---------- Custom role‑required decorator (JWT) ----------
@@ -28,21 +28,18 @@ def role_required(required_roles):
 # -----------------------------------------------------------
 listing_bp = Blueprint("listing", __name__)
 
-# =========================
-# HELPER: subscription check (consistent with app.py)
-# =========================
-def is_subscription_active(user_row):
-    plan = user_row.get("plan", "free")
-    if plan == "free":
-        return False
-    expiry_str = user_row.get("subscription_expiry")
-    if not expiry_str:
-        return False
-    try:
-        expiry = datetime.strptime(expiry_str, "%Y-%m-%d")
-        return expiry >= datetime.utcnow()
-    except:
-        return False
+ALLOWED_LISTING_IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
+ALLOWED_LISTING_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+ALLOWED_LISTING_VIDEO_EXTS = {"mp4", "mov"}
+ALLOWED_LISTING_VIDEO_MIMES = {"video/mp4", "video/quicktime"}
+
+
+def _listing_upload_allowed(file_storage, allowed_exts, allowed_mimes):
+    """Extension + MIME allowlist (same idea as avatar upload; MIME added here)."""
+    filename = secure_filename(file_storage.filename or "")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    mime = (file_storage.mimetype or "").split(";")[0].strip().lower()
+    return ext in allowed_exts and mime in allowed_mimes
 
 # =========================
 # CREATE LISTING API
@@ -125,6 +122,11 @@ def api_create_listing():
         images = request.files.getlist("images")
         for img in images:
             if img and img.filename:
+                if not _listing_upload_allowed(img, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
+                    return jsonify({
+                        "success": False,
+                        "error": "Invalid image type. Use jpg, jpeg, png, or webp"
+                    }), 400
                 filename = f"{int(time.time()*1000)}_{secure_filename(img.filename)}"
                 path = os.path.join(upload_dir, filename)
                 img.save(path)
@@ -136,9 +138,14 @@ def api_create_listing():
                     "type": "shop"
                 })
 
-        # Optional video
+        # Optional video (mp4 / mov)
         video = request.files.get("video")
         if video and video.filename:
+            if not _listing_upload_allowed(video, ALLOWED_LISTING_VIDEO_EXTS, ALLOWED_LISTING_VIDEO_MIMES):
+                return jsonify({
+                    "success": False,
+                    "error": "Invalid video type. Use mp4 or mov"
+                }), 400
             filename = f"{int(time.time()*1000)}_{secure_filename(video.filename)}"
             path = os.path.join(upload_dir, filename)
             video.save(path)
@@ -266,8 +273,10 @@ def upload_listing_image():
     listing_id = request.form.get("listing_id")
     image_type = request.form.get("image_type", "gallery")
     image = request.files.get("image")
-    if not image:
+    if not image or not image.filename:
         return jsonify({"error": "Image required"}), 400
+    if not _listing_upload_allowed(image, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
+        return jsonify({"error": "Invalid image type. Use jpg, jpeg, png, or webp"}), 400
 
     filename = secure_filename(image.filename)
     upload_subfolder = "static/images/listings"
