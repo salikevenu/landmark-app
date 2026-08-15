@@ -36,6 +36,46 @@ PLANS = {
 # Backward-compatible map used by existing imports (display name → paise)
 PLAN_PRICES = {name: spec["amount_paise"] for name, spec in PLANS.items()}
 
+# Amount = (monthly_paise × months) × discount, rounded to paise.
+BILLING_CYCLES = {
+    "monthly": {"months": 1, "discount": 1.0, "duration_days": 30},
+    "3months": {"months": 3, "discount": 0.90, "duration_days": 90},
+    "yearly": {"months": 12, "discount": 0.70, "duration_days": 365},
+}
+
+_CYCLE_ALIASES = {
+    "3month": "3months",
+    "quarter": "3months",
+    "quarterly": "3months",
+    "year": "yearly",
+    "annual": "yearly",
+    "annually": "yearly",
+}
+
+
+def resolve_billing_cycle(raw):
+    key = (raw or "monthly").strip().lower().replace("-", "").replace("_", "")
+    key = _CYCLE_ALIASES.get(key, key)
+    if key not in BILLING_CYCLES:
+        raise ValueError("Invalid billing_cycle. Use monthly, 3months, or yearly.")
+    return key
+
+
+def billed_amount_paise(monthly_paise, cycle):
+    term = BILLING_CYCLES[cycle]
+    discount_bp = int(round(term["discount"] * 100))
+    return (int(monthly_paise) * term["months"] * discount_bp) // 100
+
+
+def billed_duration_days(cycle):
+    return int(BILLING_CYCLES[cycle]["duration_days"])
+
+
+def billed_term(monthly_paise, cycle=None):
+    """Return (cycle_key, amount_paise, duration_days)."""
+    key = resolve_billing_cycle(cycle)
+    return key, billed_amount_paise(monthly_paise, key), billed_duration_days(key)
+
 RAZORPAY_MODE = os.getenv("RAZORPAY_MODE", "test")
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")

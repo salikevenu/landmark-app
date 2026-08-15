@@ -4,7 +4,7 @@
 from datetime import datetime, timedelta
 from sqlalchemy import text
 
-from config.payment_config import get_plan_spec
+from config.payment_config import billed_term, get_plan_spec
 from database.init_db import get_db_connection
 from extensions import get_razorpay_client
 
@@ -212,7 +212,7 @@ def _read_user_expiry_on_conn(conn, user_id):
     return mapped.get("subscription_expiry") or ""
 
 
-def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_paise, user_id=None):
+def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_paise, user_id=None, duration_days=None):
     """Lock the payment row, activate at most once, commit atomically.
 
     Payment row is the source of truth:
@@ -233,7 +233,6 @@ def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_p
         _, locked_spec = get_plan_spec(row.get("plan"))
         if locked_spec:
             spec = locked_spec
-            expected_paise = spec["amount_paise"]
 
         stored_amount = row.get("amount")
         if stored_amount is not None:
@@ -257,7 +256,7 @@ def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_p
                 extra={"duplicate": True},
             )
 
-        expiry = _activate_user_on_conn(conn, owner_id, spec)
+        expiry = _activate_user_on_conn(conn, owner_id, spec, duration_days)
         _mark_activated(
             conn,
             row["id"],
@@ -351,7 +350,17 @@ def verify_payment_service(data, user_id):
     if not spec:
         return error_payload("Unknown plan on order")
 
-    expected_paise = spec["amount_paise"]
+    try:
+        _, expected_paise, duration_days = billed_term(
+            spec["amount_paise"], notes.get("billing_cycle")
+        )
+    except ValueError:
+        _, expected_paise, duration_days = billed_term(spec["amount_paise"], "monthly")
+    if notes.get("duration_days"):
+        try:
+            duration_days = int(notes["duration_days"])
+        except (TypeError, ValueError):
+            pass
     if int(rzp_order.get("amount") or 0) != expected_paise:
         return error_payload("Amount mismatch")
 
@@ -361,6 +370,7 @@ def verify_payment_service(data, user_id):
         spec,
         expected_paise,
         user_id=uid,
+        duration_days=duration_days,
     )
 
 

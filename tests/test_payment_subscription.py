@@ -33,7 +33,7 @@ def _load(name, relative):
 from flask import Flask
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
 
-from config.payment_config import get_plan_spec, PLAN_PRICES
+from config.payment_config import billed_term, get_plan_spec, PLAN_PRICES
 from services.payment_service import verify_payment_service, success_payload
 from services.subscription_access import is_subscription_active, legacy_add_business_gone
 
@@ -66,6 +66,16 @@ class PlanMappingTests(unittest.TestCase):
         display, spec = get_plan_spec("gold")
         self.assertIsNone(display)
         self.assertIsNone(spec)
+
+    def test_billing_cycle_discounts(self):
+        cycle, amount, days = billed_term(99900, "monthly")
+        self.assertEqual((cycle, amount, days), ("monthly", 99900, 30))
+        cycle, amount, days = billed_term(99900, "3months")
+        self.assertEqual((cycle, amount, days), ("3months", 269730, 90))
+        cycle, amount, days = billed_term(49900, "yearly")
+        self.assertEqual((cycle, amount, days), ("yearly", 419160, 365))
+        with self.assertRaises(ValueError):
+            billed_term(99900, "weekly")
 
 
 class LockedPaymentDB:
@@ -427,6 +437,30 @@ class PaymentRouteTests(unittest.TestCase):
         notes = rzp.order.create.call_args[0][0]["notes"]
         self.assertEqual(notes["plan"], "business_basic")
         self.assertEqual(notes["user_id"], "7")
+        self.assertEqual(notes["billing_cycle"], "monthly")
+
+    def test_authenticated_create_order_yearly(self):
+        rzp = MagicMock()
+        rzp.order.create.return_value = {"id": "order_year"}
+        conn = MagicMock()
+        with self.app.app_context():
+            token = create_access_token(identity="7")
+        with patch.object(payment_routes_mod, "get_razorpay_client", return_value=rzp), \
+             patch.object(payment_routes_mod, "ensure_payments_plan_column"), \
+             patch.object(payment_routes_mod, "get_db_connection", return_value=conn):
+            res = self.client.post(
+                "/api/payment/create-order",
+                json={"plan": "Business Basic", "billing_cycle": "yearly"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["amount"], 839160)
+        self.assertEqual(body["billing_cycle"], "yearly")
+        payload = rzp.order.create.call_args[0][0]
+        self.assertEqual(payload["amount"], 839160)
+        self.assertEqual(payload["notes"]["billing_cycle"], "yearly")
+        self.assertEqual(payload["notes"]["duration_days"], "365")
 
 
 class LegacyAddBusinessTests(unittest.TestCase):

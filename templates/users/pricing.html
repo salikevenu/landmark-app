@@ -19,8 +19,8 @@
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 20px;
-    padding: 30px 20px;
-    width: 220px;
+    padding: 30px 22px;
+    width: 260px;
     text-align: center;
     transition: 0.3s;
   }
@@ -62,10 +62,47 @@
   .plan-card p {
     color: #cbd5e1;
   }
+  .plan-features {
+    font-size: 0.9rem;
+    line-height: 1.45;
+    min-height: 4.2em;
+    margin: 0 0 8px;
+  }
+  .billing-cycle {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 18px auto 28px;
+  }
+  .billing-cycle button {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.18);
+    color: #eef5ff;
+    border-radius: 999px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .billing-cycle button.active {
+    background: linear-gradient(135deg, #facc15, #f59e0b);
+    color: #1a1a1a;
+    border-color: transparent;
+  }
+  .price-sub {
+    color: #94a3b8;
+    font-size: 0.85rem;
+    margin: 0;
+  }
 </style>
 
 <div class="pricing-container">
   <h2 style="text-align:center; color:#facc15;" id="pricingHeading">Choose Your Plan</h2>
+  <div class="billing-cycle" id="billingCycle">
+    <button type="button" data-cycle="monthly" class="active">Monthly</button>
+    <button type="button" data-cycle="3months">3 Months (Save 10%)</button>
+    <button type="button" data-cycle="yearly">Yearly (Save 30%)</button>
+  </div>
   <div class="plans" id="plansContainer">
     <!-- Plans will be rendered by JavaScript -->
   </div>
@@ -84,23 +121,54 @@
       name: "Service Provider",
       price: 499,
       pageTypes: ["service"],
-      eligibleRoles: ["free"]
+      eligibleRoles: ["free"],
+      features: "Manage up to 3 services, analytics dashboard, priority support."
     },
     {
       id: "Business Basic",
       name: "Business Basic",
       price: 999,
       pageTypes: ["business"],
-      eligibleRoles: ["free", "service_provider"]
+      eligibleRoles: ["free", "service_provider"],
+      features: "1 verified listing, basic analytics, standard support."
     },
     {
       id: "Business Premium",
       name: "Business Premium",
       price: 1999,
       pageTypes: ["business"],
-      eligibleRoles: ["free", "service_provider", "business_basic"]
+      eligibleRoles: ["free", "service_provider", "business_basic"],
+      features: "3 verified listings, advanced analytics, priority support, featured badge."
     }
   ];
+
+  let selectedCycle = "monthly";
+
+  function billedPaise(monthlyRupees) {
+    const monthlyPaise = Math.round(monthlyRupees * 100);
+    if (selectedCycle === "3months") return Math.floor(monthlyPaise * 3 * 90 / 100);
+    if (selectedCycle === "yearly") return Math.floor(monthlyPaise * 12 * 70 / 100);
+    return monthlyPaise;
+  }
+
+  function formatRupees(paise) {
+    return (paise / 100).toLocaleString("en-IN", {
+      minimumFractionDigits: paise % 100 ? 2 : 0,
+      maximumFractionDigits: 2
+    });
+  }
+
+  function subscribeLabel() {
+    if (selectedCycle === "3months") return "Subscribe for 3 Months";
+    if (selectedCycle === "yearly") return "Subscribe Yearly";
+    return "Choose Plan";
+  }
+
+  function priceCaption() {
+    if (selectedCycle === "3months") return "for 3 months";
+    if (selectedCycle === "yearly") return "per year";
+    return "per month";
+  }
 
   // Reads a cookie value by name (used to grab the CSRF token
   // that flask-jwt-extended sets alongside the login cookie).
@@ -159,14 +227,16 @@
     }
 
     visiblePlans.forEach(plan => {
+      const paise = billedPaise(plan.price);
       const card = document.createElement("div");
       card.className = "plan-card";
       card.innerHTML = `
         <h3>${plan.name}</h3>
-        <div class="price">₹${plan.price}</div>
-        <p>per month</p>
+        <div class="price">₹${formatRupees(paise)}</div>
+        <p class="price-sub">${priceCaption()}</p>
+        <p class="plan-features">${plan.features}</p>
         <button class="btn-plan" onclick="startPayment('${plan.name}', event)">
-          ${plan.id === "extra_business" ? "Buy Slot" : "Choose Plan"}
+          ${subscribeLabel()}
         </button>
       `;
       container.appendChild(card);
@@ -184,7 +254,8 @@
         headers: paymentHeaders(),
         credentials: "include",
         body: JSON.stringify({
-          plan: planName
+          plan: planName,
+          billing_cycle: selectedCycle
         })
       });
 
@@ -193,7 +264,7 @@
       if (!res.ok || data.error) {
         alert(data.error || "Unable to create order");
         button.disabled = false;
-        button.innerText = "Choose Plan";
+        button.innerText = subscribeLabel();
         return;
       }
 
@@ -225,19 +296,19 @@
             } else {
               alert(verifyData.error || "Payment verification failed");
               button.disabled = false;
-              button.innerText = "Choose Plan";
+              button.innerText = subscribeLabel();
             }
           } catch (verifyError) {
             console.error("Verification error:", verifyError);
             alert("Payment verification failed. Please contact support.");
             button.disabled = false;
-            button.innerText = "Choose Plan";
+            button.innerText = subscribeLabel();
           }
         },
         modal: {
           ondismiss: function () {
             button.disabled = false;
-            button.innerText = "Choose Plan";
+            button.innerText = subscribeLabel();
           }
         },
         theme: {
@@ -260,7 +331,7 @@
         console.error("Payment failed:", response.error);
         alert(response.error.description || "Payment failed. Please try again.");
         button.disabled = false;
-        button.innerText = "Choose Plan";
+        button.innerText = subscribeLabel();
       });
 
       rzp.open();
@@ -269,9 +340,19 @@
       console.error("Payment initiation error:", error);
       alert("Payment initiation failed: " + (error.message || "Unknown error"));
       button.disabled = false;
-      button.innerText = "Choose Plan";
+            button.innerText = subscribeLabel();
     }
   }
+
+  document.getElementById("billingCycle").addEventListener("click", function (event) {
+    const btn = event.target.closest("button[data-cycle]");
+    if (!btn) return;
+    selectedCycle = btn.getAttribute("data-cycle");
+    document.querySelectorAll("#billingCycle button").forEach(el => {
+      el.classList.toggle("active", el === btn);
+    });
+    loadPlans();
+  });
 
   document.addEventListener("DOMContentLoaded", loadPlans);
 </script>

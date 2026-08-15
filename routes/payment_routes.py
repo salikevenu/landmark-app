@@ -8,7 +8,7 @@ import os
 from sqlalchemy import text
 
 from extensions import get_razorpay_client
-from config.payment_config import PLAN_PRICES, get_plan_spec
+from config.payment_config import PLAN_PRICES, billed_term, get_plan_spec
 from services.payment_service import (
     verify_payment_service,
     ensure_payments_plan_column,
@@ -60,7 +60,13 @@ def create_order():
                 "allowed_plans": list(PLAN_PRICES.keys()),
             }), 400
 
-        amount = spec["amount_paise"]
+        try:
+            cycle, amount, duration_days = billed_term(
+                spec["amount_paise"], data.get("billing_cycle")
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+
         client = get_razorpay_client()
         if not client:
             return jsonify({"success": False, "error": "Razorpay client not initialized"}), 503
@@ -73,6 +79,8 @@ def create_order():
                 "plan": spec["plan"],
                 "plan_display": display,
                 "user_id": str(user_id),
+                "billing_cycle": cycle,
+                "duration_days": str(duration_days),
             },
         })
 
@@ -107,6 +115,7 @@ def create_order():
             "amount": amount,
             "currency": "INR",
             "plan": display,
+            "billing_cycle": cycle,
             "user_id": user_id,
         }), 200
 
@@ -208,15 +217,27 @@ def razorpay_webhook():
     display, spec = get_plan_spec(m.get("plan") or notes.get("plan") or notes.get("plan_display"))
     if not spec:
         return jsonify({"success": True, "status": "unknown_plan"}), 200
-    if amount is not None and int(amount) != spec["amount_paise"]:
+    try:
+        _, expected_paise, duration_days = billed_term(
+            spec["amount_paise"], notes.get("billing_cycle")
+        )
+    except ValueError:
+        _, expected_paise, duration_days = billed_term(spec["amount_paise"], "monthly")
+    if notes.get("duration_days"):
+        try:
+            duration_days = int(notes["duration_days"])
+        except (TypeError, ValueError):
+            pass
+    if amount is not None and int(amount) != expected_paise:
         return jsonify({"success": False, "error": "Amount mismatch"}), 400
 
     result = finalize_paid_order(
         order_id,
         payment_id,
         spec,
-        spec["amount_paise"],
+        expected_paise,
         user_id=m.get("user_id"),
+        duration_days=duration_days,
     )
     if result.get("success"):
         status_out = "already_processed" if result.get("duplicate") else "captured"
