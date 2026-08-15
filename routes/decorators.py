@@ -36,6 +36,10 @@ def requires_active_plan(*allowed_roles):
                         )
                         db.commit()
                         flash("Your subscription has expired. You are now a free user.", "warning")
+                        if allowed_roles == ("service_provider",):
+                            return redirect("/api/user/pricing?page_type=service")
+                        if "business_basic" in allowed_roles or "business_premium" in allowed_roles:
+                            return redirect("/api/user/pricing?page_type=business")
                         return redirect("/pricing")
                 except (ValueError, TypeError):
                     pass
@@ -43,6 +47,10 @@ def requires_active_plan(*allowed_roles):
 
             if not is_subscription_active(user_dict) or current_role not in allowed_roles:
                 flash("Please upgrade your plan to access this feature.", "warning")
+                if allowed_roles == ("service_provider",):
+                    return redirect("/api/user/pricing?page_type=service")
+                if "business_basic" in allowed_roles or "business_premium" in allowed_roles:
+                    return redirect("/api/user/pricing?page_type=business")
                 return redirect(url_for('user.pricing'))
 
             return f(*args, **kwargs)

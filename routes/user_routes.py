@@ -291,7 +291,7 @@ def create_listing():
             return redirect(url_for('user.extra_business_payment'))
         else:
             flash("You have reached your business limit. Upgrade to Premium for more slots.", "warning")
-            return redirect(url_for('user.pricing'))
+            return redirect("/api/user/pricing?page_type=business")
 
     return render_template('users/create_listing.html')
 
@@ -455,4 +455,7 @@ def subscription_status():
 
 @user_bp.route("/pricing")
 def pricing():
-    return render_template("users/pricing.html")
+    page_type = (request.args.get("page_type") or "").strip().lower()
+    if page_type not in ("service", "business"):
+        page_type = ""
+    return render_template("users/pricing.html", page_type=page_type)

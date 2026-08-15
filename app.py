@@ -327,7 +327,10 @@ def wallet_page():
 
 @app.route("/pricing")
 def pricing():
-    return render_template("users/pricing.html")
+    page_type = (request.args.get("page_type") or "").strip().lower()
+    if page_type not in ("service", "business"):
+        page_type = ""
+    return render_template("users/pricing.html", page_type=page_type)
 
 @app.route("/logout")
 def logout_page():

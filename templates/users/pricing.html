@@ -65,7 +65,7 @@
 </style>
 
 <div class="pricing-container">
-  <h2 style="text-align:center; color:#facc15;">Choose Your Plan</h2>
+  <h2 style="text-align:center; color:#facc15;" id="pricingHeading">Choose Your Plan</h2>
   <div class="plans" id="plansContainer">
     <!-- Plans will be rendered by JavaScript -->
   </div>
@@ -76,23 +76,28 @@
   // All available plans – each plan now has 'eligibleRoles' so the
   // page knows who is allowed to see / buy it. Adjust these lists
   // to match your actual upgrade rules.
+  const PAGE_TYPE = {{ (page_type or '')|tojson }};
+
   const ALL_PLANS = [
     {
       id: "Service Provider",
       name: "Service Provider",
       price: 499,
+      pageTypes: ["service"],
       eligibleRoles: ["free"]
     },
     {
       id: "Business Basic",
       name: "Business Basic",
       price: 999,
+      pageTypes: ["business"],
       eligibleRoles: ["free", "service_provider"]
     },
     {
       id: "Business Premium",
       name: "Business Premium",
       price: 1999,
+      pageTypes: ["business"],
       eligibleRoles: ["free", "service_provider", "business_basic"]
     }
   ];
@@ -137,7 +142,16 @@
     const container = document.getElementById("plansContainer");
     container.innerHTML = "";
 
-    const visiblePlans = ALL_PLANS.filter(plan => plan.eligibleRoles.includes(userRole));
+    const heading = document.getElementById("pricingHeading");
+    if (PAGE_TYPE === "service" && heading) heading.textContent = "Service Provider Plan";
+    if (PAGE_TYPE === "business" && heading) heading.textContent = "Business Plans";
+
+    const visiblePlans = ALL_PLANS.filter(plan => {
+      if (PAGE_TYPE === "service" || PAGE_TYPE === "business") {
+        return plan.pageTypes.includes(PAGE_TYPE);
+      }
+      return plan.eligibleRoles.includes(userRole);
+    });
 
     if (visiblePlans.length === 0) {
       container.innerHTML = '<p class="no-plans-msg">No plans available for your current account. You may already be on the top plan.</p>';
