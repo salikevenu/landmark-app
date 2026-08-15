@@ -5,6 +5,7 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 from datetime import datetime
 from sqlalchemy import text
 from database.init_db import get_db_connection
+from services.subscription_access import is_subscription_active
 
 def requires_active_plan(*allowed_roles):
     def decorator(f):
@@ -14,7 +15,7 @@ def requires_active_plan(*allowed_roles):
             user_id = get_jwt_identity()
             db = get_db_connection()
             user = db.execute(
-                text("SELECT role, subscription_expiry FROM users WHERE id = :uid"),
+                text("SELECT role, plan, subscription_expiry FROM users WHERE id = :uid"),
                 {"uid": user_id}
             ).fetchone()
 
@@ -22,26 +23,25 @@ def requires_active_plan(*allowed_roles):
                 flash("User not found.", "error")
                 return redirect(url_for('auth.login'))
 
-            # ----- Expiry check -----
-            current_role = user._mapping["role"]
-            expiry_str = user._mapping["subscription_expiry"]
+            user_dict = dict(user._mapping)
+            current_role = user_dict.get("role")
+            expiry_str = user_dict.get("subscription_expiry")
             if expiry_str:
                 try:
-                    expiry = datetime.fromisoformat(expiry_str)
-                    if datetime.utcnow() > expiry:
-                        # Demote to free
+                    expiry = datetime.strptime(str(expiry_str)[:10], "%Y-%m-%d").date()
+                    if datetime.utcnow().date() > expiry:
                         db.execute(
-                            text("UPDATE users SET role = 'free', plan = NULL, subscription_expiry = NULL, business_limit = 0 WHERE id = :uid"),
+                            text("UPDATE users SET role = 'free', plan = 'free', subscription_expiry = NULL, business_limit = 0 WHERE id = :uid"),
                             {"uid": user_id}
                         )
                         db.commit()
                         flash("Your subscription has expired. You are now a free user.", "warning")
-                        return redirect(url_for('user.pricing'))
+                        return redirect("/pricing")
                 except (ValueError, TypeError):
                     pass
+                user_dict = dict(user._mapping)
 
-            # ----- Role check -----
-            if current_role not in allowed_roles:
+            if not is_subscription_active(user_dict) or current_role not in allowed_roles:
                 flash("Please upgrade your plan to access this feature.", "warning")
                 return redirect(url_for('user.pricing'))
 

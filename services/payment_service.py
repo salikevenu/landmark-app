@@ -1,55 +1,379 @@
 # services/payment_service.py
+"""Canonical Razorpay checkout verification and subscription activation."""
 
-import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from sqlalchemy import text
 
-from extensions import razor_client
-from config.payment_config import PLAN_PRICES
-from services.wallet_service import credit_wallet, debit_wallet
+from config.payment_config import get_plan_spec
 from database.init_db import get_db_connection
+from extensions import get_razorpay_client
+
+# Payment row source of truth:
+#   created    — Razorpay order stored, not verified
+#   captured   — legacy: Razorpay verified, activation may be incomplete
+#   activated  — subscription applied exactly once
+ACTIVATED_STATUS = "activated"
+NEEDS_ACTIVATION = ("created", "captured", "verified", "paid", "processing")
 
 
-# =========================
-# ACTIVATE SUBSCRIPTION
-# =========================
-def activate_subscription(phone, plan, days=30):
-    expiry_date = (datetime.datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
+def _as_int_user_id(user_id):
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_map(row):
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def _expiry_date(duration_days):
+    return (datetime.utcnow() + timedelta(days=duration_days)).strftime("%Y-%m-%d")
+
+
+def ensure_payments_plan_column():
+    """Smallest schema add: payments.plan (display or internal key)."""
     conn = get_db_connection()
-    conn.execute(text("""
-        UPDATE users
-        SET role = :plan,
-            subscription_status = 'active',
-            subscription_expiry = :expiry_date
-        WHERE phone = :phone
-    """), {
-        "plan": plan,
-        "expiry_date": expiry_date,
-        "phone": phone
-    })
-    conn.commit()
+    try:
+        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan TEXT"))
+        conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS order_id TEXT"))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def success_payload(message, spec, expiry, extra=None):
+    body = {
+        "success": True,
+        "status": "success",
+        "message": message,
+        "plan": spec["plan"],
+        "role": spec["role"],
+        "expiry": expiry,
+        "redirect": "/dashboard",
+    }
+    if extra:
+        body.update(extra)
+    return body
+
+
+def error_payload(message, http_hint=400):
+    return {
+        "success": False,
+        "status": "error",
+        "error": message,
+        "_http": http_hint,
+    }
+
+
+def activate_subscription(phone, plan, days=None):
+    """Admin-compatible activator: lookup by phone, set plan+role+expiry+limit.
+
+    `plan` may be a display name ('Business Basic') or internal key ('business_basic').
+    Does not write subscription_status (column is not in the canonical users schema).
+    """
+    display, spec = get_plan_spec(plan)
+    if not spec:
+        raise ValueError("Unknown plan")
+    duration = spec["duration_days"] if days is None else int(days)
+    expiry_date = _expiry_date(duration)
+    conn = get_db_connection()
+    try:
+        conn.execute(text("""
+            UPDATE users
+            SET role = :role,
+                plan = :plan,
+                subscription_expiry = :expiry_date,
+                business_limit = :blimit
+            WHERE phone = :phone
+        """), {
+            "role": spec["role"],
+            "plan": spec["plan"],
+            "expiry_date": expiry_date,
+            "blimit": spec["business_limit"],
+            "phone": phone,
+        })
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return expiry_date
 
 
-# =========================
-# PROCESS PAYMENT (internal helper)
-# =========================
-def process_payment(user_id, payment_id, amount_in_rupees):
+def _activate_user_on_conn(conn, user_id, spec, duration_days=None):
+    """Write plan/role/expiry on the given connection. Caller commits/rolls back."""
+    duration = spec["duration_days"] if duration_days is None else int(duration_days)
+    expiry_date = _expiry_date(duration)
+    uid = _as_int_user_id(user_id)
+    conn.execute(text("""
+        UPDATE users
+        SET role = :role,
+            plan = :plan,
+            subscription_expiry = :expiry_date,
+            business_limit = :blimit
+        WHERE id = :uid
+    """), {
+        "role": spec["role"],
+        "plan": spec["plan"],
+        "expiry_date": expiry_date,
+        "blimit": spec["business_limit"],
+        "uid": uid,
+    })
+    return expiry_date
+
+
+def activate_subscription_for_user(user_id, spec, duration_days=None):
+    """Standalone activator. Prefer verify_payment_service which is transactional."""
     conn = get_db_connection()
     try:
-        conn.execute(text("BEGIN"))
-        
-        # Check for duplicate payment_id
+        expiry = _activate_user_on_conn(conn, user_id, spec, duration_days)
+        conn.commit()
+        return expiry
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _load_order_row_for_update(conn, order_id, payment_id, user_id):
+    uid = _as_int_user_id(user_id)
+    if uid is not None:
+        row = conn.execute(text("""
+            SELECT id, user_id, order_id, payment_id, amount, status, plan
+            FROM payments
+            WHERE user_id = :uid
+              AND (
+                    order_id = :oid
+                    OR payment_id = :oid
+                    OR payment_id = :pid
+              )
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+        """), {"uid": uid, "oid": order_id, "pid": payment_id}).fetchone()
+    else:
+        row = conn.execute(text("""
+            SELECT id, user_id, order_id, payment_id, amount, status, plan
+            FROM payments
+            WHERE order_id = :oid
+               OR payment_id = :oid
+               OR payment_id = :pid
+            ORDER BY id DESC
+            LIMIT 1
+            FOR UPDATE
+        """), {"oid": order_id, "pid": payment_id}).fetchone()
+    return _row_map(row)
+
+
+def _mark_activated(conn, row_id, razorpay_order_id, razorpay_payment_id, amount_paise, plan_key):
+    conn.execute(text("""
+        UPDATE payments
+        SET payment_id = :pid,
+            order_id = :oid,
+            amount = :amount,
+            status = :status,
+            plan = :plan
+        WHERE id = :id
+    """), {
+        "pid": razorpay_payment_id,
+        "oid": razorpay_order_id,
+        "amount": amount_paise,
+        "status": ACTIVATED_STATUS,
+        "plan": plan_key,
+        "id": row_id,
+    })
+
+
+def _read_user_expiry_on_conn(conn, user_id):
+    uid = _as_int_user_id(user_id)
+    row = conn.execute(text("""
+        SELECT plan, role, subscription_expiry FROM users WHERE id = :uid
+    """), {"uid": uid}).fetchone()
+    mapped = _row_map(row) or {}
+    return mapped.get("subscription_expiry") or ""
+
+
+def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_paise, user_id=None):
+    """Lock the payment row, activate at most once, commit atomically.
+
+    Payment row is the source of truth:
+      created/captured/verified/paid/processing → activate user + status=activated
+      activated → return current expiry, do not extend
+    """
+    uid = _as_int_user_id(user_id) if user_id is not None else None
+    conn = get_db_connection()
+    try:
+        row = _load_order_row_for_update(conn, razorpay_order_id, razorpay_payment_id, uid)
+        if not row:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return error_payload("Order not found for this account")
+
+        _, locked_spec = get_plan_spec(row.get("plan"))
+        if locked_spec:
+            spec = locked_spec
+            expected_paise = spec["amount_paise"]
+
+        stored_amount = row.get("amount")
+        if stored_amount is not None:
+            sa = int(stored_amount)
+            if sa != expected_paise and sa != int(expected_paise / 100):
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return error_payload("Amount mismatch")
+
+        owner_id = row.get("user_id")
+        status = (row.get("status") or "").lower()
+        if status == ACTIVATED_STATUS:
+            expiry = _read_user_expiry_on_conn(conn, owner_id)
+            conn.commit()
+            return success_payload(
+                "Payment already processed",
+                spec,
+                expiry,
+                extra={"duplicate": True},
+            )
+
+        expiry = _activate_user_on_conn(conn, owner_id, spec)
+        _mark_activated(
+            conn,
+            row["id"],
+            razorpay_order_id,
+            razorpay_payment_id,
+            expected_paise,
+            spec["plan"],
+        )
+        conn.commit()
+        return success_payload("Subscription activated", spec, expiry)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return error_payload("Could not record payment")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def verify_payment_service(data, user_id):
+    """Canonical verifier used by POST /api/payment/verify-payment.
+
+    Trusts: Razorpay signature, Razorpay order amount, server-side payments row / order notes.
+    Does not trust frontend plan, amount, role, or expiry.
+    """
+    uid = _as_int_user_id(user_id)
+    if uid is None:
+        return error_payload("Authentication required", 401)
+
+    data = data or {}
+    razorpay_order_id = data.get("razorpay_order_id")
+    razorpay_payment_id = data.get("razorpay_payment_id")
+    razorpay_signature = data.get("razorpay_signature")
+
+    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
+        return error_payload("Missing required fields")
+
+    client = get_razorpay_client()
+    if not client:
+        return error_payload("Payment provider unavailable", 503)
+
+    try:
+        client.utility.verify_payment_signature({
+            "razorpay_order_id": razorpay_order_id,
+            "razorpay_payment_id": razorpay_payment_id,
+            "razorpay_signature": razorpay_signature,
+        })
+    except Exception:
+        return error_payload("Payment signature verification failed")
+
+    try:
+        rzp_order = client.order.fetch(razorpay_order_id)
+    except Exception:
+        return error_payload("Unable to fetch order")
+
+    if rzp_order.get("status") != "paid":
+        return error_payload("Order not paid")
+
+    notes = rzp_order.get("notes") or {}
+    note_uid = notes.get("user_id")
+    if note_uid and str(note_uid) != str(uid):
+        return error_payload("Order does not belong to this account")
+
+    ensure_payments_plan_column()
+    conn = get_db_connection()
+    try:
+        preview = conn.execute(text("""
+            SELECT id, user_id, order_id, payment_id, amount, status, plan
+            FROM payments
+            WHERE user_id = :uid
+              AND (order_id = :oid OR payment_id = :oid OR payment_id = :pid)
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"uid": uid, "oid": razorpay_order_id, "pid": razorpay_payment_id}).fetchone()
+        row = _row_map(preview)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if not row:
+        return error_payload("Order not found for this account")
+
+    plan_key = row.get("plan") or notes.get("plan") or notes.get("plan_display")
+    display, spec = get_plan_spec(plan_key)
+    if not spec:
+        return error_payload("Unknown plan on order")
+
+    expected_paise = spec["amount_paise"]
+    if int(rzp_order.get("amount") or 0) != expected_paise:
+        return error_payload("Amount mismatch")
+
+    return finalize_paid_order(
+        razorpay_order_id,
+        razorpay_payment_id,
+        spec,
+        expected_paise,
+        user_id=uid,
+    )
+
+
+def process_payment(user_id, payment_id, amount_in_rupees):
+    """Legacy helper kept for admin/old callers. Does not activate subscriptions."""
+    conn = get_db_connection()
+    try:
         existing = conn.execute(
             text("SELECT id FROM payments WHERE payment_id = :payment_id"),
-            {"payment_id": payment_id}
+            {"payment_id": payment_id},
         ).fetchone()
-        
         if existing:
-            conn.execute(text("ROLLBACK"))
-            return {"status": "duplicate"}
-
-        # Insert payment record (amount in rupees)
+            return {"status": "duplicate", "success": True}
         conn.execute(text("""
             INSERT INTO payments (user_id, payment_id, amount, status, created_at)
             VALUES (:user_id, :payment_id, :amount, :status, :created_at)
@@ -58,101 +382,18 @@ def process_payment(user_id, payment_id, amount_in_rupees):
             "payment_id": payment_id,
             "amount": amount_in_rupees,
             "status": "verified",
-            "created_at": datetime.datetime.utcnow()
+            "created_at": datetime.utcnow(),
         })
-        
-        conn.execute(text("COMMIT"))
+        conn.commit()
+        return {"status": "success", "success": True}
     except Exception as e:
-        conn.execute(text("ROLLBACK"))
-        return {"error": str(e)}
-
-    # Credit wallet after successful payment
-    credit_wallet(user_id, amount_in_rupees, "Razorpay Payment", payment_id)
-    return {"status": "success"}
-
-
-# =========================
-# VERIFY PAYMENT SERVICE
-# =========================
-def verify_payment_service(data, user_id):
-    """
-    data contains: razorpay_order_id, razorpay_payment_id, razorpay_signature, plan
-    user_id is obtained from JWT token (authenticated user)
-    """
-    razorpay_order_id = data.get("razorpay_order_id")
-    razorpay_payment_id = data.get("razorpay_payment_id")
-    razorpay_signature = data.get("razorpay_signature")
-    plan = data.get("plan")
-
-    # 1. Required fields validation
-    if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature, plan]):
-        return {"error": "Missing required fields"}
-
-    # 2. Plan validation
-    if plan not in PLAN_PRICES:
-        return {"error": "Invalid plan selected"}
-
-    expected_amount_paisa = PLAN_PRICES[plan]  # amount in paisa
-    expected_amount_rupees = expected_amount_paisa / 100
-
-    # 3. Signature verification
-    try:
-        razor_client.utility.verify_payment_signature({
-            "razorpay_order_id": razorpay_order_id,
-            "razorpay_payment_id": razorpay_payment_id,
-            "razorpay_signature": razorpay_signature
-        })
-    except Exception as e:
-        return {"error": "Payment signature verification failed"}
-
-    # 4. Fetch order from Razorpay
-    try:
-        order = razor_client.order.fetch(razorpay_order_id)
-    except Exception as e:
-        return {"error": "Unable to fetch order"}
-
-    # 5. Amount validation (compare in paisa)
-    if order["amount"] != expected_amount_paisa:
-        return {"error": "Amount mismatch"}
-
-    if order["status"] != "paid":
-        return {"error": "Order not paid"}
-
-    # 6. Get user phone (for subscription activation)
-    conn = get_db_connection()
-    user_row = conn.execute(
-        text("SELECT phone FROM users WHERE id = :user_id"),
-        {"user_id": user_id}
-    ).fetchone()
-    
-    if not user_row:
-        return {"error": "User not found"}
-    
-    phone = user_row._mapping["phone"]
-
-    # 7. Process payment (insert record + credit wallet)
-    result = process_payment(user_id, razorpay_payment_id, expected_amount_rupees)
-    
-    if result.get("status") == "duplicate":
-        return {"status": "success", "message": "Payment already processed"}
-    
-    if result.get("error"):
-        return {"error": result["error"]}
-
-    # 8. Debit wallet for subscription cost
-    success = debit_wallet(user_id, expected_amount_rupees, f"{plan} subscription")
-    
-    if not success:
-        return {"error": "Wallet deduction failed"}
-
-    # 9. Activate subscription
-    expiry_date = activate_subscription(phone, plan)
-
-    # 10. Final success response
-    return {
-        "status": "success",
-        "message": "Subscription activated ✅",
-        "role": plan,
-        "expiry": expiry_date,
-        "redirect": "/dashboard"
-    }
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": str(e), "success": False}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

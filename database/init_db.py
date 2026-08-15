@@ -290,11 +290,14 @@ def init_db():
             payment_id TEXT UNIQUE,
             amount REAL,
             status TEXT,
+            plan TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_id ON payments(payment_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)"))
+    conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan TEXT"))
+    conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS order_id TEXT"))
 
     # =====================================================
     # PAYMENT TRANSACTIONS (Razorpay)

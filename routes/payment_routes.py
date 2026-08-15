@@ -8,138 +8,97 @@ import os
 from sqlalchemy import text
 
 from extensions import get_razorpay_client
-from config.payment_config import PLAN_PRICES, RAZORPAY_KEY_ID
-from services.payment_service import verify_payment_service
+from config.payment_config import PLAN_PRICES, get_plan_spec
+from services.payment_service import (
+    verify_payment_service,
+    ensure_payments_plan_column,
+    finalize_paid_order,
+)
 from database.init_db import get_db_connection
-from services.referral_commission import process_referral_commission
 
 payment_bp = Blueprint("payment", __name__)
 
-# Get webhook secret from environment
 WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
 
-# ================================
-# Debug endpoint - No JWT required
-# ================================
+def _json_from_result(result):
+    http = result.pop("_http", None) if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return jsonify({"success": False, "error": "Unexpected error"}), 500
+    if result.get("success"):
+        return jsonify(result), 200
+    return jsonify(result), http or 400
+
+
 @payment_bp.route("/create-order-debug", methods=["POST"])
 def create_order_debug():
-    """Debug endpoint - no JWT required"""
-    try:
-        data = request.json
-        plan = data.get("plan")
-        
-        PLAN_PRICES_DEBUG = {
-            "Service Provider": 49900,
-            "Business Basic": 99900,
-            "Business Premium": 199900
-        }
-        
-        if plan not in PLAN_PRICES_DEBUG:
-            return jsonify({"error": f"Invalid plan: {plan}"}), 400
-        
-        amount = PLAN_PRICES_DEBUG[plan]
-        
-        client = get_razorpay_client()
-        if not client:
-            return jsonify({"error": "Razorpay client not initialized"}), 500
-        
-        order = client.order.create({
-            "amount": amount,
-            "currency": "INR",
-            "payment_capture": 1
-        })
-        
-        return jsonify({
-            "order_id": order["id"],
-            "key": os.getenv("RAZORPAY_KEY_ID"),
-            "amount": amount,
-            "currency": "INR"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Disabled: must not create orders without authentication."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled",
+    }), 404
 
 
-# ================================
-# Create Razorpay Order
-# ================================
 @payment_bp.route("/create-order", methods=["POST"])
-@jwt_required(optional=True)
+@jwt_required()
 def create_order():
     try:
-        # Get logged-in user if JWT exists
         user_id = get_jwt_identity()
-
-        # Allow testing without JWT
         if not user_id:
-            return jsonify({
-                "error": "Authentication required. Please login.",
-                "success": False
-            }), 401
+            return jsonify({"success": False, "error": "Authentication required."}), 401
 
-        data = request.get_json()
-
-        if not data:
-            return jsonify({"error": "Request body missing"}), 400
-
+        data = request.get_json(silent=True) or {}
         plan = data.get("plan")
-
         if not plan:
-            return jsonify({"error": "Plan is required"}), 400
+            return jsonify({"success": False, "error": "Plan is required"}), 400
 
-        # Use config values
-        if plan not in PLAN_PRICES:
+        display, spec = get_plan_spec(plan)
+        if not spec:
             return jsonify({
+                "success": False,
                 "error": "Invalid plan",
-                "allowed_plans": list(PLAN_PRICES.keys())
+                "allowed_plans": list(PLAN_PRICES.keys()),
             }), 400
 
-        amount = PLAN_PRICES[plan]
-
-        # Get Razorpay client
+        amount = spec["amount_paise"]
         client = get_razorpay_client()
-
         if not client:
-            return jsonify({
-                "error": "Razorpay client not initialized"
-            }), 500
+            return jsonify({"success": False, "error": "Razorpay client not initialized"}), 503
 
-        # Create Razorpay Order
         order = client.order.create({
             "amount": amount,
             "currency": "INR",
-            "payment_capture": 1
+            "payment_capture": 1,
+            "notes": {
+                "plan": spec["plan"],
+                "plan_display": display,
+                "user_id": str(user_id),
+            },
         })
 
-        # Save order in database
+        ensure_payments_plan_column()
         conn = get_db_connection()
-
-        conn.execute(text("""
-            INSERT INTO payments
-            (
-                user_id,
-                payment_id,
-                amount,
-                status,
-                created_at
-            )
-            VALUES
-            (
-                :user_id,
-                :payment_id,
-                :amount,
-                :status,
-                :created_at
-            )
-        """), {
-            "user_id": user_id,
-            "payment_id": order["id"],
-            "amount": amount,
-            "status": "created",
-            "created_at": datetime.utcnow()
-        })
-
-        conn.commit()
+        try:
+            conn.execute(text("""
+                INSERT INTO payments
+                    (user_id, order_id, payment_id, amount, status, plan, created_at)
+                VALUES
+                    (:user_id, :order_id, :payment_id, :amount, :status, :plan, :created_at)
+            """), {
+                "user_id": int(user_id) if str(user_id).isdigit() else user_id,
+                "order_id": order["id"],
+                "payment_id": order["id"],
+                "amount": amount,
+                "status": "created",
+                "plan": spec["plan"],
+                "created_at": datetime.utcnow(),
+            })
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         return jsonify({
             "success": True,
@@ -147,24 +106,17 @@ def create_order():
             "key": os.getenv("RAZORPAY_KEY_ID"),
             "amount": amount,
             "currency": "INR",
-            "plan": plan,
-            "user_id": user_id
+            "plan": display,
+            "user_id": user_id,
         }), 200
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-
+    except Exception:
         return jsonify({
             "success": False,
-            "error": str(e),
-            "type": type(e).__name__
+            "error": "Unable to create order",
         }), 500
 
 
-# ================================
-# Wallet Balance
-# ================================
 @payment_bp.route("/wallet", methods=["GET"])
 @jwt_required()
 def wallet_balance():
@@ -172,15 +124,12 @@ def wallet_balance():
     conn = get_db_connection()
     row = conn.execute(
         text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
-        {"uid": user_id}
+        {"uid": user_id},
     ).fetchone()
     balance = row._mapping["balance"] if row else 0
     return jsonify({"wallet_balance": balance})
 
 
-# ================================
-# Wallet Transactions
-# ================================
 @payment_bp.route("/wallet-transactions", methods=["GET"])
 @jwt_required()
 def wallet_transactions():
@@ -194,96 +143,91 @@ def wallet_transactions():
     return jsonify([dict(r._mapping) for r in rows])
 
 
-# ================================
-# Verify Payment - FIXED
-# ================================
 @payment_bp.route("/verify-payment", methods=["POST"])
-@jwt_required(optional=True)
+@jwt_required()
 def verify_payment():
     user_id = get_jwt_identity()
     if not user_id:
-        user_id = request.json.get("user_id", "test_user_001")
-    data = request.json
+        return jsonify({"success": False, "error": "Authentication required."}), 401
+    data = request.get_json(silent=True) or {}
     result = verify_payment_service(data, user_id)
-    return jsonify(result)
+    return _json_from_result(result)
 
 
-# ================================
-# Razorpay Webhook
-# ================================
 @payment_bp.route("/razorpay/webhook", methods=["POST"])
 def razorpay_webhook():
-    payload = request.data
-    signature = request.headers.get("X-Razorpay-Signature")
+    """HMAC-verified webhook. Activates only if a matching created order exists (idempotent)."""
+    payload = request.get_data() or b""
+    signature = request.headers.get("X-Razorpay-Signature") or ""
 
     if not WEBHOOK_SECRET:
-        return {"error": "Webhook secret not configured"}, 500
+        return jsonify({"success": False, "error": "Webhook secret not configured"}), 503
 
     expected = hmac.new(
         WEBHOOK_SECRET.encode(),
         payload,
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
-    if not hmac.compare_digest(expected, signature):
-        return {"error": "Invalid webhook signature"}, 400
+    if not signature or not hmac.compare_digest(expected, signature):
+        return jsonify({"success": False, "error": "Invalid webhook signature"}), 400
 
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
-        payment_entity = data["payload"]["payment"]["entity"]
-        payment_id = payment_entity["id"]
-        amount = payment_entity["amount"] / 100
-        phone = payment_entity.get("contact")
+        entity = data["payload"]["payment"]["entity"]
+        payment_id = entity["id"]
+        order_id = entity.get("order_id")
+        status = entity.get("status")
+        amount = entity.get("amount")
+        notes = entity.get("notes") or {}
     except Exception:
-        return {"error": "Invalid payload"}, 400
+        return jsonify({"success": False, "error": "Invalid payload"}), 400
 
-    from services.payment_service import process_payment
+    if status != "captured" or not order_id:
+        return jsonify({"success": True, "status": "ignored"}), 200
 
+    ensure_payments_plan_column()
     conn = get_db_connection()
-    user_row = conn.execute(
-        text("SELECT id FROM users WHERE phone = :phone"),
-        {"phone": phone}
-    ).fetchone()
-    if not user_row:
-        return {"error": "User not found"}, 404
+    try:
+        row = conn.execute(text("""
+            SELECT id, user_id, amount, plan, status, payment_id
+            FROM payments
+            WHERE order_id = :oid OR payment_id = :oid
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"oid": order_id}).fetchone()
+        if not row:
+            return jsonify({"success": True, "status": "order_not_found"}), 200
+        m = dict(row._mapping)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
-    user_id = user_row._mapping["id"]
-    result = process_payment(user_id, payment_id, amount)
+    display, spec = get_plan_spec(m.get("plan") or notes.get("plan") or notes.get("plan_display"))
+    if not spec:
+        return jsonify({"success": True, "status": "unknown_plan"}), 200
+    if amount is not None and int(amount) != spec["amount_paise"]:
+        return jsonify({"success": False, "error": "Amount mismatch"}), 400
 
-    if payment_entity.get("status") == "captured":
-        process_referral_commission(user_id, amount)
+    result = finalize_paid_order(
+        order_id,
+        payment_id,
+        spec,
+        spec["amount_paise"],
+        user_id=m.get("user_id"),
+    )
+    if result.get("success"):
+        status_out = "already_processed" if result.get("duplicate") else "captured"
+        return jsonify({"success": True, "status": status_out}), 200
+    return jsonify({"success": False, "error": result.get("error", "Could not record payment")}), 400
 
-    return {"status": result.get("status", "error")}
 
-
-# ================================
-# Submit Manual Payment Proof
-# ================================
 @payment_bp.route("/submit-payment-proof", methods=["POST"])
+@jwt_required()
 def submit_payment_proof():
-    data = request.json
-    phone = data.get("phone")
-    plan = data.get("plan")
-    reference_id = data.get("reference_id")
-
-    if plan not in PLAN_PRICES:
-        return {"error": "Invalid plan"}, 400
-
-    conn = get_db_connection()
-    conn.execute(text("""
-        INSERT INTO payments (phone, plan, amount, status, payment_method, reference_id)
-        VALUES (:phone, :plan, :amount, :status, :payment_method, :reference_id)
-    """), {
-        "phone": phone,
-        "plan": plan,
-        "amount": PLAN_PRICES[plan],
-        "status": "pending",
-        "payment_method": "manual",
-        "reference_id": reference_id
-    })
-    conn.commit()
-
-    return {
-        "status": "Payment proof submitted",
-        "message": "Waiting for admin approval"
-    }
+    return jsonify({
+        "success": False,
+        "error": "Manual payment proof is not enabled",
+    }), 404
