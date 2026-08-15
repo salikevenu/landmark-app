@@ -476,6 +476,7 @@ async function sendOTP() {
     try {
         const response = await fetch('/api/auth/send-otp', {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phone })
         });
@@ -499,17 +500,22 @@ async function sendOTP() {
 }
 
 async function verifyOTP() {
+    const submitBtn = actionBtn;
+    submitBtn.disabled = true;
+
     const otp = otpInput.value.trim();
 
     if (!OTP_REGEX.test(otp)) {
         setStatus('Please enter a valid 6-digit OTP', 'error');
         otpInput.focus();
+        submitBtn.disabled = false;
         return;
     }
 
     if (!pendingPhone) {
         setStatus('Session expired. Please request a new OTP.', 'error');
         resetToPhoneStep();
+        submitBtn.disabled = false;
         return;
     }
 
@@ -519,6 +525,7 @@ async function verifyOTP() {
     try {
         const response = await fetch('/api/auth/verify-otp', {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 phone: pendingPhone,
@@ -541,11 +548,13 @@ async function verifyOTP() {
             setStatus(result.message || 'Verification failed. Please try again.', 'error');
             otpInput.value = '';
             otpInput.focus();
+            submitBtn.disabled = false;
+            setLoading(false);
         }
     } catch (error) {
         console.error('verifyOTP error:', error);
         setStatus('Network error. Please try again.', 'error');
-    } finally {
+        submitBtn.disabled = false;
         setLoading(false);
     }
 }
@@ -564,6 +573,7 @@ async function handleResend() {
     try {
         const response = await fetch('/api/auth/resend-otp', {
             method: 'POST',
+            credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phone: pendingPhone })
         });

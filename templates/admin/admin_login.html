@@ -63,11 +63,15 @@ async function sendOTP() {
 }
 
 async function verifyOTP() {
+  const submitBtn = actionBtn;
+  submitBtn.disabled = true;
+
   const phone = phoneInput.value.trim();
   const otp = otpInput.value.trim();  // ✅ Already trimmed
   
   if (!otp) {
     statusEl.innerText = "OTP required";
+    submitBtn.disabled = false;
     return;
   }
 
@@ -75,6 +79,7 @@ async function verifyOTP() {
   try {
     const res = await fetch("/api/auth/verify-otp", {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ 
         phone: phone, 
@@ -85,18 +90,15 @@ async function verifyOTP() {
 
     // ✅ Handle success (even if the backend returns a different format)
     if (res.ok && (data.success === true || data.message === "Login successful")) {
-      // If you expect a token, store it
-      if (data.access_token) {
-        localStorage.setItem("access_token", data.access_token);
-      }
-      // Redirect based on role or dashboard
       window.location.href = "/admin/dashboard";
     } else {
       // Show the exact error from the backend
       statusEl.innerText = data.message || data.error || "Incorrect OTP. Please try again.";
+      submitBtn.disabled = false;
     }
   } catch (err) {
     statusEl.innerText = "Server error";
+    submitBtn.disabled = false;
   }
 }
 </script>

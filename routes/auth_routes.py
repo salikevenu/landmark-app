@@ -5,7 +5,7 @@ import string
 import logging
 from datetime import timedelta
 
-from flask import Blueprint, request, jsonify, current_app, render_template
+from flask import Blueprint, request, jsonify, current_app, render_template, redirect
 from sqlalchemy import text
 from dotenv import load_dotenv
 
@@ -20,11 +20,13 @@ from flask_jwt_extended import (
     unset_jwt_cookies,
 )
 from services.sms_service import get_sms_service
+from extensions import limiter
+from flask_limiter.util import get_remote_address
 
 # Load environment variables
 load_dotenv()
 
-print(f"🔍 DEBUG_SMS value in routes/auth.py: {os.getenv('DEBUG_SMS')}")
+print(f"🔍 DEBUG_SMS value in routes/auth.py: {os.getenv('DEBUG_SMS', 'false')} (enabled={os.getenv('DEBUG_SMS', 'false').lower() == 'true'})")
 
 auth_bp = Blueprint("auth", __name__)
 logger = logging.getLogger(__name__)
@@ -56,6 +58,14 @@ def clean_phone(raw_phone):
     """Strip everything except digits, then take the last 10 digits."""
     digits = ''.join(filter(str.isdigit, raw_phone or ''))
     return digits[-10:] if len(digits) >= 10 else digits
+
+def otp_phone_key():
+    """Rate-limit key by submitted phone (falls back to IP if missing)."""
+    data = request.get_json(silent=True) or {}
+    phone = clean_phone(data.get("phone", ""))
+    if phone:
+        return f"otp-phone:{phone}"
+    return get_remote_address()
 
 def get_or_create_user(phone, ip_address=None):
     """Get existing user or create a new one."""
@@ -100,11 +110,16 @@ def generate_jwt_tokens(user_data, remember_me=False):
 
     access_token = create_access_token(
         identity=str(user_data["id"]),
-        additional_claims={"role": user_data["role"], "phone": user_data["phone"]},
+        additional_claims={
+            "role": user_data["role"],
+            "phone": user_data["phone"],
+            "remember_me": remember_me,
+        },
         expires_delta=access_expires,
     )
     refresh_token = create_refresh_token(
         identity=str(user_data["id"]),
+        additional_claims={"remember_me": remember_me},
         expires_delta=refresh_expires,
     )
 
@@ -172,6 +187,9 @@ def delete_verification(phone):
 # =================================
 
 @auth_bp.route("/send-otp", methods=["POST"])
+@limiter.limit("5 per minute")
+@limiter.limit("20 per hour")
+@limiter.limit("3 per hour", key_func=otp_phone_key)
 def send_otp():
     """Send OTP via Message Central VerifyNow API."""
     try:
@@ -225,6 +243,8 @@ def send_otp():
         }), 500
 
 @auth_bp.route("/verify-otp", methods=["POST"])
+@limiter.limit("10 per minute")
+@limiter.limit("30 per hour")
 def verify_otp():
     """Verify OTP using Message Central VerifyNow API."""
     from flask_jwt_extended import create_access_token, create_refresh_token, set_access_cookies, set_refresh_cookies
@@ -244,7 +264,11 @@ def verify_otp():
         # Retrieve the stored verification_id from PostgreSQL
         stored = get_verification(full_phone)
         if not stored:
-            return jsonify({"success": False, "message": "No OTP found or OTP expired. Please request a new one."}), 401
+            return jsonify({
+                "success": False,
+                "message": "This OTP has already been used or expired.",
+                "reason": "ALREADY_CONSUMED"
+            }), 401
 
         if stored["attempts"] >= MAX_OTP_ATTEMPTS:
             delete_verification(full_phone)
@@ -309,11 +333,16 @@ def verify_otp():
 
             access_token = create_access_token(
                 identity=str(user_data["id"]),
-                additional_claims={"role": user_data["role"], "phone": user_data["phone"]},
+                additional_claims={
+                    "role": user_data["role"],
+                    "phone": user_data["phone"],
+                    "remember_me": remember_me,
+                },
                 expires_delta=access_expires,
             )
             refresh_token = create_refresh_token(
                 identity=str(user_data["id"]),
+                additional_claims={"remember_me": remember_me},
                 expires_delta=refresh_expires,
             )
 
@@ -374,9 +403,13 @@ def resend_otp():
         logger.exception("resend_otp error")
         return jsonify({"success": False, "message": "Something went wrong. Please try again."}), 500
 
-@auth_bp.route("/logout", methods=["POST"])
+@auth_bp.route("/logout", methods=["GET", "POST"])
 def logout():
-    response = jsonify({"message": "Logged out successfully"})
+    if request.method == "GET":
+        response = redirect("/logout")
+        unset_jwt_cookies(response)
+        return response
+    response = jsonify({"success": True, "message": "Logged out successfully"})
     unset_jwt_cookies(response)
     return response, 200
 
