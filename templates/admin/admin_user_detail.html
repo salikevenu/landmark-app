@@ -1,5 +1,6 @@
 {% extends "admin_layout.html" %}
 {% block admin_content %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   .user-detail-card {
     background: #0c121e;
@@ -7,7 +8,7 @@
     border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 16px;
     padding: 24px;
-    max-width: 640px;
+    max-width: 720px;
     box-shadow: 0 0 24px rgba(34, 211, 238, 0.12);
   }
   .user-detail-card h2 {
@@ -25,7 +26,24 @@
     color: #67e8f9;
     text-shadow: 0 0 12px rgba(34, 211, 238, 0.75);
   }
+  .user-map {
+    height: 240px;
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    margin: 8px 0 16px;
+    z-index: 1;
+  }
+  .user-location-empty {
+    color: #94a3b8;
+    font-weight: 500;
+    margin: 0 0 16px;
+  }
 </style>
+
+{% set lat = user.latitude if user.latitude is not none else 0 %}
+{% set lng = user.longitude if user.longitude is not none else 0 %}
+{% set has_location = lat|float != 0 and lng|float != 0 %}
 
 <div class="user-detail-card">
   <h2>User #{{ user.id }}</h2>
@@ -48,9 +66,34 @@
     <dd>{{ user.referral_code or "—" }}</dd>
     <dt>Joined</dt>
     <dd>{{ user.created_at or "—" }}</dd>
+    <dt>User Location</dt>
+    <dd>
+      {% if has_location %}
+      <div id="userLocationMap" class="user-map"></div>
+      <small>{{ "%.5f"|format(lat|float) }}, {{ "%.5f"|format(lng|float) }}</small>
+      {% else %}
+      <p class="user-location-empty">User location not set.</p>
+      {% endif %}
+    </dd>
   </dl>
   <a class="user-link" href="/admin/users">← Back to users</a>
   &nbsp;|&nbsp;
   <a class="user-link" href="/admin/dashboard">Dashboard</a>
 </div>
+
+{% if has_location %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  (function () {
+    var lat = {{ lat|float|tojson }};
+    var lng = {{ lng|float|tojson }};
+    var map = L.map("userLocationMap").setView([lat, lng], 14);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+    L.marker([lat, lng]).addTo(map);
+    setTimeout(function () { map.invalidateSize(); }, 200);
+  })();
+</script>
+{% endif %}
 {% endblock %}

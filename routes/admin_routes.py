@@ -132,7 +132,8 @@ def api_user_detail(user_id):
         row = conn.execute(
             text("""
                 SELECT id, phone, name, role, plan, subscription_expiry,
-                       wallet_balance, is_blocked, referral_code, created_at
+                       wallet_balance, is_blocked, referral_code, created_at,
+                       latitude, longitude
                 FROM users
                 WHERE id = :uid
             """),
