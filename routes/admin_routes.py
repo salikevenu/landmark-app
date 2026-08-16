@@ -1,6 +1,6 @@
 import io
 import os
-from flask import Blueprint, jsonify, render_template, request, send_file, redirect, make_response
+from flask import Blueprint, jsonify, render_template, request, send_file, redirect, make_response, url_for
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token, set_access_cookies
 from database.init_db import get_db_connection
 from functools import wraps
@@ -124,9 +124,7 @@ def api_users():
     result = get_admin_users(page, limit, search, role, status)
     return jsonify(result)
 
-@admin_bp.route("/api/admin/users/<int:user_id>", methods=["GET"])
-@admin_required
-def api_user_detail(user_id):
+def _load_admin_user(user_id):
     conn = get_db_connection()
     try:
         row = conn.execute(
@@ -139,15 +137,28 @@ def api_user_detail(user_id):
             """),
             {"uid": user_id},
         ).fetchone()
-        if not row:
-            return jsonify({"error": "User not found"}), 404
-        user = dict(row._mapping)
-        return render_template("admin/admin_user_detail.html", user=user)
+        return dict(row._mapping) if row else None
     finally:
         try:
             conn.close()
         except Exception:
             pass
+
+
+@admin_bp.route("/admin/users/<int:user_id>")
+@admin_required
+def admin_user_detail_page(user_id):
+    user = _load_admin_user(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return render_template("admin/admin_user_detail.html", user=user)
+
+
+@admin_bp.route("/api/admin/users/<int:user_id>", methods=["GET"])
+@admin_required
+def api_user_detail(user_id):
+    """Keep old links working; HTML lives under /admin so JWT cookies stay on /."""
+    return redirect(url_for("admin.admin_user_detail_page", user_id=user_id))
 
 @admin_bp.route("/api/admin/users/<int:user_id>/ban", methods=["POST"])
 @admin_required

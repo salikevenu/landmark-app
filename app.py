@@ -111,6 +111,7 @@ app.config.update(
     JWT_COOKIE_SAMESITE="Lax",
     JWT_COOKIE_HTTPONLY=True,
     JWT_COOKIE_CSRF_PROTECT=True,
+    JWT_COOKIE_PATH="/",
     JWT_ACCESS_COOKIE_PATH="/",
     JWT_ACCESS_COOKIE_NAME="access_token",
     JWT_REFRESH_COOKIE_NAME="refresh_token",

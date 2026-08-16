@@ -189,6 +189,8 @@ class AppJwtConfigTests(unittest.TestCase):
         src = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn('JWT_REFRESH_COOKIE_PATH="/api/refresh"', src)
         self.assertIn("JWT_COOKIE_HTTPONLY=True", src)
+        self.assertIn('JWT_ACCESS_COOKIE_PATH="/"', src)
+        self.assertIn('JWT_COOKIE_PATH="/"', src)
         self.assertIn('JWT_COOKIE_SAMESITE="Lax"', src)
         self.assertIn("JWT_COOKIE_CSRF_PROTECT=True", src)
         self.assertIn("JWT_ACCESS_CSRF_COOKIE_NAME", src)

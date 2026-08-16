@@ -539,7 +539,7 @@
       const users = data.users || [];
       let html = '';
       users.forEach(u => {
-        html += `<tr><td><a class="user-link" href="/api/admin/users/${u.id}">${u.phone || ""}</a></td><td>${u.role || ""}</td></tr>`;
+        html += `<tr><td><a class="user-link" href="/admin/users/${u.id}">${u.phone || ""}</a></td><td>${u.role || ""}</td></tr>`;
       });
       tbody.innerHTML = html || '<tr><td colspan="2" class="text-center">No users</td></tr>';
     } catch (err) { tbody.innerHTML = '<tr><td colspan="2" class="text-danger">Error</td></tr>'; }
