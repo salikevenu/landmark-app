@@ -165,12 +165,12 @@ def upload_profile_avatar():
     if ext not in allowed:
         return jsonify({"error": "Invalid image type. Use jpg, png, webp, or gif"}), 400
 
-    # Soft size guard (~2MB) in addition to app MAX_CONTENT_LENGTH
+    # Soft size guard (10MB) in addition to app MAX_CONTENT_LENGTH
     file.stream.seek(0, os.SEEK_END)
     size = file.stream.tell()
     file.stream.seek(0)
-    if size > 2 * 1024 * 1024:
-        return jsonify({"error": "Image must be 2MB or smaller"}), 400
+    if size > 10 * 1024 * 1024:
+        return jsonify({"error": "Avatar image must be 10 MB or smaller."}), 400
 
     try:
         upload_root = current_app.config.get("UPLOAD_FOLDER", "static/uploads")

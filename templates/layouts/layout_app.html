@@ -835,6 +835,11 @@
         avatarFileInput.addEventListener('change', function() {
           const file = avatarFileInput.files && avatarFileInput.files[0];
           avatarFileInput.value = '';
+          if (!file) return;
+          if (file.size > 10 * 1024 * 1024) {
+            showToast('Avatar image must be 10 MB or smaller.', true);
+            return;
+          }
           uploadAvatar(file);
         });
 
