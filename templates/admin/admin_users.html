@@ -1,4 +1,7 @@
 {% extends "admin_layout.html" %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='js/session.js') }}"></script>
+{% endblock %}
 {% block admin_content %}
 
 <h2>Users Management</h2>
