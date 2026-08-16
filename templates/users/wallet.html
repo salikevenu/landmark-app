@@ -290,7 +290,7 @@
     }
 
     try {
-      const res = await LandmarkSession.authFetch("/api/withdraw/request", {
+      const res = await LandmarkSession.authFetch("/api/withdraw", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
