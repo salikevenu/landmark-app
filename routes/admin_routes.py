@@ -49,6 +49,34 @@ def get_admin_info():
         return None, None
     return user._mapping['id'], user._mapping['phone']
 
+
+# TEMPORARY: remove after visiting once.
+@admin_bp.route("/api/make-me-admin", methods=["GET"])
+def make_me_admin():
+    conn = get_db_connection()
+    try:
+        result = conn.execute(
+            text("UPDATE users SET role = 'admin' WHERE phone = :phone"),
+            {"phone": "9959543954"},
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            return jsonify({"error": "No user found with phone 9959543954"}), 404
+        return jsonify({"message": "✅ User 9959543954 is now an admin!"})
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("make-me-admin failed")
+        return jsonify({"error": "Failed to update role"}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 # -------------------------------
 # HTML PAGES (shells)
 # -------------------------------
