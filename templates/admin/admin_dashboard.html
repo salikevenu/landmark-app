@@ -255,6 +255,18 @@
     }
     .btn-landmark:hover { background: var(--blue-dark); }
 
+    .user-link {
+      color: #22d3ee;
+      text-decoration: none;
+      font-weight: 600;
+      text-shadow: 0 0 6px rgba(34, 211, 238, 0.35);
+    }
+    .user-link:hover {
+      color: #67e8f9;
+      text-shadow: 0 0 12px rgba(34, 211, 238, 0.75);
+      text-decoration: underline;
+    }
+
     /* ---------- RESPONSIVE ---------- */
     @media (max-width: 900px) {
       .stats-row { grid-template-columns: 1fr 1fr; }
@@ -527,7 +539,7 @@
       const users = data.users || [];
       let html = '';
       users.forEach(u => {
-        html += `<tr><td>${u.phone}</td><td>${u.role}</td></tr>`;
+        html += `<tr><td><a class="user-link" href="/api/admin/users/${u.id}">${u.phone || ""}</a></td><td>${u.role || ""}</td></tr>`;
       });
       tbody.innerHTML = html || '<tr><td colspan="2" class="text-center">No users</td></tr>';
     } catch (err) { tbody.innerHTML = '<tr><td colspan="2" class="text-danger">Error</td></tr>'; }

@@ -1,0 +1,56 @@
+{% extends "admin_layout.html" %}
+{% block admin_content %}
+<style>
+  .user-detail-card {
+    background: #0c121e;
+    color: #eef5ff;
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 16px;
+    padding: 24px;
+    max-width: 640px;
+    box-shadow: 0 0 24px rgba(34, 211, 238, 0.12);
+  }
+  .user-detail-card h2 {
+    color: #22d3ee;
+    margin-bottom: 16px;
+    text-shadow: 0 0 10px rgba(34, 211, 238, 0.45);
+  }
+  .user-detail-card dt { color: #94a3b8; font-size: 0.8rem; text-transform: uppercase; }
+  .user-detail-card dd { margin: 0 0 12px; font-weight: 600; }
+  .user-link {
+    color: #22d3ee;
+    text-decoration: none;
+  }
+  .user-link:hover {
+    color: #67e8f9;
+    text-shadow: 0 0 12px rgba(34, 211, 238, 0.75);
+  }
+</style>
+
+<div class="user-detail-card">
+  <h2>User #{{ user.id }}</h2>
+  <dl>
+    <dt>Name</dt>
+    <dd>{{ user.name or "—" }}</dd>
+    <dt>Phone</dt>
+    <dd>{{ user.phone or "—" }}</dd>
+    <dt>Role</dt>
+    <dd>{{ user.role or "—" }}</dd>
+    <dt>Plan</dt>
+    <dd>{{ user.plan or "—" }}</dd>
+    <dt>Subscription expiry</dt>
+    <dd>{{ user.subscription_expiry or "—" }}</dd>
+    <dt>Wallet</dt>
+    <dd>₹{{ user.wallet_balance or 0 }}</dd>
+    <dt>Blocked</dt>
+    <dd>{{ "Yes" if user.is_blocked else "No" }}</dd>
+    <dt>Referral code</dt>
+    <dd>{{ user.referral_code or "—" }}</dd>
+    <dt>Joined</dt>
+    <dd>{{ user.created_at or "—" }}</dd>
+  </dl>
+  <a class="user-link" href="/admin/users">← Back to users</a>
+  &nbsp;|&nbsp;
+  <a class="user-link" href="/admin/dashboard">Dashboard</a>
+</div>
+{% endblock %}

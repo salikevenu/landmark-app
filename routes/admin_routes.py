@@ -124,6 +124,30 @@ def api_users():
     result = get_admin_users(page, limit, search, role, status)
     return jsonify(result)
 
+@admin_bp.route("/api/admin/users/<int:user_id>", methods=["GET"])
+@admin_required
+def api_user_detail(user_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            text("""
+                SELECT id, phone, name, role, plan, subscription_expiry,
+                       wallet_balance, is_blocked, referral_code, created_at
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "User not found"}), 404
+        user = dict(row._mapping)
+        return render_template("admin/admin_user_detail.html", user=user)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 @admin_bp.route("/api/admin/users/<int:user_id>/ban", methods=["POST"])
 @admin_required
 def api_ban_user(user_id):
