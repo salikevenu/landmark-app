@@ -76,10 +76,57 @@ def billed_term(monthly_paise, cycle=None):
     key = resolve_billing_cycle(cycle)
     return key, billed_amount_paise(monthly_paise, key), billed_duration_days(key)
 
-RAZORPAY_MODE = os.getenv("RAZORPAY_MODE", "test")
-RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
-RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+
+def _resolve_razorpay_mode():
+    raw = (os.getenv("RAZORPAY_MODE") or "").strip().lower()
+    if raw in ("live", "test"):
+        return raw
+    key_id = os.getenv("RAZORPAY_KEY_ID") or ""
+    if key_id.startswith("rzp_live_"):
+        return "live"
+    if os.getenv("RENDER") == "true":
+        return "live"
+    return "test"
+
+
+def get_razorpay_key_pair():
+    """Live/test keys from env. Live never falls back to RAZORPAY_TEST_*."""
+    mode = _resolve_razorpay_mode()
+    key_id = (os.getenv("RAZORPAY_KEY_ID") or "").strip() or None
+    key_secret = (os.getenv("RAZORPAY_KEY_SECRET") or "").strip() or None
+    if mode == "test":
+        key_id = key_id or (os.getenv("RAZORPAY_TEST_KEY_ID") or "").strip() or None
+        key_secret = key_secret or (os.getenv("RAZORPAY_TEST_KEY_SECRET") or "").strip() or None
+    return key_id, key_secret
+
+
+def get_razorpay_webhook_secret():
+    """Live webhook HMAC secret. Read at call time so Render env is current."""
+    return (os.getenv("RAZORPAY_WEBHOOK_SECRET") or "").strip() or None
+
+
+def log_razorpay_config():
+    """Safe boot log. Missing live keys warn; they do not crash the process."""
+    mode = _resolve_razorpay_mode()
+    key_id, key_secret = get_razorpay_key_pair()
+    if mode == "live":
+        if not key_id or not key_secret:
+            print("WARNING: Razorpay LIVE keys missing (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET) — payments will not work")
+        else:
+            print("Razorpay configured for LIVE mode")
+        if not get_razorpay_webhook_secret():
+            print("WARNING: RAZORPAY_WEBHOOK_SECRET is not set — live webhooks will return 503")
+        return
+    if not key_id or not key_secret:
+        print("WARNING: Razorpay test keys not configured - payment will not work")
+    else:
+        print(f"Razorpay configured for TEST mode with key: {key_id[:10]}...")
+
+
+# Snapshots for callers that still import these names. Prefer the getters above.
+RAZORPAY_MODE = _resolve_razorpay_mode()
+RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET = get_razorpay_key_pair()
+RAZORPAY_WEBHOOK_SECRET = get_razorpay_webhook_secret()
 BASE_URL = os.getenv("BASE_URL", "https://landmarkvts.in")
 
 
@@ -93,16 +140,3 @@ def get_plan_spec(plan_key):
         if spec["plan"] == plan_key or spec["role"] == plan_key:
             return display, spec
     return None, None
-
-
-_IN_RUNTIME = os.getenv("RENDER", "false") == "true" or __name__ == "__main__"
-
-if _IN_RUNTIME and RAZORPAY_MODE == "live":
-    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        raise ValueError("Razorpay keys missing for live mode")
-    print("Razorpay configured for LIVE mode")
-elif _IN_RUNTIME and RAZORPAY_MODE == "test":
-    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        print("WARNING: Razorpay test keys not configured - payment will not work")
-    else:
-        print(f"Razorpay configured for TEST mode with key: {RAZORPAY_KEY_ID[:10]}...")

@@ -8,7 +8,12 @@ import os
 from sqlalchemy import text
 
 from extensions import get_razorpay_client
-from config.payment_config import PLAN_PRICES, billed_term, get_plan_spec
+from config.payment_config import (
+    PLAN_PRICES,
+    billed_term,
+    get_plan_spec,
+    get_razorpay_webhook_secret,
+)
 from services.payment_service import (
     verify_payment_service,
     ensure_payments_plan_column,
@@ -21,8 +26,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 payment_bp = Blueprint("payment", __name__)
-
-WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
 
 def _json_from_result(result):
@@ -218,11 +221,12 @@ def razorpay_webhook():
     payload = request.get_data() or b""
     signature = request.headers.get("X-Razorpay-Signature") or ""
 
-    if not WEBHOOK_SECRET:
+    webhook_secret = get_razorpay_webhook_secret()
+    if not webhook_secret:
         return jsonify({"success": False, "error": "Webhook secret not configured"}), 503
 
     expected = hmac.new(
-        WEBHOOK_SECRET.encode(),
+        webhook_secret.encode(),
         payload,
         hashlib.sha256,
     ).hexdigest()
