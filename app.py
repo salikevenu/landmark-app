@@ -104,7 +104,7 @@ app.config.update(
     MAX_CONTENT_LENGTH=20 * 1024 * 1024,
     UPLOAD_FOLDER="static/uploads",
     JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "your-secure-jwt-secret-key"),
-    JWT_ACCESS_TOKEN_EXPIRES=timedelta(minutes=15),
+    JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=2),
     JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=7),
     JWT_TOKEN_LOCATION=["cookies", "headers"],
     JWT_COOKIE_SECURE=_cookie_secure,
@@ -401,7 +401,7 @@ def refresh():
                 phone = row._mapping.get("phone") or ""
     except Exception:
         pass
-    access_expires = timedelta(days=30) if remember_me else timedelta(minutes=15)
+    access_expires = timedelta(days=30) if remember_me else timedelta(hours=2)
     new_access_token = create_access_token(
         identity=str(current_user_id),
         additional_claims={"role": role, "phone": phone, "remember_me": remember_me},

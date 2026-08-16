@@ -23,4 +23,16 @@
     {% block admin_content %}{% endblock %}
   </main>
 </div>
+<script>
+  setInterval(function () {
+    var match = document.cookie.match(/(?:^|; )csrf_refresh_token=([^;]*)/);
+    fetch("/api/refresh", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "X-CSRF-TOKEN": match ? decodeURIComponent(match[1]) : ""
+      }
+    });
+  }, 10 * 60 * 1000);
+</script>
 {% endblock %}

@@ -422,6 +422,18 @@
 <script src="{{ url_for('static', filename='js/session.js') }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
+  setInterval(function () {
+    var match = document.cookie.match(/(?:^|; )csrf_refresh_token=([^;]*)/);
+    fetch("/api/refresh", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "X-CSRF-TOKEN": match ? decodeURIComponent(match[1]) : ""
+      }
+    });
+  }, 10 * 60 * 1000);
+</script>
+<script>
   // (All your previous JS functions — they remain the same)
   // ... payout, stats, listings, audit log, recent users, quick activation ...
   // I'm including the essential ones for completeness
@@ -456,7 +468,11 @@
 
       document.getElementById('totalUsers').innerText = stats.total_users || 0;
       document.getElementById('totalListings').innerText = stats.total_listings || 0;
-      document.getElementById('totalRevenue').innerText = '₹' + (stats.total_revenue || 0);
+      const revenue = Number(stats.revenue ?? stats.total_revenue ?? 0);
+      document.getElementById('totalRevenue').innerText = '₹' + revenue.toLocaleString('en-IN', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+      });
       document.getElementById('totalReferrals').innerText = stats.total_referrals || 0;
 
       new Chart(document.getElementById('usersSpark'), sparkline(chart.labels, chart.users, '#1f4ed8'));
