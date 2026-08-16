@@ -110,6 +110,30 @@ def admin_settings_page():
 def stats():
     period = request.args.get('period', 'week')
     stats = get_admin_stats(period)
+
+    conn = get_db_connection()
+    try:
+        # Razorpay rows are stored as status='activated' with amount in paise.
+        # Legacy/admin-approved rows use status='verified' (amount in rupees).
+        row = conn.execute(text("""
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN status = 'activated' THEN amount / 100.0
+                    ELSE amount
+                END
+            ), 0)
+            FROM payments
+            WHERE status IN ('verified', 'activated')
+        """)).scalar()
+        revenue = float(row or 0)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    stats["revenue"] = round(revenue, 2)
+    stats["total_revenue"] = stats["revenue"]
     return jsonify(stats)
 
 # Users
@@ -145,13 +169,34 @@ def _load_admin_user(user_id):
             pass
 
 
+def _load_admin_user_payments(user_id):
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            text("""
+                SELECT id, amount, status, created_at
+                FROM payments
+                WHERE user_id = :uid
+                ORDER BY created_at DESC, id DESC
+            """),
+            {"uid": user_id},
+        ).fetchall()
+        return [dict(r._mapping) for r in rows]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @admin_bp.route("/admin/users/<int:user_id>")
 @admin_required
 def admin_user_detail_page(user_id):
     user = _load_admin_user(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
-    return render_template("admin/admin_user_detail.html", user=user)
+    payments = _load_admin_user_payments(user_id)
+    return render_template("admin/admin_user_detail.html", user=user, payments=payments)
 
 
 @admin_bp.route("/api/admin/users/<int:user_id>", methods=["GET"])

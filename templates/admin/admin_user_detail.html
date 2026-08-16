@@ -8,7 +8,7 @@
     border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 16px;
     padding: 24px;
-    max-width: 720px;
+    max-width: 860px;
     box-shadow: 0 0 24px rgba(34, 211, 238, 0.12);
   }
   .user-detail-card h2 {
@@ -38,6 +38,51 @@
     color: #94a3b8;
     font-weight: 500;
     margin: 0 0 16px;
+  }
+  .payment-history {
+    margin: 8px 0 20px;
+  }
+  .payment-history h3 {
+    color: #22d3ee;
+    font-size: 1.05rem;
+    margin: 8px 0 12px;
+    text-shadow: 0 0 10px rgba(34, 211, 238, 0.35);
+  }
+  .payment-history table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .payment-history th,
+  .payment-history td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  }
+  .payment-history th {
+    color: #94a3b8;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .payment-empty {
+    color: #94a3b8;
+    font-weight: 500;
+    margin: 0;
+  }
+  .verify-payment-btn {
+    background: #22d3ee;
+    color: #0c121e;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .verify-payment-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
   }
 </style>
 
@@ -76,10 +121,74 @@
       {% endif %}
     </dd>
   </dl>
+  <div class="payment-history">
+    <h3>Payment History</h3>
+    {% if payments %}
+    <table>
+      <thead>
+        <tr>
+          <th>Transaction ID</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payments %}
+        <tr>
+          <td>{{ p.id }}</td>
+          <td>₹{{ p.amount if p.amount is not none else 0 }}</td>
+          <td>{{ p.status or "—" }}</td>
+          <td>
+            {% if p.created_at and p.created_at.strftime is defined %}
+              {{ p.created_at.strftime("%Y-%m-%d %H:%M") }}
+            {% else %}
+              {{ p.created_at or "—" }}
+            {% endif %}
+          </td>
+          <td>
+            {% if (p.status or "")|lower == "pending" %}
+            <button type="button" class="verify-payment-btn" data-payment-id="{{ p.id }}">Verify</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="payment-empty">No payment history found.</p>
+    {% endif %}
+  </div>
   <a class="user-link" href="{{ url_for('admin.admin_users_page') }}">← Back to users</a>
   &nbsp;|&nbsp;
   <a class="user-link" href="{{ url_for('admin.admin_dashboard_page') }}">Back to Dashboard</a>
 </div>
+
+<script>
+  document.querySelectorAll(".verify-payment-btn").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var paymentId = btn.getAttribute("data-payment-id");
+      btn.disabled = true;
+      try {
+        var res = await LandmarkSession.authFetch("/api/admin/payments/" + paymentId + "/approve", {
+          method: "POST"
+        });
+        if (!res.ok) {
+          var data = {};
+          try { data = await res.json(); } catch (e) {}
+          alert(data.error || "Could not verify payment.");
+          btn.disabled = false;
+          return;
+        }
+        window.location.reload();
+      } catch (err) {
+        alert("Could not verify payment.");
+        btn.disabled = false;
+      }
+    });
+  });
+</script>
 
 {% if has_location %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

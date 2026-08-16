@@ -67,7 +67,16 @@ def otp_phone_key():
         return f"otp-phone:{phone}"
     return get_remote_address()
 
-def get_or_create_user(phone, ip_address=None):
+def _parse_coord(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None):
     """Get existing user or create a new one."""
     with engine.connect() as conn:
         user = conn.execute(
@@ -80,13 +89,15 @@ def get_or_create_user(phone, ip_address=None):
 
         referral_code = generate_referral_code()
         result = conn.execute(text("""
-            INSERT INTO users (phone, name, role, referral_code, ip_address, created_at)
-            VALUES (:phone, '', 'free', :code, :ip, CURRENT_TIMESTAMP)
+            INSERT INTO users (phone, name, role, referral_code, ip_address, latitude, longitude, created_at)
+            VALUES (:phone, '', 'free', :code, :ip, :lat, :lng, CURRENT_TIMESTAMP)
             RETURNING id
         """), {
             "phone": phone,
             "code": referral_code,
             "ip": ip_address or request.remote_addr,
+            "lat": _parse_coord(latitude),
+            "lng": _parse_coord(longitude),
         })
         user_id = result.fetchone()[0]
         conn.commit()
@@ -97,6 +108,7 @@ def get_or_create_user(phone, ip_address=None):
             "name": "",
             "role": "free",
             "referral_code": referral_code,
+            "referred_by": None,
         }, "new"
 
 def generate_jwt_tokens(user_data, remember_me=False):
@@ -105,7 +117,7 @@ def generate_jwt_tokens(user_data, remember_me=False):
         access_expires = timedelta(days=30)
         refresh_expires = timedelta(days=365)
     else:
-        access_expires = timedelta(minutes=15)
+        access_expires = timedelta(hours=2)
         refresh_expires = timedelta(days=7)
 
     access_token = create_access_token(
@@ -300,40 +312,14 @@ def verify_otp():
         delete_verification(full_phone)
 
         # Create or login the user
+        user_data, status = get_or_create_user(
+            phone,
+            ip_address=request.remote_addr,
+            latitude=data.get("latitude"),
+            longitude=data.get("longitude"),
+        )
+
         with engine.connect() as conn:
-            
-            user = conn.execute(
-                text("SELECT id, phone, name, role, referral_code, referred_by FROM users WHERE phone = :phone"),
-                {"phone": phone}
-            ).fetchone()
-
-            if user:
-                user_data = dict(user._mapping)
-                status = "existing"
-            else:
-                referral_code = generate_referral_code()
-                result = conn.execute(text("""
-                    INSERT INTO users (phone, name, role, referral_code, ip_address, created_at)
-                    VALUES (:phone, '', 'free', :code, :ip, CURRENT_TIMESTAMP)
-                    RETURNING id
-                """), {
-                    "phone": phone,
-                    "code": referral_code,
-                    "ip": request.remote_addr,
-                })
-                user_id = result.fetchone()[0]
-                conn.commit()
-                
-                user_data = {
-                    "id": user_id,
-                    "phone": phone,
-                    "name": "",
-                    "role": "free",
-                    "referral_code": referral_code,
-                    "referred_by": None,
-                }
-                status = "new"
-
             try:
                 if status == "new" and user_data.get("referred_by") is None:
                     ref_code = session.get("ref_code")
@@ -363,7 +349,7 @@ def verify_otp():
                 access_expires = timedelta(days=30)
                 refresh_expires = timedelta(days=365)
             else:
-                access_expires = timedelta(minutes=15)
+                access_expires = timedelta(hours=2)
                 refresh_expires = timedelta(days=7)
 
             access_token = create_access_token(

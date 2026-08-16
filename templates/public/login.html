@@ -505,6 +505,39 @@ async function sendOTP() {
     }
 }
 
+function getLoginLocation() {
+    return new Promise(function (resolve) {
+        if (!navigator.geolocation) {
+            resolve({});
+            return;
+        }
+        var done = false;
+        var timer = setTimeout(function () {
+            if (done) return;
+            done = true;
+            resolve({});
+        }, 8000);
+        navigator.geolocation.getCurrentPosition(
+            function (pos) {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                resolve({
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude
+                });
+            },
+            function () {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                resolve({});
+            },
+            { enableHighAccuracy: false, timeout: 7000, maximumAge: 60000 }
+        );
+    });
+}
+
 async function verifyOTP() {
     const submitBtn = actionBtn;
     submitBtn.disabled = true;
@@ -529,6 +562,7 @@ async function verifyOTP() {
     setStatus('Verifying OTP...', 'info');
 
     try {
+        const location = await getLoginLocation();
         const response = await fetch('/api/auth/verify-otp', {
             method: 'POST',
             credentials: 'include',
@@ -536,7 +570,9 @@ async function verifyOTP() {
             body: JSON.stringify({
                 phone: pendingPhone,
                 otp: otp,
-                remember_me: rememberMeCheckbox.checked
+                remember_me: rememberMeCheckbox.checked,
+                latitude: location.latitude,
+                longitude: location.longitude
             })
         });
 
