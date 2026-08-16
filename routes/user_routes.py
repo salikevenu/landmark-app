@@ -108,15 +108,30 @@ def profile():
 @jwt_required()
 def profile_data():
     """Optional explicit JSON profile endpoint."""
-    user_id = get_jwt_identity()
+    user_id = _as_user_id(get_jwt_identity())
+    conn = None
     try:
-        user = get_user_by_id(user_id)
+        conn = get_db_connection()
+        user = conn.execute(
+            text("""
+                SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
         if not user:
             return jsonify({"error": "User not found"}), 404
-        return jsonify(_profile_payload(user)), 200
-    except Exception as e:
+        return jsonify(_profile_payload(dict(user._mapping))), 200
+    except Exception:
         logger.exception("profile_data error")
         return jsonify({"error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @user_bp.route("/profile/update", methods=["PUT"])

@@ -15,9 +15,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(
     DATABASE_URL,
     poolclass=NullPool,
+    pool_timeout=10,
     connect_args={
         "sslmode": "require",
         "connect_timeout": 10,
+        "options": "-c statement_timeout=15000",
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
