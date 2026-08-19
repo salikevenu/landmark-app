@@ -48,6 +48,27 @@
         background: transparent;
         color: #0ff;
     }
+    .map-radius-bar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+    .map-radius-bar label {
+        color: #9ab;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+    .map-radius-bar select {
+        background: #0c121e;
+        border: 1px solid rgba(0, 255, 255, 0.35);
+        color: #eef5ff;
+        border-radius: 999px;
+        padding: 10px 16px;
+        outline: none;
+        cursor: pointer;
+    }
     .map-status { color: #9ab; font-size: 0.85rem; margin-top: 8px; }
     .map-popup h3 { margin: 0 0 6px; font-size: 1rem; }
     .map-popup p { margin: 0 0 4px; font-size: 0.85rem; }
@@ -109,6 +130,17 @@
         <button type="button" class="locate" id="locateBtn">📍 My location</button>
         <button type="submit" id="searchBtn">Search</button>
     </form>
+    <div class="map-radius-bar">
+        <label for="radiusFilter">Distance</label>
+        <select id="radiusFilter">
+            <option value="">All</option>
+            <option value="5">5 km</option>
+            <option value="10">10 km</option>
+            <option value="20">20 km</option>
+            <option value="30">30 km</option>
+            <option value="50">50 km</option>
+        </select>
+    </div>
     <div id="map"></div>
     <p class="map-status" id="mapStatus">Loading map…</p>
 </div>
@@ -157,6 +189,8 @@
 
     let allBusinesses = [];
     let focusMarker = null;
+    let userLatLng = null;
+    const radiusFilter = document.getElementById('radiusFilter');
 
     function authHeaders() {
         return {};
@@ -205,6 +239,79 @@
         });
         setStatus((list || []).length + ' businesses on map');
         map.invalidateSize();
+    }
+
+    function haversineKm(lat1, lng1, lat2, lng2) {
+        const toRad = function (d) { return d * Math.PI / 180; };
+        const dLat = toRad(lat2 - lat1);
+        const dLng = toRad(lng2 - lng1);
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+            + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2))
+            * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return 2 * 6371 * Math.asin(Math.sqrt(a));
+    }
+
+    function originForRadius() {
+        if (userLatLng) return userLatLng;
+        const c = map.getCenter();
+        if (c && Number(c.lat) && Number(c.lng) && map.getZoom() >= 10) {
+            return [c.lat, c.lng];
+        }
+        return null;
+    }
+
+    function applyRadiusFilter() {
+        const km = parseFloat(radiusFilter && radiusFilter.value);
+        if (!km) {
+            renderMarkers(allBusinesses);
+            return;
+        }
+        const origin = originForRadius();
+        if (!origin) {
+            setStatus('Please enable location to use distance filters.');
+            if (radiusFilter) radiusFilter.value = '';
+            return;
+        }
+        const filtered = allBusinesses.filter(function (b) {
+            const ll = coords(b);
+            if (!ll) return false;
+            return haversineKm(origin[0], origin[1], ll[0], ll[1]) <= km;
+        });
+        renderMarkers(filtered);
+        if (filtered.length) {
+            const bounds = L.latLngBounds(filtered.map(function (b) { return coords(b); }).filter(Boolean));
+            if (bounds.isValid()) map.fitBounds(bounds.pad(0.15));
+        } else {
+            setStatus('No businesses within ' + km + ' km');
+        }
+    }
+
+    function ensureLocationThenFilter() {
+        const km = parseFloat(radiusFilter && radiusFilter.value);
+        if (!km) {
+            applyRadiusFilter();
+            return;
+        }
+        if (originForRadius()) {
+            applyRadiusFilter();
+            return;
+        }
+        if (!navigator.geolocation) {
+            setStatus('Please enable location to use distance filters.');
+            if (radiusFilter) radiusFilter.value = '';
+            return;
+        }
+        navigator.geolocation.getCurrentPosition(
+            function (pos) {
+                userLatLng = [pos.coords.latitude, pos.coords.longitude];
+                applyRadiusFilter();
+            },
+            function () {
+                setStatus('Please enable location to use distance filters.');
+                if (radiusFilter) radiusFilter.value = '';
+            },
+            { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
     }
 
     function pickBestMatch(list, q) {
@@ -311,6 +418,7 @@
         navigator.geolocation.getCurrentPosition(
             function (pos) {
                 const ll = [pos.coords.latitude, pos.coords.longitude];
+                userLatLng = ll;
                 map.flyTo(ll, 14, { animate: true, duration: 1.4 });
                 L.circleMarker(ll, {
                     radius: 8,
@@ -332,6 +440,9 @@
         searchAndFly(searchInput.value);
     });
     document.getElementById('locateBtn').addEventListener('click', locateUser);
+    if (radiusFilter) {
+        radiusFilter.addEventListener('change', ensureLocationThenFilter);
+    }
 
     const params = new URLSearchParams(window.location.search);
     const deepId = params.get('id');
