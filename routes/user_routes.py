@@ -449,28 +449,13 @@ def api_invite():
 @user_bp.route("/api/track", methods=["POST"])
 @jwt_required()
 def track():
-    data = request.json
-    user_id = get_jwt_identity()
-    conn = get_db_connection()
-    conn.execute(
-        text("INSERT INTO interactions (business_id, user_id, action) VALUES (:bid, :uid, :action)"),
-        {"bid": data["business_id"], "uid": user_id, "action": data["action"]}
-    )
-    conn.commit()
-    return jsonify({"status": "ok"})
+    """Disabled: `interactions` is not a production table."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @user_bp.route("/api/recommend")
 def recommend():
-    conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT b.*, COUNT(i.id) as score
-        FROM businesses b
-        LEFT JOIN interactions i ON b.id = i.business_id
-        GROUP BY b.id
-        ORDER BY score DESC
-        LIMIT 10
-    """)).fetchall()
-    return jsonify([dict(r._mapping) for r in rows])
+    """Disabled: joined missing `interactions` and leaked legacy `businesses` rows."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @user_bp.route("/subscription-status", methods=["GET"])
 @jwt_required()

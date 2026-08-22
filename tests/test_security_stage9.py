@@ -256,6 +256,16 @@ class FailClosedAndDisclosureTests(unittest.TestCase):
         src = (ROOT / "routes" / "service_routes.py").read_text(encoding="utf-8")
         self.assertIn("This endpoint is disabled", src)
         self.assertNotIn("INSERT INTO services", src)
+        self.assertNotIn("FROM services", src)
+
+    def test_legacy_track_and_recommend_disabled(self):
+        src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
+        track = src.split("def track")[1].split("def recommend")[0]
+        rec = src.split("def recommend")[1].split("def subscription_status")[0]
+        self.assertIn("This endpoint is disabled", track)
+        self.assertIn("This endpoint is disabled", rec)
+        self.assertNotIn("INSERT INTO interactions", src)
+        self.assertNotIn("FROM businesses", rec)
 
     def test_public_browse_does_not_leak_exceptions(self):
         src = (ROOT / "routes" / "listing_routes.py").read_text(encoding="utf-8")
