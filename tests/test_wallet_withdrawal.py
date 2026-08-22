@@ -65,6 +65,7 @@ class WalletStore:
         self.balances = {}
         self.withdrawals = []
         self.txs = []
+        self.business_refs = {}
         self.settings = {
             "withdrawal_min_amount": "100",
             "withdrawal_max_amount": "50000",
@@ -94,6 +95,18 @@ class WalletConn:
                 for k, v in self.store.settings.items()
             ]
             return FakeResult(rows=rows)
+
+        if "from withdraw_requests" in q and "approved" in q:
+            uid = int(params["uid"])
+            for w in self.store.withdrawals:
+                if w["user_id"] == uid and w.get("status") in ("approved", "paid"):
+                    return FakeResult(FakeRow({"id": w["id"]}))
+            return FakeResult(None)
+
+        if "from users" in q and "referred_by" in q:
+            uid = int(params["uid"])
+            n = int(self.store.business_refs.get(uid, 0))
+            return FakeResult(FakeRow({"cnt": n}))
 
         if "from withdraw_requests" in q and "reference_id" in q and "select" in q:
             uid = int(params["uid"])
@@ -226,6 +239,11 @@ class WithdrawalSafetyTests(unittest.TestCase):
     def setUp(self):
         self.store = WalletStore()
         self.store.balances[1] = Decimal("150.00")
+        # Subsequent-withdrawal tests: first withdrawal already completed.
+        self.store.withdrawals.append({
+            "id": 0, "user_id": 1, "amount": Decimal("500.00"),
+            "status": "paid", "upi_id": "done@upi", "reference_id": None,
+        })
         self.patcher = patch("services.wallet_service.get_db_connection", side_effect=self.store.connect)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -235,13 +253,14 @@ class WithdrawalSafetyTests(unittest.TestCase):
             out = request_withdrawal(1, amt, "user@upi")
             self.assertFalse(out["success"], amt)
         self.assertEqual(self.store.balances[1], Decimal("150.00"))
-        self.assertEqual(self.store.withdrawals, [])
+        pending = [w for w in self.store.withdrawals if w["status"] == "pending"]
+        self.assertEqual(pending, [])
 
     def test_exactly_100(self):
         out = request_withdrawal(1, 100, "user@upi")
         self.assertTrue(out["success"])
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
-        self.assertEqual(self.store.withdrawals[0]["status"], "pending")
+        self.assertEqual(self.store.withdrawals[-1]["status"], "pending")
 
     def test_decimal_amount(self):
         self.store.balances[1] = Decimal("200.00")
@@ -275,7 +294,7 @@ class WithdrawalSafetyTests(unittest.TestCase):
         self.assertEqual(len(bad), 1)
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
         self.assertGreaterEqual(self.store.balances[1], 0)
-        self.assertEqual(len(self.store.withdrawals), 1)
+        self.assertEqual(len(self.store.withdrawals), 2)
 
     def test_duplicate_idempotency_key(self):
         a = request_withdrawal(1, 100, "user@upi", idempotency_key="idem-1")
@@ -283,22 +302,22 @@ class WithdrawalSafetyTests(unittest.TestCase):
         self.assertTrue(a["success"])
         self.assertTrue(b["success"])
         self.assertTrue(b.get("duplicate"))
-        self.assertEqual(len(self.store.withdrawals), 1)
+        self.assertEqual(len(self.store.withdrawals), 2)
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
 
     def test_duplicate_admin_approval(self):
         request_withdrawal(1, 100, "user@upi")
-        wid = self.store.withdrawals[0]["id"]
+        wid = self.store.withdrawals[-1]["id"]
         first = approve_withdrawal(wid)
         second = approve_withdrawal(wid)
         self.assertTrue(first["success"])
         self.assertFalse(second["success"])
-        self.assertEqual(self.store.withdrawals[0]["status"], "approved")
+        self.assertEqual(self.store.withdrawals[-1]["status"], "approved")
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
 
     def test_rejection_refunds_once(self):
         request_withdrawal(1, 100, "user@upi")
-        wid = self.store.withdrawals[0]["id"]
+        wid = self.store.withdrawals[-1]["id"]
         first = reject_withdrawal(wid)
         second = reject_withdrawal(wid)
         self.assertTrue(first["success"])
@@ -309,16 +328,16 @@ class WithdrawalSafetyTests(unittest.TestCase):
 
     def test_paid_cannot_reject(self):
         request_withdrawal(1, 100, "user@upi")
-        wid = self.store.withdrawals[0]["id"]
+        wid = self.store.withdrawals[-1]["id"]
         approve_withdrawal(wid)
         mark_withdrawal_paid(wid)
         self.assertFalse(reject_withdrawal(wid)["success"])
-        self.assertEqual(self.store.withdrawals[0]["status"], "paid")
+        self.assertEqual(self.store.withdrawals[-1]["status"], "paid")
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
 
     def test_retry_after_rejection(self):
         request_withdrawal(1, 100, "user@upi")
-        reject_withdrawal(self.store.withdrawals[0]["id"])
+        reject_withdrawal(self.store.withdrawals[-1]["id"])
         again = request_withdrawal(1, 100, "user@upi")
         self.assertTrue(again["success"])
         self.assertEqual(self.store.balances[1], Decimal("50.00"))
@@ -338,7 +357,7 @@ class WithdrawalSafetyTests(unittest.TestCase):
         out = request_withdrawal(1, 100, "user@upi")
         self.assertTrue(out["success"])
         self.assertEqual(self.store.balances[2], Decimal("500.00"))
-        self.assertEqual(self.store.withdrawals[0]["user_id"], 1)
+        self.assertEqual(self.store.withdrawals[-1]["user_id"], 1)
 
     def test_debit_cannot_go_negative(self):
         self.assertFalse(debit_wallet(1, 151, source="promo"))
@@ -354,12 +373,55 @@ class WithdrawalSafetyTests(unittest.TestCase):
         src = (ROOT / "services" / "wallet_service.py").read_text(encoding="utf-8")
         self.assertIn("wallet_balance.balance", src)
         self.assertNotIn("UPDATE users SET wallet_balance", src)
+        self.assertIn("First withdrawal requires minimum ₹500 balance", src)
         withdraw_src = (ROOT / "routes" / "wallet_routes.py").read_text(encoding="utf-8")
         self.assertIn("request_withdrawal", withdraw_src)
         self.assertNotIn("Minimum withdraw ₹500", withdraw_src)
         admin = (ROOT / "services" / "admin_service.py").read_text(encoding="utf-8")
         self.assertIn("approve_withdrawal", admin)
         self.assertNotIn("debit_wallet(row[0]", admin)
+
+
+class FirstWithdrawalPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.store = WalletStore()
+        self.patcher = patch("services.wallet_service.get_db_connection", side_effect=self.store.connect)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+
+    def test_first_withdrawal_requires_500_balance(self):
+        self.store.balances[1] = Decimal("499.00")
+        self.store.business_refs[1] = 1
+        out = request_withdrawal(1, 100, "user@upi")
+        self.assertFalse(out["success"])
+        self.assertIn("₹500", out["error"])
+        self.assertEqual(self.store.balances[1], Decimal("499.00"))
+        self.assertEqual(self.store.withdrawals, [])
+
+    def test_first_withdrawal_requires_paid_business_referral(self):
+        self.store.balances[1] = Decimal("500.00")
+        self.store.business_refs[1] = 0
+        out = request_withdrawal(1, 100, "user@upi")
+        self.assertFalse(out["success"])
+        self.assertIn("paid business", out["error"].lower())
+        self.assertEqual(self.store.balances[1], Decimal("500.00"))
+
+    def test_first_withdrawal_succeeds_with_500_and_referral(self):
+        self.store.balances[1] = Decimal("500.00")
+        self.store.business_refs[1] = 1
+        out = request_withdrawal(1, 100, "user@upi")
+        self.assertTrue(out["success"])
+        self.assertEqual(self.store.balances[1], Decimal("400.00"))
+
+    def test_after_first_100_with_150_ok(self):
+        self.store.balances[1] = Decimal("150.00")
+        self.store.withdrawals.append({
+            "id": 0, "user_id": 1, "amount": Decimal("500"), "status": "paid",
+            "upi_id": "x", "reference_id": None,
+        })
+        out = request_withdrawal(1, 100, "user@upi")
+        self.assertTrue(out["success"])
+        self.assertEqual(self.store.balances[1], Decimal("50.00"))
 
 
 class WithdrawalRouteAuthTests(unittest.TestCase):
@@ -380,6 +442,10 @@ class WithdrawalRouteAuthTests(unittest.TestCase):
         store = WalletStore()
         store.balances[7] = Decimal("200.00")
         store.balances[99] = Decimal("200.00")
+        store.withdrawals.append({
+            "id": 0, "user_id": 7, "amount": Decimal("500"), "status": "paid",
+            "upi_id": "x", "reference_id": None,
+        })
         with self.app.app_context():
             token = create_access_token(identity="7")
         with patch("services.wallet_service.get_db_connection", side_effect=store.connect):

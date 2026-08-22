@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 CANONICAL_WALLET = "wallet_balance.balance"
 MIN_WITHDRAW = Decimal("100.00")
 MAX_WITHDRAW = Decimal("50000.00")
+FIRST_WITHDRAW_MIN_BALANCE = Decimal("500.00")
+PAID_BUSINESS_PLANS = ("business_basic", "business_premium")
 MONEY_QUANT = Decimal("0.01")
 WITHDRAW_DEBIT_SOURCE = "withdraw_request"
 WITHDRAW_REFUND_SOURCE = "withdraw_refund"
@@ -229,6 +231,36 @@ def debit_wallet(user_id, amount, source="withdraw", reference_id=None):
             pass
 
 
+def _had_first_withdrawal(conn, user_id):
+    """True after an approved or paid withdrawal. Does not use optional prod columns."""
+    row = conn.execute(text("""
+        SELECT id FROM withdraw_requests
+        WHERE user_id = :uid AND status IN ('approved', 'paid')
+        LIMIT 1
+    """), {"uid": user_id}).fetchone()
+    return row is not None
+
+
+def _paid_business_referral_count(conn, user_id):
+    row = conn.execute(text("""
+        SELECT COUNT(*) AS cnt FROM users
+        WHERE referred_by = :uid
+          AND plan IN ('business_basic', 'business_premium')
+    """), {"uid": user_id}).fetchone()
+    if not row:
+        return 0
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        try:
+            return int(dict(mapping).get("cnt") or 0)
+        except Exception:
+            pass
+    try:
+        return int(row[0] or 0)
+    except Exception:
+        return 0
+
+
 def _existing_idempotent_withdraw(conn, user_id, idempotency_key):
     if not idempotency_key:
         return None
@@ -249,6 +281,12 @@ def request_withdrawal(user_id, amount, upi_id, idempotency_key=None):
 
     Money leaves wallet_balance.balance immediately. Reject restores it once.
     Admin approve must NOT debit again.
+
+    Product rules:
+      - Amount always ≥ ₹100 (admin_settings withdrawal_min_amount).
+      - First withdrawal also requires ₹500 spendable balance and at least one
+        referred user on a paid business plan (business_basic / business_premium).
+      - Later withdrawals only need the ₹100 minimum and sufficient balance.
     """
     uid = _as_int_user_id(user_id)
     if uid is None:
@@ -283,9 +321,31 @@ def request_withdrawal(user_id, amount, upi_id, idempotency_key=None):
             }
 
         _ensure_wallet_row(conn, uid)
-        conn.execute(text(
+        locked = conn.execute(text(
             "SELECT balance FROM wallet_balance WHERE user_id = :uid FOR UPDATE"
-        ), {"uid": uid})
+        ), {"uid": uid}).fetchone()
+        mapped = getattr(locked, "_mapping", None) if locked is not None else None
+        try:
+            available = _money(mapped["balance"] if mapped else 0)
+        except Exception:
+            available = Decimal("0.00")
+
+        if not _had_first_withdrawal(conn, uid):
+            if available < FIRST_WITHDRAW_MIN_BALANCE:
+                conn.rollback()
+                return {
+                    "success": False,
+                    "error": "First withdrawal requires minimum ₹500 balance",
+                    "_http": 400,
+                }
+            if _paid_business_referral_count(conn, uid) < 1:
+                conn.rollback()
+                return {
+                    "success": False,
+                    "error": "You must refer at least 1 paid business subscription to withdraw",
+                    "_http": 400,
+                }
+
         if not _cas_debit(conn, uid, money):
             conn.rollback()
             return {"success": False, "error": "Insufficient wallet balance", "_http": 400}
