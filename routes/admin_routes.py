@@ -339,9 +339,12 @@ def api_delete_listing(listing_id):
 @admin_bp.route("/api/admin/listings/<int:listing_id>/sponsor", methods=["POST"])
 @admin_required
 def api_sponsor_listing(listing_id):
+    """Admin-granted unpaid ranking boost. Not a Razorpay/wallet purchase."""
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = sponsor_listing_admin(listing_id, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 409
     return jsonify(result)
 
 # Payments

@@ -326,11 +326,81 @@ def delete_listing_admin(listing_id, admin_id, admin_phone, ip):
     return {'status': 'deleted'}
 
 def sponsor_listing_admin(listing_id, admin_id, admin_phone, ip):
-    from services.listing_service import sponsor_listing_service
-    result = sponsor_listing_service(listing_id)
-    if result.get('status') == 'sponsored':
-        log_admin_action(admin_id, admin_phone, 'sponsor_listing', 'listing', str(listing_id), f'Sponsored listing {listing_id}', ip)
-    return result
+    """Admin-granted nearby ranking boost. Not a customer payment.
+
+    Does not credit wallets, write payments, or enqueue referral commission.
+    Only approved + active listings can be sponsored.
+    """
+    conn = get_db_connection()
+    try:
+        result = conn.execute(
+            text("""
+                UPDATE listings
+                SET is_sponsored = 1
+                WHERE id = :listing_id
+                  AND status = 'approved'
+                  AND is_active = 1
+                RETURNING id, user_id
+            """),
+            {"listing_id": listing_id},
+        )
+        row = result.fetchone()
+        if not row:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            existing = conn.execute(
+                text("SELECT id, status, is_active FROM listings WHERE id = :listing_id"),
+                {"listing_id": listing_id},
+            ).fetchone()
+            if not existing:
+                return {"error": "Listing not found", "_http": 404}
+            return {
+                "error": "Listing cannot be sponsored",
+                "_http": 409,
+                "current_status": existing._mapping.get("status"),
+                "is_active": existing._mapping.get("is_active"),
+            }
+
+        start = datetime.utcnow()
+        end = start + timedelta(days=30)
+        conn.execute(
+            text("""
+                INSERT INTO sponsored_ads (
+                    user_id, listing_id, plan, amount, start_date, end_date, is_active
+                ) VALUES (
+                    :uid, :lid, 'admin_grant', 0, :start, :end, 1
+                )
+            """),
+            {
+                "uid": row._mapping["user_id"],
+                "lid": listing_id,
+                "start": start,
+                "end": end,
+            },
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    log_admin_action(
+        admin_id, admin_phone, 'sponsor_listing', 'listing', str(listing_id),
+        f'Admin-granted unpaid sponsorship for listing {listing_id}', ip,
+    )
+    return {
+        "status": "sponsored",
+        "granted_by": "admin",
+        "paid": False,
+    }
 
 # -------------------------------
 # PAYMENT MANAGEMENT

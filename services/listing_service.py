@@ -211,20 +211,11 @@ def delete_listing_service(listing_id):
 
 
 def sponsor_listing_service(listing_id):
-    conn = get_db_connection()
-    start = datetime.utcnow()
-    end = start + timedelta(days=30)
-    conn.execute(text("""
-        INSERT INTO sponsored_ads (listing_id, plan, amount, start_date, end_date)
-        VALUES (:listing_id, 'top_30_days', 999, :start, :end)
-    """), {
-        "listing_id": listing_id,
-        "start": start,
-        "end": end
-    })
-    conn.execute(text("UPDATE listings SET is_sponsored = 1 WHERE id = :id"), {"id": listing_id})
-    conn.commit()
-    return {"status": "sponsored"}
+    """LEGACY / DISABLED. Live path: admin_service.sponsor_listing_admin (admin-granted, unpaid)."""
+    logger.error(
+        "LEGACY DISABLED: listing_service.sponsor_listing_service must not set sponsored flags"
+    )
+    return {"error": "legacy_listing_sponsor_disabled"}
 
 
 def _as_int_id(value):
