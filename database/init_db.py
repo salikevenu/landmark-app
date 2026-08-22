@@ -197,6 +197,21 @@ def init_db():
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_withdraw_user ON withdraw_requests(user_id)"))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_withdraw_requests_user_reference
+        ON withdraw_requests (user_id, reference_id)
+        WHERE reference_id IS NOT NULL
+    """))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_tx_withdraw_debit_ref
+        ON wallet_transactions (reference_id)
+        WHERE type = 'debit' AND source = 'withdraw_request' AND reference_id IS NOT NULL
+    """))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_tx_withdraw_refund_ref
+        ON wallet_transactions (reference_id)
+        WHERE type = 'credit' AND source = 'withdraw_refund' AND reference_id IS NOT NULL
+    """))
 
     # =====================================================
     # LISTINGS TABLE

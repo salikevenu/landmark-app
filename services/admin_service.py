@@ -3,7 +3,7 @@ import io
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.init_db import get_db_connection
-from services.wallet_service import credit_wallet, debit_wallet
+from services.wallet_service import approve_withdrawal, mark_withdrawal_paid, reject_withdrawal
 from services.payment_service import activate_subscription
 
 # Helper to convert SQLAlchemy row to dict (for compatibility with old code)
@@ -383,36 +383,24 @@ def get_withdraw_requests(page=1, limit=50, status_filter=''):
     return {'withdrawals': withdrawals, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    row = conn.execute(
-        text("SELECT user_id, amount FROM withdraw_requests WHERE id = :wid AND status='pending'"),
-        {"wid": wid}
-    ).fetchone()
-    if not row:
-        return {'error': 'Withdrawal not found or already processed'}
-    success = debit_wallet(row[0], row[1], f"Withdraw approved WD-{wid}", f"WD-{wid}")
-    if not success:
-        return {'error': 'Insufficient balance'}
-    conn.execute(text("UPDATE withdraw_requests SET status = 'approved' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = approve_withdrawal(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or already processed')}
     log_admin_action(admin_id, admin_phone, 'approve_withdraw', 'withdraw', str(wid), f'Approved withdrawal {wid}', ip)
-    conn.close()
     return {'status': 'approved'}
 
 def reject_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE withdraw_requests SET status = 'rejected' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = reject_withdrawal(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or already processed')}
     log_admin_action(admin_id, admin_phone, 'reject_withdraw', 'withdraw', str(wid), f'Rejected withdrawal {wid}', ip)
-    conn.close()
     return {'status': 'rejected'}
 
 def mark_withdraw_paid(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE withdraw_requests SET status = 'paid' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = mark_withdrawal_paid(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or not payable')}
     log_admin_action(admin_id, admin_phone, 'mark_paid', 'withdraw', str(wid), f'Marked withdrawal {wid} as paid', ip)
-    conn.close()
     return {'status': 'paid'}
 
 def bulk_approve_withdrawals(wids, admin_id, admin_phone, ip):

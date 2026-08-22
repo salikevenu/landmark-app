@@ -641,45 +641,13 @@ def verify_referral(ref_id):
 @admin_bp.route("/api/admin/withdrawals/<int:wid>/paid-with-flag", methods=["POST"])
 @admin_required
 def mark_withdraw_paid_with_flag(wid):
-    """Mark withdrawal as paid AND set first-withdrawal flag"""
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
-
-        withdrawal = conn.execute(
-            text("SELECT user_id, status FROM withdraw_requests WHERE id = :id"),
-            {"id": wid}
-        ).fetchone()
-
-        if not withdrawal:
-            return jsonify({"error": "Withdrawal not found"}), 404
-
-        user_id = withdrawal._mapping["user_id"]
-
-        # Mark as paid
-        conn.execute(
-            text("UPDATE withdraw_requests SET status = 'paid', processed_at = NOW() WHERE id = :id"),
-            {"id": wid}
-        )
-
-        # Set first withdrawal flag
-        conn.execute(
-            text("UPDATE wallet_balance SET had_first_withdrawal = TRUE WHERE user_id = :uid AND had_first_withdrawal = FALSE"),
-            {"uid": user_id}
-        )
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "mark_withdraw_paid", "withdrawal", wid,
-                         details="Withdrawal marked as paid, first-withdrawal flag set", ip_address=ip)
-
-        return jsonify({"message": "Withdrawal marked as paid"}), 200
-
-    except Exception as e:
-        logger.exception("mark_withdraw_paid_with_flag error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
+    """Mark withdrawal as paid using the canonical state machine."""
+    admin_id, admin_phone = get_admin_info()
+    ip = request.remote_addr
+    result = mark_withdraw_paid(wid, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+    return jsonify({"message": "Withdrawal marked as paid", "status": "paid"}), 200
 
 
 # ============================
