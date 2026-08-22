@@ -503,7 +503,22 @@ def get_settings():
     conn.close()
     return settings
 
+FROZEN_ADMIN_SETTINGS = frozenset({
+    "withdrawal_min_amount",
+    "withdrawal_max_amount",
+    "commission_rate",
+    "referral_bonus_percent",
+    "recurring_commission_percent",
+})
+
+
 def update_setting(key, value, admin_id, admin_phone, ip):
+    if key in FROZEN_ADMIN_SETTINGS:
+        return {
+            "status": "forbidden",
+            "error": "This setting is frozen and cannot be changed from the admin API",
+            "key": key,
+        }
     conn = get_db_connection()
     conn.execute(text("UPDATE admin_settings SET value = :value, updated_at = CURRENT_TIMESTAMP WHERE key = :key"), {"value": value, "key": key})
     conn.commit()

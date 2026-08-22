@@ -24,6 +24,7 @@ from services.admin_service import (
 import logging
 logger = logging.getLogger(__name__)
 from services.payment_service import activate_subscription
+from routes.decorators import db_user_is_admin
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -34,20 +35,34 @@ def admin_required(fn):
         claims = get_jwt()
         if claims.get("role") != "admin":
             return jsonify({"error": "Admin access required"}), 403
+        if not db_user_is_admin(get_jwt_identity()):
+            return jsonify({"error": "Admin access required"}), 403
         return fn(*args, **kwargs)
     return wrapper
 
 def get_admin_info():
-    """Helper to get current admin id and phone from JWT"""
+    """Helper to get current admin id and phone from JWT (id or phone identity)."""
     identity = get_jwt_identity()
     conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT id, phone FROM users WHERE phone = :phone"),
-        {"phone": identity}
-    ).fetchone()
-    if not user:
-        return None, None
-    return user._mapping['id'], user._mapping['phone']
+    try:
+        if str(identity).isdigit():
+            user = conn.execute(
+                text("SELECT id, phone, role FROM users WHERE id = :id"),
+                {"id": int(identity)},
+            ).fetchone()
+        else:
+            user = conn.execute(
+                text("SELECT id, phone, role FROM users WHERE phone = :phone"),
+                {"phone": identity},
+            ).fetchone()
+        if not user or (user._mapping.get("role") or "") != "admin":
+            return None, None
+        return user._mapping["id"], user._mapping["phone"]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # -------------------------------
 # HTML PAGES (shells)
@@ -436,6 +451,18 @@ def api_update_setting():
     value = data.get('value')
     if not key:
         return jsonify({'error': 'Missing key'}), 400
+    frozen = {
+        "withdrawal_min_amount",
+        "withdrawal_max_amount",
+        "commission_rate",
+        "referral_bonus_percent",
+        "recurring_commission_percent",
+    }
+    if key in frozen:
+        return jsonify({
+            "error": "This setting is frozen and cannot be changed from the admin API",
+            "key": key,
+        }), 403
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = update_setting(key, value, admin_id, admin_phone, ip)
@@ -569,70 +596,14 @@ def api_audit_log():
 @admin_bp.route("/api/admin/referrals/<int:ref_id>/verify", methods=["POST"])
 @admin_required
 def verify_referral(ref_id):
-    """LEGACY: converts historical referral_transactions pending ₹2 rows.
+    """LEGACY. Must not credit wallets or mutate spendable ledger.
 
-    Not the live 10%/5% commission path (services.referral_commission).
-    Do not wire new payments through this endpoint.
+    Live commissions: services.referral_commission.
     """
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
-
-        ref = conn.execute(
-            text("SELECT referrer_id, referred_user_id, status FROM referral_transactions WHERE id = :id"),
-            {"id": ref_id}
-        ).fetchone()
-
-        if not ref:
-            return jsonify({"error": "Referral not found"}), 404
-
-        referrer_id = ref._mapping["referrer_id"]
-        referred_user_id = ref._mapping["referred_user_id"]
-
-        # Mark referral as completed
-        conn.execute(
-            text("UPDATE referral_transactions SET status = 'completed' WHERE id = :id"),
-            {"id": ref_id}
-        )
-
-        # Convert all pending wallet transactions for this referral to credit
-        conn.execute(
-            text("""
-                UPDATE wallet_transactions
-                SET status = 'credit'
-                WHERE reference_id = :ref_id AND source = 'referral' AND status = 'pending'
-            """),
-            {"ref_id": str(ref_id)}
-        )
-
-        # If referred user has a paid business plan, increment referrer's business count
-        plan_row = conn.execute(
-            text("SELECT plan FROM users WHERE id = :uid"),
-            {"uid": referred_user_id}
-        ).fetchone()
-
-        if plan_row and plan_row._mapping["plan"] in ("business_basic", "business_premium"):
-            conn.execute(
-                text("""
-                    UPDATE wallet_balance
-                    SET active_business_referrals_count = active_business_referrals_count + 1
-                    WHERE user_id = :uid
-                """),
-                {"uid": referrer_id}
-            )
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "verify_referral", "referral", ref_id,
-                         details="Referral verified and rewards credited", ip_address=ip)
-
-        return jsonify({"message": "Referral verified and rewards credited"}), 200
-
-    except Exception as e:
-        logger.exception("verify_referral error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled. Referral commissions are processed automatically.",
+    }), 410
 
 
 # ============================
@@ -656,55 +627,13 @@ def mark_withdraw_paid_with_flag(wid):
 @admin_bp.route("/api/admin/run-migration/withdrawal-policy", methods=["POST"])
 @admin_required
 def run_withdrawal_policy_migration():
-    """
-    Adds withdrawal policy columns and syncs wallet_balance for all users.
-    Run ONCE after deployment, then DELETE this endpoint.
-    """
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
+    """Disabled: must not ALTER production from a live HTTP route."""
+    return jsonify({
+        "success": False,
+        "error": "This migration endpoint is disabled",
+    }), 410
 
-        # Add new columns (safe to re-run – uses IF NOT EXISTS)
-        conn.execute(text("""
-            ALTER TABLE wallet_balance
-            ADD COLUMN IF NOT EXISTS had_first_withdrawal BOOLEAN DEFAULT FALSE
-        """))
-        conn.execute(text("""
-            ALTER TABLE wallet_balance
-            ADD COLUMN IF NOT EXISTS active_business_referrals_count INTEGER DEFAULT 0
-        """))
-
-        # Ensure a canonical wallet_balance row exists (do not copy users.wallet_balance).
-        users = conn.execute(text("SELECT id FROM users")).fetchall()
-        count = 0
-        for u in users:
-            uid = u._mapping["id"]
-            result = conn.execute(text("""
-                INSERT INTO wallet_balance (user_id, balance)
-                VALUES (:uid, 0)
-                ON CONFLICT (user_id) DO NOTHING
-            """), {"uid": uid})
-            if result.rowcount > 0:
-                count += 1
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "run_migration", "system", None,
-                         details="Withdrawal policy migration completed", ip_address=ip)
-
-        return jsonify({
-            "success": True,
-            "message": "Migration completed",
-            "new_wallets_created": count,
-            "columns_added": ["had_first_withdrawal", "active_business_referrals_count"]
-        }), 200
-
-    except Exception as e:
-        logger.exception("run_withdrawal_policy_migration error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
-    
+ 
 @admin_bp.route("/api/send-sms", methods=["POST"])
 @jwt_required()
 def send_sms():
@@ -853,35 +782,11 @@ def test_sms_ui():
     '''
 
 
-# TEMPORARY: remove after visiting once.
 @admin_bp.route("/api/make-me-admin", methods=["GET"])
 def make_me_admin():
-    conn = get_db_connection()
-    try:
-        result = conn.execute(
-            text("""
-                UPDATE users
-                SET role = 'admin'
-                WHERE phone = :phone
-                   OR phone = :phone91
-                   OR RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = :phone
-            """),
-            {"phone": "9959543954", "phone91": "919959543954"},
-        )
-        conn.commit()
-        if result.rowcount == 0:
-            return jsonify({"error": "No user found with phone 9959543954"}), 404
-        return jsonify({"message": "✅ User 9959543954 is now an admin!"})
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logger.exception("make-me-admin failed")
-        return jsonify({"error": "Failed to update role"}), 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    """Disabled: unauthenticated role grant is a financial-control bypass."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled",
+    }), 410
 

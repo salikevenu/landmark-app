@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
+from routes.decorators import db_user_is_admin
 from services.wallet_service import (
     request_withdrawal,
     approve_withdrawal,
@@ -8,6 +9,15 @@ from services.wallet_service import (
 )
 
 withdraw_bp = Blueprint("withdraw", __name__)
+
+
+def _require_db_admin():
+    claims = get_jwt()
+    if claims.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+    if not db_user_is_admin(get_jwt_identity()):
+        return jsonify({"error": "Admin access required"}), 403
+    return None
 
 
 def _json_result(result):
@@ -66,9 +76,9 @@ def withdraw_history():
 @withdraw_bp.route("/api/admin/withdraw-requests", methods=["GET"])
 @jwt_required()
 def admin_withdraw_requests():
-    claims = get_jwt()
-    if claims.get("role") != "admin":
-        return jsonify({"error": "Admin access required"}), 403
+    denied = _require_db_admin()
+    if denied:
+        return denied
     from sqlalchemy import text
     from database.init_db import get_db_connection
     conn = get_db_connection()
@@ -87,9 +97,9 @@ def admin_withdraw_requests():
 @withdraw_bp.route("/api/admin/approve-withdraw/<int:withdraw_id>", methods=["POST"])
 @jwt_required()
 def approve_withdraw(withdraw_id):
-    claims = get_jwt()
-    if claims.get("role") != "admin":
-        return jsonify({"error": "Admin access required"}), 403
+    denied = _require_db_admin()
+    if denied:
+        return denied
     result = approve_withdrawal(withdraw_id)
     if result.get("success"):
         return jsonify({"message": "Withdrawal approved", "status": "approved"})
@@ -99,9 +109,9 @@ def approve_withdraw(withdraw_id):
 @withdraw_bp.route("/api/admin/reject-withdraw/<int:withdraw_id>", methods=["POST"])
 @jwt_required()
 def reject_withdraw(withdraw_id):
-    claims = get_jwt()
-    if claims.get("role") != "admin":
-        return jsonify({"error": "Admin access required"}), 403
+    denied = _require_db_admin()
+    if denied:
+        return denied
     result = reject_withdrawal(withdraw_id)
     if result.get("success"):
         return jsonify({"message": "Withdrawal rejected", "status": "rejected"})

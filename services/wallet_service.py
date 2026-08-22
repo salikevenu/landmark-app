@@ -73,32 +73,8 @@ def _money(value):
 
 
 def _settings_limits(conn=None):
-    min_amt, max_amt = MIN_WITHDRAW, MAX_WITHDRAW
-    own = conn is None
-    if own:
-        conn = get_db_connection()
-    try:
-        rows = conn.execute(text("""
-            SELECT key, value FROM admin_settings
-            WHERE key IN ('withdrawal_min_amount', 'withdrawal_max_amount')
-        """)).fetchall()
-        for row in rows:
-            m = dict(row._mapping)
-            if m.get("key") == "withdrawal_min_amount" and m.get("value") is not None:
-                min_amt = parse_money(m["value"], field="minimum")
-            if m.get("key") == "withdrawal_max_amount" and m.get("value") is not None:
-                max_amt = parse_money(m["value"], field="maximum")
-    except Exception:
-        pass
-    finally:
-        if own:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    if min_amt < Decimal("0.01"):
-        min_amt = MIN_WITHDRAW
-    return min_amt, max_amt
+    """Hard product limits. admin_settings must not weaken or raise these."""
+    return MIN_WITHDRAW, MAX_WITHDRAW
 
 
 def get_wallet_balance(user_id):
@@ -143,11 +119,19 @@ def _cas_debit(conn, user_id, amount):
 
 def _credit_balance(conn, user_id, amount):
     _ensure_wallet_row(conn, user_id)
-    conn.execute(text("""
+    conn.execute(text(
+        "SELECT balance FROM wallet_balance WHERE user_id = :uid FOR UPDATE"
+    ), {"uid": user_id})
+    result = conn.execute(text("""
         UPDATE wallet_balance
         SET balance = balance + :amount, updated_at = NOW()
         WHERE user_id = :uid
     """), {"amount": str(amount), "uid": user_id})
+    rc = getattr(result, "rowcount", None)
+    try:
+        return int(rc) == 1
+    except (TypeError, ValueError):
+        return False
 
 
 def credit_wallet(user_id, amount, source="system", reference_id=None):
@@ -160,7 +144,9 @@ def credit_wallet(user_id, amount, source="system", reference_id=None):
         return False
     conn = get_db_connection()
     try:
-        _credit_balance(conn, uid, money)
+        if not _credit_balance(conn, uid, money):
+            conn.rollback()
+            return False
         conn.execute(text("""
             INSERT INTO wallet_transactions
             (user_id, amount, type, source, reference_id, status)
@@ -283,7 +269,7 @@ def request_withdrawal(user_id, amount, upi_id, idempotency_key=None):
     Admin approve must NOT debit again.
 
     Product rules:
-      - Amount always ≥ ₹100 (admin_settings withdrawal_min_amount).
+      - Amount always ≥ ₹100 and ≤ ₹50,000 (hardcoded; not taken from admin_settings).
       - First withdrawal also requires ₹500 spendable balance and at least one
         referred user on a paid business plan (business_basic / business_premium).
       - Later withdrawals only need the ₹100 minimum and sufficient balance.
@@ -422,6 +408,9 @@ def request_withdrawal(user_id, amount, upi_id, idempotency_key=None):
 
 
 def _transition_withdraw(conn, wid, from_status, to_status):
+    conn.execute(text("""
+        SELECT id FROM withdraw_requests WHERE id = :wid FOR UPDATE
+    """), {"wid": int(wid)})
     result = conn.execute(text("""
         UPDATE withdraw_requests
         SET status = :to_status, processed_at = NOW()
@@ -488,7 +477,9 @@ def reject_withdrawal(wid):
             LIMIT 1
         """), {"ref": refund_ref, "src": WITHDRAW_REFUND_SOURCE}).fetchone()
         if not existing:
-            _credit_balance(conn, uid, amount)
+            if not _credit_balance(conn, uid, amount):
+                conn.rollback()
+                return {"success": False, "error": "Unable to restore wallet balance", "_http": 500}
             conn.execute(text("""
                 INSERT INTO wallet_transactions
                 (user_id, amount, type, source, reference_id, status)
@@ -506,7 +497,28 @@ def reject_withdrawal(wid):
             conn.rollback()
         except Exception:
             pass
-        return {"success": True, "status": STATUS_REJECTED, "duplicate": True}
+        try:
+            check = get_db_connection()
+            try:
+                wr = check.execute(text("""
+                    SELECT status FROM withdraw_requests WHERE id = :wid
+                """), {"wid": int(wid)}).fetchone()
+                paid = check.execute(text("""
+                    SELECT id FROM wallet_transactions
+                    WHERE reference_id = :ref AND source = :src
+                    LIMIT 1
+                """), {
+                    "ref": f"withdraw-refund:{int(wid)}",
+                    "src": WITHDRAW_REFUND_SOURCE,
+                }).fetchone()
+            finally:
+                check.close()
+            status = (wr._mapping.get("status") if wr else None)
+            if status == STATUS_REJECTED and paid:
+                return {"success": True, "status": STATUS_REJECTED, "duplicate": True}
+        except Exception:
+            pass
+        return {"success": False, "error": "Unable to reject withdrawal", "_http": 409}
     except Exception:
         try:
             conn.rollback()

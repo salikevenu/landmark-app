@@ -1,9 +1,12 @@
 # services/user_service.py
+import logging
 import random
 import string
 from datetime import datetime
 from sqlalchemy import text
 from database.init_db import get_db_connection
+
+logger = logging.getLogger(__name__)
 
 GRID_SIZE = 0.1
 
@@ -156,15 +159,15 @@ def get_user_referral_stats(user_id):
 
 
 def update_wallet_balance(user_id, amount):
-    """Adjust canonical wallet_balance.balance only. Does not touch users.wallet_balance."""
-    from services.wallet_service import get_wallet_balance, credit_wallet, debit_wallet
-    if amount > 0:
-        credit_wallet(user_id, amount, source="admin_adjustment")
-        return {"status": "balance_updated"}
-    if amount < 0:
-        ok = debit_wallet(user_id, -amount, source="admin_adjustment")
-        return {"status": "balance_updated" if ok else "insufficient_balance"}
-    return {"status": "unchanged", "balance": get_wallet_balance(user_id)}
+    """LEGACY / DISABLED. Direct admin/user wallet adjustments are not a live path.
+
+    Spendable money is credited only by Saturday/admin payout of locked commissions
+    or a one-time withdrawal reject refund. Do not call this from routes.
+    """
+    logger.error(
+        "LEGACY DISABLED: update_wallet_balance must not mutate wallet_balance"
+    )
+    return {"status": "disabled", "error": "Direct wallet adjustment is disabled"}
 
 
 def list_users(page=1, limit=20, search=None):

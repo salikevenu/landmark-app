@@ -89,6 +89,16 @@ class WalletConn:
             return self._execute(q, params)
 
     def _execute(self, q, params):
+        if "select id from withdraw_requests" in q and "for update" in q:
+            return FakeResult(FakeRow({"id": params.get("wid")}))
+
+        if "from withdraw_requests" in q and "select status" in q:
+            wid = int(params.get("wid"))
+            for w in self.store.withdrawals:
+                if w["id"] == wid:
+                    return FakeResult(FakeRow({"status": w["status"]}))
+            return FakeResult(None)
+
         if "from admin_settings" in q:
             rows = [
                 FakeRow({"key": k, "value": v})
@@ -363,6 +373,32 @@ class WithdrawalSafetyTests(unittest.TestCase):
         self.assertFalse(debit_wallet(1, 151, source="promo"))
         self.assertEqual(self.store.balances[1], Decimal("150.00"))
 
+    def test_admin_settings_cannot_weaken_min_or_max(self):
+        self.store.settings["withdrawal_min_amount"] = "1"
+        self.store.settings["withdrawal_max_amount"] = "10"
+        too_small = request_withdrawal(1, 50, "user@upi")
+        self.assertFalse(too_small["success"])
+        self.assertIn("₹100", too_small["error"])
+        ok = request_withdrawal(1, 100, "user@upi")
+        self.assertTrue(ok["success"])
+        self.assertEqual(self.store.balances[1], Decimal("50.00"))
+
+    def test_reject_integrity_without_rejected_row_is_conflict(self):
+        request_withdrawal(1, 100, "user@upi")
+        wid = self.store.withdrawals[-1]["id"]
+        real_execute = WalletConn._execute
+
+        def _execute(self_conn, q, params):
+            if "insert into wallet_transactions" in q and params and params.get("source") == WITHDRAW_REFUND_SOURCE:
+                from sqlalchemy.exc import IntegrityError
+                raise IntegrityError("dup", {}, Exception("dup"))
+            return real_execute(self_conn, q, params)
+
+        with patch.object(WalletConn, "_execute", _execute):
+            out = reject_withdrawal(wid)
+        self.assertFalse(out["success"])
+        self.assertEqual(out.get("_http"), 409)
+
     def test_legacy_paths_disabled(self):
         self.assertIsNone(process_referral(1, 1000))
         self.assertFalse(add_pending_referral_reward(1, 1))
@@ -485,6 +521,61 @@ class PayoutReleasedOnceTests(unittest.TestCase):
         self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS uq_withdraw_requests_user_reference", src)
         self.assertNotIn("DROP TABLE", src)
         self.assertNotIn("DELETE FROM", src)
+
+
+class Stage4FinancialIntegrityTests(unittest.TestCase):
+    def test_make_me_admin_disabled(self):
+        from routes.admin_routes import admin_bp
+        app = Flask(__name__)
+        app.config["JWT_SECRET_KEY"] = "test-jwt-secret"
+        JWTManager(app)
+        app.register_blueprint(admin_bp)
+        res = app.test_client().get("/api/make-me-admin")
+        self.assertEqual(res.status_code, 410)
+        src = (ROOT / "routes" / "admin_routes.py").read_text(encoding="utf-8")
+        self.assertNotIn("9959543954", src)
+        self.assertNotIn("SET role = 'admin'", src)
+
+    def test_legacy_money_mutators_disabled(self):
+        admin_src = (ROOT / "routes" / "admin_routes.py").read_text(encoding="utf-8")
+        self.assertIn("This endpoint is disabled", admin_src)
+        self.assertIn("This migration endpoint is disabled", admin_src)
+        self.assertNotIn("ADD COLUMN IF NOT EXISTS had_first_withdrawal", admin_src)
+        user_src = (ROOT / "services" / "user_service.py").read_text(encoding="utf-8")
+        self.assertIn("LEGACY DISABLED: update_wallet_balance", user_src)
+        self.assertNotIn("source=\"admin_adjustment\"", user_src)
+        payment_agent = (ROOT / "agents" / "payment_agent.py").read_text(encoding="utf-8")
+        self.assertNotIn("wallet_balance.balance +", payment_agent)
+        frozen = (ROOT / "services" / "admin_service.py").read_text(encoding="utf-8")
+        self.assertIn("FROZEN_ADMIN_SETTINGS", frozen)
+        self.assertIn("withdrawal_min_amount", frozen)
+
+    def test_jwt_admin_claim_without_db_role_cannot_approve(self):
+        from routes.withdraw_routes import withdraw_bp
+        app = Flask(__name__)
+        app.config["JWT_SECRET_KEY"] = "test-jwt-secret"
+        app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+        JWTManager(app)
+        app.register_blueprint(withdraw_bp)
+        client = app.test_client()
+        with app.app_context():
+            token = create_access_token(
+                identity="7",
+                additional_claims={"role": "admin"},
+            )
+        with patch("routes.withdraw_routes.db_user_is_admin", return_value=False):
+            res = client.post(
+                "/api/admin/approve-withdraw/1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(res.status_code, 403)
+
+    def test_frozen_settings_service(self):
+        from services.admin_service import update_setting
+        out = update_setting("withdrawal_min_amount", "1", 1, "999", "127.0.0.1")
+        self.assertEqual(out.get("status"), "forbidden")
+        out2 = update_setting("referral_bonus_percent", "90", 1, "999", "127.0.0.1")
+        self.assertEqual(out2.get("status"), "forbidden")
 
 
 if __name__ == "__main__":
