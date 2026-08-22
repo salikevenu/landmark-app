@@ -19,6 +19,8 @@ class MessageCentralSMS:
         self.auth_token = os.environ.get('MESSAGE_CENTRAL_AUTH_TOKEN')
         self.country = os.environ.get('MESSAGE_CENTRAL_COUNTRY', '91')
         self.debug_mode = os.getenv('DEBUG_SMS', 'false').lower() == 'true'
+        # Never bypass OTP on Render / production, even if DEBUG_SMS is set.
+        self.debug_mode = self.debug_mode and os.getenv('RENDER', '').lower() != 'true'
         
         # ✅ Fail fast if required environment variables are missing
         if not self.customer_id:
@@ -62,7 +64,7 @@ class MessageCentralSMS:
             full_phone, raw_phone = self._format_phone(phone)
 
             if self.debug_mode:
-                print(f"\n🔴🔴🔴 DEBUG MODE - OTP requested for {full_phone} 🔴🔴🔴\n")
+                logger.warning("DEBUG_SMS is enabled locally — OTP is not sent")
                 return True, {"debug": True}, "debug_verification_id"
 
             auth_token = self._get_auth_token()
@@ -104,7 +106,7 @@ class MessageCentralSMS:
     def verify_otp(self, verification_id: str, otp: str) -> Tuple[bool, Optional[dict]]:
         try:
             if self.debug_mode:
-                print(f"\n🔴🔴🔴 DEBUG MODE - Verifying OTP {otp} for ID {verification_id} 🔴🔴🔴\n")
+                logger.warning("DEBUG_SMS is enabled locally — OTP check is skipped")
                 return True, {"debug": True}
 
             auth_token = self._get_auth_token()

@@ -24,7 +24,7 @@ from services.admin_service import (
 import logging
 logger = logging.getLogger(__name__)
 from services.payment_service import activate_subscription
-from routes.decorators import db_user_is_admin
+from services.authz import db_user_is_admin
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -637,149 +637,21 @@ def run_withdrawal_policy_migration():
 @admin_bp.route("/api/send-sms", methods=["POST"])
 @jwt_required()
 def send_sms():
-    """Send SMS via Message Central"""
-    try:
-        data = request.json
-        phone = data.get('phone')
-        message = data.get('message')
-        
-        if not phone or not message:
-            return jsonify({"error": "Phone and message required"}), 400
-        
-        sms_service = get_sms_service()
-        success, response = sms_service.send_sms(phone, message)
-        
-        log_admin_action(
-            admin_id=get_jwt_identity(),
-            action="SEND_SMS",
-            details=f"SMS sent to {phone}",
-            ip=request.remote_addr
-        )
-        
-        if success:
-            return jsonify({"success": True, "message": "SMS sent", "details": response}), 200
-        else:
-            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
-            
-    except Exception as e:
-        logger.exception("Send SMS error")
-        return jsonify({"error": "Internal server error"}), 500
+    """Disabled: arbitrary SMS send is an abuse and cost vector."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
 @admin_bp.route("/api/send-otp", methods=["POST"])
 @jwt_required()
 def send_otp():
-    """Send OTP via SMS"""
-    try:
-        data = request.json
-        phone = data.get('phone')
-        
-        if not phone:
-            return jsonify({"error": "Phone number required"}), 400
-        
-        sms_service = get_sms_service()
-        success, response, otp = sms_service.send_otp(phone)
-        
-        log_admin_action(
-            admin_id=get_jwt_identity(),
-            action="SEND_OTP",
-            details=f"OTP sent to {phone}",
-            ip=request.remote_addr
-        )
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "OTP sent",
-                "otp": otp if os.getenv('DEBUG_SMS', 'false').lower() == 'true' else None
-            }), 200
-        else:
-            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
-            
-    except Exception as e:
-        logger.exception("Send OTP error")
-        return jsonify({"error": "Internal server error"}), 500
+    """Disabled: must not send OTP or return codes outside /api/auth/send-otp."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
     
 @admin_bp.route("/api/test-sms-ui", methods=["GET"])
 @jwt_required()
 def test_sms_ui():
-    """
-    Simple HTML page to test SMS sending
-    """
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SMS Test - Message Central</title>
-        <style>
-            body { font-family: Arial; max-width: 500px; margin: 50px auto; padding: 20px; }
-            input, textarea { width: 100%; padding: 8px; margin: 5px 0; }
-            button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
-            button:hover { background: #0056b3; }
-            #result { margin-top: 20px; padding: 10px; border: 1px solid #ddd; }
-            .success { color: green; }
-            .error { color: red; }
-        </style>
-    </head>
-    <body>
-        <div style="background-color: #fff3cd; padding: 10px; border: 1px solid #ffeeba; margin-bottom: 20px;">
-            ⚠️ <strong>Production Admin Tool</strong> — Only for testing. Do not share this link.
-        </div>
-        <h2>📱 Send Test SMS via Message Central</h2>
-        <form id="smsForm">
-            <div>
-                <label>Phone Number (10 digits for India):</label>
-                <input type="text" id="phone" placeholder="9876543210" required>
-                <small>Enter 10-digit Indian phone number (without +91)</small>
-            </div>
-            <div>
-                <label>Message:</label>
-                <textarea id="message" rows="4" required>Test message from LANDMARK system</textarea>
-            </div>
-            <button type="submit">Send SMS</button>
-        </form>
-        <div id="result"></div>
-        
-        <script>
-            document.getElementById('smsForm').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const result = document.getElementById('result');
-                result.innerHTML = '⏳ Sending...';
-                result.className = '';
-                
-                try {
-                    const phone = document.getElementById('phone').value;
-                    const formattedPhone = phone.replace(/[^0-9]/g, '');
-                    const fetchFn = window.LandmarkSession ? LandmarkSession.authFetch.bind(LandmarkSession) : fetch;
-                    const response = await fetchFn('/api/send-sms', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        credentials: 'include',
-                        body: JSON.stringify({
-                            phone: formattedPhone,
-                            message: document.getElementById('message').value
-                        })
-                    });
-                    
-                    const data = await response.json();
-                    if (data.success) {
-                        result.innerHTML = '✅ SMS sent successfully!';
-                        result.className = 'success';
-                    } else {
-                        result.innerHTML = '❌ Error: ' + data.error;
-                        result.className = 'error';
-                    }
-                } catch (error) {
-                    result.innerHTML = '❌ Error: ' + error.message;
-                    result.className = 'error';
-                }
-            });
-        </script>
-    </body>
-    </html>
-    '''
+    """Disabled development SMS console."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
 @admin_bp.route("/api/make-me-admin", methods=["GET"])

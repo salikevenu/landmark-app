@@ -1,5 +1,6 @@
 import os
 import time
+import secrets
 import traceback
 
 from flask import Blueprint, request, jsonify, render_template, current_app
@@ -11,6 +12,7 @@ from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.listing_service import add_review_service, get_reviews_service
 from services.subscription_access import is_subscription_active
+from services.authz import db_user_is_admin
 import logging
 logger = logging.getLogger(__name__)
 # ---------- Custom role‑required decorator (JWT) ----------
@@ -174,8 +176,9 @@ def api_create_listing():
 # =========================
 @listing_bp.route("/admin/listings")
 @jwt_required()
-@role_required(["admin"])
 def admin_listings():
+    if not db_user_is_admin(get_jwt_identity()):
+        return jsonify({"error": "Admin access required"}), 403
     conn = get_db_connection()
     listings = conn.execute(text("SELECT * FROM listings WHERE status='pending'")).fetchall()
     return render_template("admin/listings.html", listings=[dict(r._mapping) for r in listings])
@@ -250,11 +253,11 @@ def update_listing(listing_id):
 @jwt_required()
 @role_required(["service_provider", "business_basic", "business_premium"])
 def delete_listing(listing_id):
-    user_phone = get_jwt().get("phone")
+    user_id = get_jwt_identity()
     conn = get_db_connection()
     listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND user_phone = :phone"),
-        {"lid": listing_id, "phone": user_phone}
+        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
+        {"lid": listing_id, "uid": user_id}
     ).fetchone()
     if not listing:
         return jsonify({"error": "Not found or unauthorized"}), 404
@@ -271,7 +274,11 @@ def delete_listing(listing_id):
 @jwt_required()
 @role_required(["service_provider", "business_basic", "business_premium"])
 def upload_listing_image():
-    listing_id = request.form.get("listing_id")
+    user_id = get_jwt_identity()
+    try:
+        listing_id = int(request.form.get("listing_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "listing_id required"}), 400
     image_type = request.form.get("image_type", "gallery")
     image = request.files.get("image")
     if not image or not image.filename:
@@ -279,14 +286,28 @@ def upload_listing_image():
     if not _listing_upload_allowed(image, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
         return jsonify({"error": "Invalid image type. Use jpg, jpeg, png, or webp"}), 400
 
-    filename = secure_filename(image.filename)
-    upload_subfolder = "static/images/listings"
+    conn = get_db_connection()
+    owned = conn.execute(
+        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
+        {"lid": listing_id, "uid": user_id},
+    ).fetchone()
+    if not owned:
+        return jsonify({"error": "Not found or unauthorized"}), 404
+
+    image.stream.seek(0, os.SEEK_END)
+    size = image.stream.tell()
+    image.stream.seek(0)
+    if size > 10 * 1024 * 1024:
+        return jsonify({"error": "Image must be 10 MB or smaller"}), 400
+
+    ext = secure_filename(image.filename).rsplit(".", 1)[-1].lower()
+    filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
+    upload_subfolder = os.path.join(current_app.root_path, "static", "images", "listings")
     os.makedirs(upload_subfolder, exist_ok=True)
     filepath = os.path.join(upload_subfolder, filename)
     image.save(filepath)
     image_url = f"/static/images/listings/{filename}"
 
-    conn = get_db_connection()
     conn.execute(text(
         "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
     ), {"lid": listing_id, "url": image_url, "type": image_type})
@@ -301,13 +322,13 @@ def upload_listing_image():
 @jwt_required()
 @role_required(["service_provider", "business_basic", "business_premium"])
 def get_listing(listing_id):
-    user_phone = get_jwt().get("phone")
+    user_id = get_jwt_identity()
     conn = get_db_connection()
     row = conn.execute(text("""
         SELECT id, business_name, category, city, state, latitude, longitude, description
         FROM listings
-        WHERE id = :lid AND user_phone = :phone
-    """), {"lid": listing_id, "phone": user_phone}).fetchone()
+        WHERE id = :lid AND user_id = :uid
+    """), {"lid": listing_id, "uid": user_id}).fetchone()
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(dict(row._mapping))
@@ -361,6 +382,12 @@ def track_whatsapp_click(listing_id):
 @listing_bp.route("/listing-images/<int:listing_id>")
 def get_listing_images(listing_id):
     conn = get_db_connection()
+    listing = conn.execute(
+        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved'"),
+        {"lid": listing_id},
+    ).fetchone()
+    if not listing:
+        return jsonify({"images": []}), 404
     rows = conn.execute(
         text("SELECT image_url, image_type FROM listing_images WHERE listing_id = :lid"),
         {"lid": listing_id}
@@ -397,7 +424,8 @@ def browse_api():
         lat = request.args.get("lat", type=float)
         lng = request.args.get("lng", type=float)
         distance = request.args.get("distance", type=float)
-        page = request.args.get("page", 1, type=int)
+        page = request.args.get("page", 1, type=int) or 1
+        page = max(1, min(page, 10000))
         limit = 10
         offset = (page - 1) * limit
 
@@ -496,7 +524,13 @@ def get_reviews(listing_id):
 @listing_bp.route("/api/listing/<int:listing_id>")
 def public_listing_detail(listing_id):
     conn = get_db_connection()
-    listing = conn.execute(text("SELECT * FROM listings WHERE id = :lid"), {"lid": listing_id}).fetchone()
+    listing = conn.execute(text("""
+        SELECT id, business_name, category, city, state, latitude, longitude,
+               description, whatsapp, website, rating, rating_count,
+               is_verified, is_premium, is_featured, user_phone
+        FROM listings
+        WHERE id = :lid AND status = 'approved'
+    """), {"lid": listing_id}).fetchone()
     if not listing:
         return jsonify({"error": "Listing not found"}), 404
 

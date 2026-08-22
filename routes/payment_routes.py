@@ -8,7 +8,7 @@ import os
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from extensions import get_razorpay_client
+from extensions import get_razorpay_client, limiter
 from config.payment_config import (
     PLAN_PRICES,
     billed_term,
@@ -33,6 +33,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 payment_bp = Blueprint("payment", __name__)
+
+
+def _safe_limit(limit_value):
+    def decorator(f):
+        if limiter:
+            return limiter.limit(limit_value)(f)
+        return f
+    return decorator
 
 
 def _json_from_result(result):
@@ -91,6 +99,7 @@ def create_order_debug():
 
 
 @payment_bp.route("/create-order", methods=["POST"])
+@_safe_limit("20 per minute")
 @jwt_required()
 def create_order():
     try:
@@ -261,6 +270,7 @@ def wallet_transactions():
 
 
 @payment_bp.route("/verify-payment", methods=["POST"])
+@_safe_limit("30 per minute")
 @jwt_required()
 def verify_payment():
     user_id = get_jwt_identity()

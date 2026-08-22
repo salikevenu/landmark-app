@@ -29,10 +29,17 @@ from flask_limiter.util import get_remote_address
 # Load environment variables
 load_dotenv()
 
-print(f"🔍 DEBUG_SMS value in routes/auth.py: {os.getenv('DEBUG_SMS', 'false')} (enabled={os.getenv('DEBUG_SMS', 'false').lower() == 'true'})")
-
 auth_bp = Blueprint("auth", __name__)
 logger = logging.getLogger(__name__)
+
+
+def _limit(*args, **kwargs):
+    """Apply Flask-Limiter only when the extension has been initialized."""
+    def deco(fn):
+        if limiter is None:
+            return fn
+        return limiter.limit(*args, **kwargs)(fn)
+    return deco
 
 # =================================
 # DATABASE-BASED VERIFICATION STORAGE
@@ -408,9 +415,9 @@ def delete_verification(phone):
 # =================================
 
 @auth_bp.route("/send-otp", methods=["POST"])
-@limiter.limit("5 per minute")
-@limiter.limit("20 per hour")
-@limiter.limit("3 per hour", key_func=otp_phone_key)
+@_limit("5 per minute")
+@_limit("20 per hour")
+@_limit("3 per hour", key_func=otp_phone_key)
 def send_otp():
     """Send OTP via Message Central VerifyNow API."""
     try:
@@ -471,8 +478,8 @@ def send_otp():
         }), 500
 
 @auth_bp.route("/verify-otp", methods=["POST"])
-@limiter.limit("10 per minute")
-@limiter.limit("30 per hour")
+@_limit("10 per minute")
+@_limit("30 per hour")
 def verify_otp():
     """Verify OTP using Message Central VerifyNow API."""
     from flask_jwt_extended import create_access_token, create_refresh_token, set_access_cookies, set_refresh_cookies
@@ -605,6 +612,9 @@ def public_login_page():
     return render_template("public/login.html")
 
 @auth_bp.route("/resend-otp", methods=["POST"])
+@_limit("5 per minute")
+@_limit("20 per hour")
+@_limit("3 per hour", key_func=otp_phone_key)
 def resend_otp():
     """Resend OTP."""
     try:

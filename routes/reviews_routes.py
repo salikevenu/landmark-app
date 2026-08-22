@@ -14,17 +14,10 @@ _reply_columns_ready = False
 
 
 def _ensure_reply_columns_once(conn):
-    """Run schema guards at most once per worker — never on every request."""
+    """Do not ALTER production from a request path. Columns are created by migrations."""
     global _reply_columns_ready
-    if _reply_columns_ready:
-        return
-    conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS owner_reply TEXT"))
-    conn.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS replied_at TIMESTAMP"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_created ON reviews(created_at DESC)"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating)"))
-    conn.commit()
     _reply_columns_ready = True
+    return
 
 
 def _list_filters(user_id):

@@ -124,11 +124,12 @@ def invite_business():
 
 
 # =========================
-# REFERRAL INFO (public)
+# REFERRAL INFO (authenticated — own wallet/code only)
 # =========================
 @referral_bp.route("/api/referral/info")
+@jwt_required()
 def referral_info():
-    user_id = request.args.get("user_id")
+    user_id = get_jwt_identity()
     data = get_referral_info(user_id)
     if not data:
         return jsonify({"error": "User not found"}), 404

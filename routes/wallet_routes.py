@@ -3,11 +3,20 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.referral_commission import next_saturday_6pm_ist
+from extensions import limiter
 from services.wallet_service import (
     request_withdrawal,
 )
 
 wallet_bp = Blueprint("wallet", __name__)
+
+
+def _safe_limit(limit_value):
+    def decorator(f):
+        if limiter:
+            return limiter.limit(limit_value)(f)
+        return f
+    return decorator
 
 @wallet_bp.route("/wallet")
 def wallet_page():
@@ -63,6 +72,7 @@ def wallet_overview():
     })
 
 @wallet_bp.route("/api/withdraw", methods=["POST"])
+@_safe_limit("10 per minute")
 @jwt_required()
 def withdraw():
     data = request.get_json(silent=True) or {}

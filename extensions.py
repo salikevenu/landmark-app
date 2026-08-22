@@ -26,12 +26,10 @@ def init_extensions(app):
 
     key_id, key_secret = get_razorpay_key_pair()
     log_razorpay_config()
-    print(f"DEBUG: RAZORPAY_KEY_ID exists: {bool(key_id)}")
-    print(f"DEBUG: RAZORPAY_KEY_SECRET exists: {bool(key_secret)}")
-
     if key_id and key_secret:
         razor_client = razorpay.Client(auth=(key_id, key_secret))
-        print(f"Razorpay initialized with key: {key_id[:15]}...")
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Razorpay client initialized")
     else:
         razor_client = None
         print("WARNING: Razorpay keys missing (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET). Payments disabled.")

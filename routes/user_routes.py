@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
+from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token, unset_jwt_cookies
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
 from database.init_db import get_db_connection
@@ -36,25 +36,32 @@ def _as_user_id(identity):
 
 
 def get_user_by_id(user_id):
-    global _avatar_column_ready
     user_id = _as_user_id(user_id)
     conn = get_db_connection()
-    if not _avatar_column_ready:
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
-            conn.commit()
-            _avatar_column_ready = True
-        except Exception:
-            pass
-    user = conn.execute(
-        text("""
-            SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
-            FROM users
-            WHERE id = :uid
-        """),
-        {"uid": user_id},
-    ).fetchone()
-    return dict(user._mapping) if user else None
+    try:
+        user = conn.execute(
+            text("""
+                SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        return dict(user._mapping) if user else None
+    except Exception:
+        user = conn.execute(
+            text("""
+                SELECT id, name, phone, role, plan, referral_code, subscription_expiry
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        if not user:
+            return None
+        payload = dict(user._mapping)
+        payload["avatar_url"] = ""
+        return payload
 
 
 def _profile_payload(user):
@@ -199,7 +206,6 @@ def upload_profile_avatar():
         avatar_url = f"/static/uploads/avatars/{stored_name}"
 
         conn = get_db_connection()
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
         result = conn.execute(
             text("UPDATE users SET avatar_url = :url WHERE id = :uid RETURNING id"),
             {"url": avatar_url, "uid": user_id},
@@ -220,7 +226,9 @@ def upload_profile_avatar():
 
 @user_bp.route("/logout", methods=["POST"])
 def logout():
-    return jsonify({"message": "Logged out"}), 200
+    response = jsonify({"success": True, "message": "Logged out"})
+    unset_jwt_cookies(response)
+    return response, 200
 
 # ------------------------------------------------------------
 # PLAN DETAILS

@@ -1,7 +1,8 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
-from routes.decorators import db_user_is_admin
+from extensions import limiter
+from services.authz import db_user_is_admin
 from services.wallet_service import (
     request_withdrawal,
     approve_withdrawal,
@@ -9,6 +10,14 @@ from services.wallet_service import (
 )
 
 withdraw_bp = Blueprint("withdraw", __name__)
+
+
+def _safe_limit(limit_value):
+    def decorator(f):
+        if limiter:
+            return limiter.limit(limit_value)(f)
+        return f
+    return decorator
 
 
 def _require_db_admin():
@@ -28,6 +37,7 @@ def _json_result(result):
 
 
 @withdraw_bp.route("/api/withdraw/request", methods=["POST"])
+@_safe_limit("10 per minute")
 @jwt_required()
 def request_withdraw():
     user_id = get_jwt_identity()
