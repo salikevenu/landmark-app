@@ -134,6 +134,13 @@ def get_razorpay_key_pair():
     if mode == "test":
         key_id = key_id or (os.getenv("RAZORPAY_TEST_KEY_ID") or "").strip() or None
         key_secret = key_secret or (os.getenv("RAZORPAY_TEST_KEY_SECRET") or "").strip() or None
+    if key_id:
+        if mode == "live" and key_id.startswith("rzp_test_"):
+            print("ERROR: Razorpay TEST keys are not allowed in live/production mode")
+            return None, None
+        if mode == "test" and key_id.startswith("rzp_live_"):
+            print("ERROR: Razorpay LIVE keys are not allowed in test mode")
+            return None, None
     return key_id, key_secret
 
 
