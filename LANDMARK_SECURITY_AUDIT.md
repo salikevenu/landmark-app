@@ -159,9 +159,8 @@ Wallet credit-then-debit can leave money in wallet if debit fails after credit.
 
 ## 10. Referral / wallet abuse
 
-- `referred_by` not set on OTP → commissions rarely attach
-- When they do, first bonus `source` does not unlock Saturday
-- `process_referral` 20% legacy vs 10%+5% — two formulas
+- `referred_by` is set on **new** OTP signup from `pending_referrals`; existing users are never reassigned
+- Live commission is 10% first + 5% recurring via `referral_commission.py`; `process_referral` 20% and flat ₹ rewards are disabled
 - Withdraw UI not connected; registered `/api/withdraw` debits immediately then inserts pending (user loses balance even if admin never pays)
 - No server-side UPI format validation
 - IP fraud_check unused on payment/signup

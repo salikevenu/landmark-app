@@ -189,10 +189,13 @@ def persist_referral_for_phone(phone, data=None):
         return False, "Invalid referral code."
 
     referrer_phone = clean_phone(referrer.get("phone") or "")
-    if referrer_phone and referrer_phone == phone:
-        return False, "You cannot use your own referral code."
-
     stored_code = referrer.get("referral_code") or ref
+    if referrer_phone and referrer_phone == phone:
+        # Do not attribute self-referral, but never block OTP/login.
+        if (session.get("ref_code") or "").strip() in (stored_code, ref, str(ref).strip()):
+            session.pop("ref_code", None)
+        return True, None
+
     session["ref_code"] = stored_code
     upsert_pending_referral(phone, stored_code, referrer["id"])
     return True, None
@@ -214,7 +217,8 @@ def resolve_referrer_id_for_signup(phone, data=None):
         if referrer:
             referrer_phone = clean_phone(referrer.get("phone") or "")
             if referrer_phone and referrer_phone == phone:
-                return None, "You cannot use your own referral code."
+                session.pop("ref_code", None)
+                return None, None
             return int(referrer["id"]), None
     return None, None
 

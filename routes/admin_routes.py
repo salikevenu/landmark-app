@@ -153,11 +153,12 @@ def _load_admin_user(user_id):
     try:
         row = conn.execute(
             text("""
-                SELECT id, phone, name, role, plan, subscription_expiry,
-                       wallet_balance, is_blocked, referral_code, created_at,
-                       latitude, longitude
-                FROM users
-                WHERE id = :uid
+                SELECT u.id, u.phone, u.name, u.role, u.plan, u.subscription_expiry,
+                       COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.referral_code, u.created_at,
+                       u.latitude, u.longitude
+                FROM users u
+                LEFT JOIN wallet_balance wb ON wb.user_id = u.id
+                WHERE u.id = :uid
             """),
             {"uid": user_id},
         ).fetchone()
@@ -706,17 +707,16 @@ def run_withdrawal_policy_migration():
             ADD COLUMN IF NOT EXISTS active_business_referrals_count INTEGER DEFAULT 0
         """))
 
-        # Sync wallet_balance for all users who don't have a row yet
-        users = conn.execute(text("SELECT id, wallet_balance FROM users")).fetchall()
+        # Ensure a canonical wallet_balance row exists (do not copy users.wallet_balance).
+        users = conn.execute(text("SELECT id FROM users")).fetchall()
         count = 0
         for u in users:
             uid = u._mapping["id"]
-            wb = u._mapping["wallet_balance"] or 0
             result = conn.execute(text("""
                 INSERT INTO wallet_balance (user_id, balance)
-                VALUES (:uid, :bal)
+                VALUES (:uid, 0)
                 ON CONFLICT (user_id) DO NOTHING
-            """), {"uid": uid, "bal": wb})
+            """), {"uid": uid})
             if result.rowcount > 0:
                 count += 1
 

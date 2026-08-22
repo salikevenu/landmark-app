@@ -39,13 +39,12 @@ This roadmap is sequenced so each step makes an existing path true end-to-end.
 - Wallet transactions query (`description`)
 - Withdraw UI route unregistered
 - `call_clicks` / `services` / `interactions` columns
-- Register API missing
 
 ---
 
 ## MISSING
 
-- Catalog/products, POS, inventory, in-app chat, ambassador tree, real ads checkout, referral attribution, native apps
+- Catalog/products, POS, inventory, in-app chat, ambassador tree, real ads checkout, native apps
 
 ---
 
@@ -62,22 +61,20 @@ This roadmap is sequenced so each step makes an existing path true end-to-end.
 
 ## CRITICAL BLOCKERS
 
-1. Referral 10%/5% still not attached to signup.
-2. Confirm one Razorpay test-mode payment on staging before live keys.
+1. Confirm one Razorpay test-mode payment on staging before treating checkout as live-verified.
+2. Attach Render cron env (`BASE_URL`, `SATURDAY_PAYOUT_SECRET`) after deploy.
 
 ---
 
 ## NEXT FEATURE (one)
 
-**Feature #3 — Referral attribution (existing invite/commission path, not a new product).**
-
-OTP/login must persist `users.referred_by` from `?ref=` / invite code, and wallet `source` values must match Saturday payout. Do not build catalog or POS.
+**Feature #3 — Referral attribution — implemented.** OTP persist `pending_referrals` and set `users.referred_by` on new INSERT. Commission sources match Saturday payout. Do not build catalog or POS.
 
 ---
 
 ## MISSING
 
-- Catalog/products, POS, inventory, in-app chat, ambassador tree, real ads checkout, referral attribution, feature tests, native apps
+- Catalog/products, POS, inventory, in-app chat, ambassador tree, real ads checkout, native apps
 
 ---
 
@@ -94,10 +91,9 @@ OTP/login must persist `users.referred_by` from `?ref=` / invite code, and walle
 
 ## CRITICAL BLOCKERS
 
-1. Users who log in with OTP cannot use Bearer-only screens.
-2. Create-listing POST URL is wrong.
-3. Referral 10%/5% is not attached to signup.
-4. Confirm one Razorpay test-mode payment on staging before live keys.
+1. Confirm one Razorpay test-mode payment on staging before treating checkout as live-verified.
+2. Attach Render cron env (`BASE_URL`, `SATURDAY_PAYOUT_SECRET`) after deploy.
+3. Create-listing browser flow still needs an e2e pass.
 
 ---
 
@@ -177,10 +173,12 @@ USER `/pricing` → `POST /api/payment/create-order` `{plan: "Business Basic"}` 
 USER `/map` → Leaflet Carto tiles → `GET /api/nearby/businesses` → `listings` where active + coords → markers / flyTo search  
 **Break:** empty DB / pending listings / auth optional.
 
-### D. Referral 10% + 5% (not connected)
+### D. Referral 10% + 5% (connected)
 
-Invite UI shows code → `/register?ref=` → **register API missing**; OTP verify **does not read ref** → `referred_by` null → `process_referral_commission` no-ops  
-Webhook path can call commission but dummy webhook is what is mounted at `/api/payment/webhook`.
+Invite UI → `/register?ref=` → OTP `pending_referrals` → new user `referred_by`  
+→ captured Razorpay verify/webhook `finalize_paid_order` enqueues `referral_commission_jobs`  
+→ 10% first bonus + 5% recurring locked until Saturday payout into `wallet_balance.balance`  
+Unsigned `/api/payment/webhook` is 403; signed path is `/api/payment/razorpay/webhook`.
 
 ### E. Withdraw (not connected)
 

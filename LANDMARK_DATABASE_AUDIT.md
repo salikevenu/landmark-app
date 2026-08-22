@@ -86,20 +86,19 @@ Manual proof INSERT uses `phone, plan, payment_method, reference_id` — **not i
 
 ### Two wallets
 
-- `wallet_balance.balance`
-- `users.wallet_balance`
+- **Canonical spendable:** `wallet_balance.balance` (overview, withdraw, payout, admin display JOIN)
+- **Legacy column:** `users.wallet_balance` — still in schema, **not** updated by referral payout or `update_wallet_balance`. Do not drop without a dedicated migration.
 
-Saturday payout updates **both**. `credit_wallet` / `debit_wallet` update **only** `wallet_balance` (+ a transaction row). UI overview reads `wallet_balance`.
+`credit_wallet` / `debit_wallet` update only `wallet_balance` (+ a transaction row).
 
 ### Referral ledgers
 
-- `referral_transactions` (old)
-- `wallet_transactions` with sources `5%_base_+_5%_activation`, `referral_recurring`
-- Payout SQL looks for `referral_first_bonus`, `referral_recurring`
+- `referral_transactions` (old / unused by live 10%+5%)
+- Live: `wallet_transactions` sources `referral_first_bonus`, `referral_recurring` with `razorpay_payment_id`
+- Outbox: `referral_commission_jobs`
+- Saturday payout unlocks those two sources into `wallet_balance.balance` only
 
-First 10% lock **never matches** Saturday unlock query.
-
-`referred_by` is `INTEGER REFERENCES users(id)` in schema. `wallet_service.process_referral` treats it as a **referral_code string**. OTP signup never sets it.
+`users.referred_by` is `INTEGER REFERENCES users(id)`. OTP verify sets it **only on INSERT** for new users. `wallet_service.process_referral` is disabled.
 
 ---
 

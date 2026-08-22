@@ -156,16 +156,15 @@ def get_user_referral_stats(user_id):
 
 
 def update_wallet_balance(user_id, amount):
-    """
-    Add amount (can be negative) to wallet_balance.
-    For complete wallet operations, use wallet_service.
-    """
-    conn = get_db_connection()
-    conn.execute(text("""
-        UPDATE users SET wallet_balance = wallet_balance + :amount WHERE id = :uid
-    """), {"amount": amount, "uid": user_id})
-    conn.commit()
-    return {"status": "balance_updated"}
+    """Adjust canonical wallet_balance.balance only. Does not touch users.wallet_balance."""
+    from services.wallet_service import get_wallet_balance, credit_wallet, debit_wallet
+    if amount > 0:
+        credit_wallet(user_id, amount, source="admin_adjustment")
+        return {"status": "balance_updated"}
+    if amount < 0:
+        ok = debit_wallet(user_id, -amount, source="admin_adjustment")
+        return {"status": "balance_updated" if ok else "insufficient_balance"}
+    return {"status": "unchanged", "balance": get_wallet_balance(user_id)}
 
 
 def list_users(page=1, limit=20, search=None):

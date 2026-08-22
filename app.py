@@ -407,8 +407,7 @@ from io import BytesIO
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
-    from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
-    cache_landing_referral_code(referral_code)
+    from routes.auth_routes import register_url_with_ref
     signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
     qr = qrcode.make(signup_url)
     img_io = BytesIO()
@@ -424,6 +423,15 @@ def api_add_business():
     # Canonical path: POST /api/listing/create-listing
     body, code = legacy_add_business_gone()
     return jsonify(body), code
+
+def _internal_job_authorized():
+    """Shared bearer check for Saturday payout and commission retry crons."""
+    expected = (os.getenv("SATURDAY_PAYOUT_SECRET") or "").strip()
+    if not expected:
+        return False
+    token = request.headers.get("Authorization") or ""
+    return token == f"Bearer {expected}"
+
 
 @app.route("/api/wallet/overview")
 @jwt_required()
@@ -441,11 +449,20 @@ def wallet_overview():
 
 @app.route('/internal/saturday-payout', methods=['POST'])
 def saturday_payout():
-    token = request.headers.get('Authorization')
-    if token != f"Bearer {os.getenv('SATURDAY_PAYOUT_SECRET')}":
+    if not _internal_job_authorized():
         return jsonify({"error": "Unauthorized"}), 403
     released = _execute_payout()
     return jsonify({"released": released}), 200
+
+
+@app.route('/internal/referral-commission-retry', methods=['POST'])
+def referral_commission_retry():
+    """Drain pending referral_commission_jobs. Idempotent; SKIP LOCKED."""
+    if not _internal_job_authorized():
+        return jsonify({"error": "Unauthorized"}), 403
+    from services.referral_commission import process_pending_referral_commission_jobs
+    result = process_pending_referral_commission_jobs(razorpay_payment_id=None, limit=100)
+    return jsonify(result or {"processed": [], "failed": []}), 200
 
 @app.route('/api/payment/webhook', methods=['POST'])
 def razorpay_webhook_dummy():

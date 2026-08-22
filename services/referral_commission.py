@@ -284,15 +284,35 @@ def process_pending_referral_commission_jobs(razorpay_payment_id=None, conn=None
                     conn=conn,
                 )
                 reason = (result or {}).get("reason")
-                new_status = JOB_SKIPPED if reason in ("no_referrer", "self_referral", "user_not_found", "invalid_user") else JOB_COMPLETED
-                conn.execute(text("""
-                    UPDATE referral_commission_jobs
-                    SET status = :status,
-                        processed_at = CURRENT_TIMESTAMP,
-                        last_error = NULL
-                    WHERE id = :id AND status = 'pending'
-                """), {"status": new_status, "id": job_id})
-                processed.append(job_id)
+                if reason in ("no_referrer", "self_referral", "user_not_found", "invalid_user"):
+                    conn.execute(text("""
+                        UPDATE referral_commission_jobs
+                        SET status = :status,
+                            processed_at = CURRENT_TIMESTAMP,
+                            last_error = NULL
+                        WHERE id = :id AND status = 'pending'
+                    """), {"status": JOB_SKIPPED, "id": job_id})
+                    processed.append(job_id)
+                elif reason == "missing_payment_id":
+                    conn.execute(text("""
+                        UPDATE referral_commission_jobs
+                        SET attempts = attempts + 1,
+                            last_error = :err
+                        WHERE id = :id AND status = 'pending'
+                    """), {
+                        "err": "missing_payment_id: commission requires razorpay_payment_id",
+                        "id": job_id,
+                    })
+                    failed.append(job_id)
+                else:
+                    conn.execute(text("""
+                        UPDATE referral_commission_jobs
+                        SET status = :status,
+                            processed_at = CURRENT_TIMESTAMP,
+                            last_error = NULL
+                        WHERE id = :id AND status = 'pending'
+                    """), {"status": JOB_COMPLETED, "id": job_id})
+                    processed.append(job_id)
             except Exception as exc:
                 logger.exception(
                     "Referral commission job %s failed for payment %s; leaving pending",

@@ -475,6 +475,71 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(self.ledger.wallet[self.referrer], expected)
         self.assertEqual(self.ledger.users_wallet_column, legacy_before)
 
+    def test_missing_payment_id_leaves_job_pending(self):
+        conn = self.ledger.connect()
+        enqueue_referral_commission_job(conn, "pay_missing", "pay_missing", self.referred, 100)
+        conn.commit()
+        self.ledger.jobs[0]["payment_id"] = ""
+        self.ledger.jobs[0]["razorpay_payment_id"] = ""
+        with self._patch():
+            out = process_pending_referral_commission_jobs()
+        self.assertEqual(out["failed"], [1])
+        self.assertEqual(self.ledger.jobs[0]["status"], "pending")
+        self.assertIn("missing_payment_id", self.ledger.jobs[0]["last_error"])
+        self.assertEqual(self.ledger.txs, [])
+
+    def test_failed_job_automatic_retry_completes_once(self):
+        conn = self.ledger.connect()
+        enqueue_referral_commission_job(conn, "pay_auto", "pay_auto", self.referred, 100)
+        conn.commit()
+        with self._patch(), patch.object(rc, "process_referral_commission", side_effect=RuntimeError("boom")):
+            process_pending_referral_commission_jobs()
+        self.assertEqual(self.ledger.jobs[0]["status"], "pending")
+        with self._patch():
+            process_pending_referral_commission_jobs()
+            process_pending_referral_commission_jobs()
+        self.assertEqual(self.ledger.jobs[0]["status"], "completed")
+        self.assertEqual(self._by_source().count(FIRST_BONUS_SOURCE), 1)
+        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 1)
+
+    def test_payout_does_not_write_users_wallet_column(self):
+        src = (ROOT / "services" / "referral_commission.py").read_text(encoding="utf-8")
+        payout = src.split("def release_locked_referral_payouts")[1].split("class _SkipClaim")[0]
+        self.assertNotIn("users.wallet_balance", payout)
+        self.assertNotIn("UPDATE users SET wallet_balance", payout)
+        self.assertIn("INSERT INTO wallet_balance", payout)
+
+    def test_canonical_wallet_readers_do_not_use_users_column(self):
+        ref = (ROOT / "services" / "referral_service.py").read_text(encoding="utf-8")
+        self.assertIn("COALESCE(wb.balance, 0) AS wallet_balance", ref)
+        self.assertNotIn("SELECT referral_code, wallet_balance\n        FROM users", ref)
+        admin = (ROOT / "services" / "admin_service.py").read_text(encoding="utf-8")
+        self.assertIn("LEFT JOIN wallet_balance wb", admin)
+        user_svc = (ROOT / "services" / "user_service.py").read_text(encoding="utf-8")
+        self.assertNotIn("UPDATE users SET wallet_balance", user_svc)
+
+    def test_extra_business_and_admin_activation_excluded_from_commission(self):
+        user_src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
+        extra = user_src.split('if plan_type == "extra_business"')[1].split("from services.payment_service")[0]
+        self.assertNotIn("after_payment_finalized", extra)
+        self.assertNotIn("process_referral_commission", extra)
+        from inspect import getsource
+        from services.payment_service import activate_subscription, activate_subscription_for_user
+        self.assertNotIn("enqueue_referral_commission_job", getsource(activate_subscription))
+        self.assertNotIn("enqueue_referral_commission_job", getsource(activate_subscription_for_user))
+        self.assertNotIn("process_referral_commission", getsource(activate_subscription))
+
+    def test_internal_retry_route_and_cron_exist(self):
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("/internal/referral-commission-retry", app_src)
+        self.assertIn("process_pending_referral_commission_jobs", app_src)
+        render = (ROOT / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("landmark-saturday-payout", render)
+        self.assertIn("30 12 * * 6", render)
+        self.assertIn("/internal/saturday-payout", render)
+        self.assertIn("landmark-referral-commission-retry", render)
+        self.assertIn("/internal/referral-commission-retry", render)
+
     def test_legacy_money_paths_disabled(self):
         self.assertIsNone(process_referral(self.referred, 1000))
         self.assertIsNone(process_referral_reward(self.referred, "premium", "pay_x"))

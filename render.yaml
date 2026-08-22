@@ -7,3 +7,23 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+
+  - type: cron
+    name: landmark-saturday-payout
+    runtime: python
+    schedule: "30 12 * * 6"
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python3 scripts/run_internal_job.py /internal/saturday-payout
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+
+  - type: cron
+    name: landmark-referral-commission-retry
+    runtime: python
+    schedule: "*/15 * * * *"
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python3 scripts/run_internal_job.py /internal/referral-commission-retry
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9

@@ -131,26 +131,28 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
     where_clauses = []
 
     if search:
-        where_clauses.append("(phone LIKE :search OR name LIKE :search)")
+        where_clauses.append("(u.phone LIKE :search OR u.name LIKE :search)")
         params['search'] = f'%{search}%'
     if role_filter:
-        where_clauses.append("role = :role_filter")
+        where_clauses.append("u.role = :role_filter")
         params['role_filter'] = role_filter
     if status_filter == 'active':
-        where_clauses.append("is_blocked = 0")
+        where_clauses.append("u.is_blocked = 0")
     elif status_filter == 'banned':
-        where_clauses.append("is_blocked = 1")
+        where_clauses.append("u.is_blocked = 1")
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-    count_query = f"SELECT COUNT(*) FROM users WHERE {where_sql}"
+    count_query = f"SELECT COUNT(*) FROM users u WHERE {where_sql}"
     total = conn.execute(text(count_query), params).scalar()
 
     query = f"""
-        SELECT id, phone, name, role, subscription_expiry, wallet_balance, is_blocked, created_at
-        FROM users
+        SELECT u.id, u.phone, u.name, u.role, u.subscription_expiry,
+               COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at
+        FROM users u
+        LEFT JOIN wallet_balance wb ON wb.user_id = u.id
         WHERE {where_sql}
-        ORDER BY id DESC
+        ORDER BY u.id DESC
         LIMIT :limit OFFSET :offset
     """
     params['limit'] = limit
@@ -462,7 +464,13 @@ def get_admin_referrals(page=1, limit=50, search=''):
 # -------------------------------
 def export_users_csv():
     conn = get_db_connection()
-    rows = conn.execute(text("SELECT id, phone, name, role, subscription_expiry, wallet_balance, is_blocked, created_at FROM users ORDER BY id")).fetchall()
+    rows = conn.execute(text("""
+        SELECT u.id, u.phone, u.name, u.role, u.subscription_expiry,
+               COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at
+        FROM users u
+        LEFT JOIN wallet_balance wb ON wb.user_id = u.id
+        ORDER BY u.id
+    """)).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['ID', 'Phone', 'Name', 'Role', 'Subscription Expiry', 'Wallet Balance', 'Banned', 'Created At'])

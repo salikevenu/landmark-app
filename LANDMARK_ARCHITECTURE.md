@@ -105,8 +105,9 @@ There is **no** React/Vue/Flutter/Kotlin/Swift app in this repo.
 - `/map`, `/browse`, `/wallet`, `/pricing`
 - `/api/wallet/overview` (duplicate of wallet blueprint)
 - `/api/add-business` (legacy `businesses` table)
-- `/api/payment/webhook` — **dummy** `{status: ok}`
+- `/api/payment/webhook` — unsigned, **403**; use `/api/payment/razorpay/webhook`
 - `/internal/saturday-payout`
+- `/internal/referral-commission-retry`
 - `/api/refresh`
 
 ### Present on disk, **not registered**
@@ -131,7 +132,7 @@ There is **no** React/Vue/Flutter/Kotlin/Swift app in this repo.
 |---|---|
 | `sms_service.py` | `auth_routes` (Message Central) |
 | `payment_service.py` | `payment_routes.verify-payment` |
-| `referral_commission.py` | payment webhook + `user_routes.verify-payment` (not the pricing checkout path) |
+| `referral_commission.py` | `finalize_paid_order` outbox + `/api/payment/verify-payment`, `/api/payment/razorpay/webhook`, `/api/user/verify-payment` (non-extra_business), `/internal/referral-commission-retry` |
 | `wallet_service.py` | wallet + payment_service credit/debit |
 | `listing_service.py` | mixed; create path in `listing_routes` does its own SQL |
 | `nearby_service.py` | `/api/nearby/nearby` |

@@ -234,11 +234,36 @@ class ReferralAttributionFlowTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Invalid", err)
 
-    def test_self_referral_rejected(self):
+    def test_self_referral_does_not_attribute_or_block_login(self):
         with self.app.test_request_context("/", json={"ref": "REFCODE1"}):
+            from flask import session
+            session["ref_code"] = "REFCODE1"
             ok, err = persist_referral_for_phone(self.referrer["phone"], {"ref": "REFCODE1"})
-        self.assertFalse(ok)
-        self.assertIn("own referral", err.lower())
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+            self.assertNotIn("ref_code", session)
+        self.assertNotIn(self.referrer["phone"], self.store.pending)
+
+    def test_send_otp_own_referral_still_sends(self):
+        sms = MagicMock()
+        sms.send_otp.return_value = (True, {}, "vid-self")
+        with patch.object(auth_routes, "get_verification", return_value=None), \
+             patch.object(auth_routes, "store_verification"), \
+             patch.object(auth_routes, "get_sms_service", return_value=sms):
+            res = self.client.post(
+                "/api/auth/send-otp?ref=REFCODE1",
+                json={"phone": self.referrer["phone"], "ref": "REFCODE1"},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.get_json()["success"])
+        self.assertNotIn(self.referrer["phone"], self.store.pending)
+
+    def test_new_user_still_attributed_with_valid_third_party_code(self):
+        with self.app.test_request_context("/", json={"ref": "REFCODE1"}):
+            ok, err = persist_referral_for_phone("9876543210", {"ref": "REFCODE1"})
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+        self.assertEqual(self.store.pending["9876543210"]["referrer_id"], self.referrer["id"])
 
     def test_verify_without_browser_session_uses_pending_row(self):
         with self.app.test_request_context("/api/auth/send-otp?ref=REFCODE1", json={"phone": "9000000001"}):
@@ -362,6 +387,8 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn('if ref:', app_src)
         self.assertNotIn("if ref:\n        pass", app_src)
         self.assertIn("register_url_with_ref(referral_code)", app_src)
+        qr_fn = app_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertNotIn("cache_landing_referral_code", qr_fn)
         self.assertNotIn("/download-app?ref={referral_code}", app_src)
 
     def test_login_sends_ref_on_verify_and_resend(self):
@@ -406,6 +433,8 @@ class LandingRouteTests(unittest.TestCase):
         self.assertTrue(register_url_with_ref("REFCODE1").startswith("/register?ref="))
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
+        qr_fn = qr_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertNotIn("cache_landing_referral_code", qr_fn)
 
 
 if __name__ == "__main__":
