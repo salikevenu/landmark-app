@@ -375,10 +375,16 @@ const RESEND_COOLDOWN_SECONDS = 30;
 const PHONE_REGEX = /^[6-9]\d{9}$/;   // real Indian mobile numbers only
 const OTP_REGEX = /^\d{6}$/;
 
-function referralQuery() {
+function referralCode() {
     const ref = new URLSearchParams(window.location.search).get("ref");
     if (!ref || !ref.trim()) return "";
-    return "?ref=" + encodeURIComponent(ref.trim());
+    return ref.trim();
+}
+
+function referralQuery() {
+    const ref = referralCode();
+    if (!ref) return "";
+    return "?ref=" + encodeURIComponent(ref);
 }
 
 // DOM ELEMENTS
@@ -484,7 +490,7 @@ async function sendOTP() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone })
+            body: JSON.stringify({ phone, ref: referralCode() })
         });
 
         const result = await response.json();
@@ -572,7 +578,8 @@ async function verifyOTP() {
                 otp: otp,
                 remember_me: rememberMeCheckbox.checked,
                 latitude: location.latitude,
-                longitude: location.longitude
+                longitude: location.longitude,
+                ref: referralCode()
             })
         });
 
@@ -617,7 +624,7 @@ async function handleResend() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone: pendingPhone })
+            body: JSON.stringify({ phone: pendingPhone, ref: referralCode() })
         });
 
         const result = await response.json();

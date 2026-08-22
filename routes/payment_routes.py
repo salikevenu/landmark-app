@@ -19,7 +19,7 @@ from services.payment_service import (
     ensure_payments_plan_column,
     finalize_paid_order,
 )
-from services.referral_commission import process_referral_commission
+from services.referral_commission import after_payment_finalized
 from database.init_db import get_db_connection
 import logging
 
@@ -63,17 +63,15 @@ def _payment_amount_paise(user_id, order_id, payment_id):
     return None
 
 
-def _credit_referral_after_payment(result, user_id, amount_paise):
-    """Queue locked referral commission after a new activation (not duplicates)."""
-    if not result or not result.get("success") or result.get("duplicate"):
-        return
-    if user_id is None or amount_paise is None:
-        return
-    try:
-        rupees = float(amount_paise) / 100.0
-        process_referral_commission(int(user_id), rupees)
-    except Exception:
-        logger.exception("Referral commission failed after payment for user %s", user_id)
+def _credit_referral_after_payment(result, user_id, amount_paise, razorpay_payment_id=None):
+    """Process durable commission jobs after activation, including duplicate notices.
+
+    Payment remains successful if commission processing fails; the outbox stays pending.
+    """
+    pid = razorpay_payment_id
+    if isinstance(result, dict):
+        pid = pid or result.get("razorpay_payment_id")
+    after_payment_finalized(result, razorpay_payment_id=pid)
 
 
 @payment_bp.route("/create-order-debug", methods=["POST"])
@@ -293,7 +291,7 @@ def razorpay_webhook():
         duration_days=duration_days,
     )
     if result.get("success"):
-        _credit_referral_after_payment(result, m.get("user_id"), amount)
+        _credit_referral_after_payment(result, m.get("user_id"), amount, razorpay_payment_id=payment_id)
         status_out = "already_processed" if result.get("duplicate") else "captured"
         return jsonify({"success": True, "status": status_out}), 200
     return jsonify({"success": False, "error": result.get("error", "Could not record payment")}), 400

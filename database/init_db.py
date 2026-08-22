@@ -115,13 +115,19 @@ def init_db():
             reference_id TEXT,
             status TEXT DEFAULT 'locked',
             unlock_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            razorpay_payment_id TEXT
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_user ON wallet_transactions(user_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_created ON wallet_transactions(created_at DESC)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_type ON wallet_transactions(type)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_wallet_tx_status ON wallet_transactions(status)"))
+    conn.execute(text(
+        "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT"
+    ))
+    # Unique commission indexes are created by
+    # migrations/add_referral_commission_money_safety.py after duplicate preflight.
 
     # =====================================================
     # BUSINESSES TABLE (legacy)
@@ -299,6 +305,35 @@ def init_db():
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)"))
     conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan TEXT"))
     conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS order_id TEXT"))
+    # Unique payments.order_id is created by
+    # migrations/add_referral_commission_money_safety.py after duplicate preflight.
+
+    # =====================================================
+    # REFERRAL COMMISSION JOBS (durable outbox)
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS referral_commission_jobs (
+            id SERIAL PRIMARY KEY,
+            payment_id TEXT NOT NULL,
+            razorpay_payment_id TEXT,
+            referred_user_id INTEGER NOT NULL REFERENCES users(id),
+            amount_rupees NUMERIC(12,2) NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            processed_at TIMESTAMP,
+            CONSTRAINT uq_referral_commission_jobs_payment UNIQUE (payment_id)
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_referral_commission_jobs_status "
+        "ON referral_commission_jobs(status)"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_referral_commission_jobs_rzp "
+        "ON referral_commission_jobs(razorpay_payment_id)"
+    ))
 
     # =====================================================
     # PAYMENT TRANSACTIONS (Razorpay)
@@ -457,6 +492,21 @@ def init_db():
         )
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_otp_phone ON otp_verifications(phone)"))
+
+    # =====================================================
+    # PENDING REFERRALS (durable OTP attribution)
+    # =====================================================
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pending_referrals (
+            phone TEXT PRIMARY KEY,
+            ref_code TEXT NOT NULL,
+            referrer_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pending_referrals_referrer ON pending_referrals(referrer_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pending_referrals_expires ON pending_referrals(expires_at)"))
 
     # Safe for older DBs that created sponsored_ads without user_id
     conn.execute(text(

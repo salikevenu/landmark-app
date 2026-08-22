@@ -3,9 +3,12 @@ from datetime import datetime, timedelta
 import qrcode
 from PIL import Image
 from sqlalchemy import text
+import logging
 
 from config.payment_config import BASE_URL
 from database.init_db import get_db_connection
+
+logger = logging.getLogger(__name__)
 
 PLAN_REWARDS = {
     "service": 25,
@@ -32,78 +35,11 @@ def get_referral_info(user_id):
 
 
 def process_referral_reward(user_id, plan_type, payment_id):
-    conn = get_db_connection()
-
-    # Find referrer
-    referral_row = conn.execute(
-        text("SELECT referred_by FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
-
-    if not referral_row or not referral_row._mapping["referred_by"]:
-        return
-
-    referrer_id = referral_row._mapping["referred_by"]
-
-    # Prevent self-referral
-    if referrer_id == user_id:
-        return
-
-    reward = PLAN_REWARDS.get(plan_type, 0)
-    if reward == 0:
-        return
-
-    # Prevent duplicate reward for the same payment
-    existing = conn.execute(
-        text("SELECT id FROM referral_transactions WHERE payment_id = :pid"),
-        {"pid": payment_id}
-    ).fetchone()
-    if existing:
-        return
-
-    # Upsert wallet_balance row: insert if not exists, else update
-    # Use PostgreSQL's ON CONFLICT ... DO NOTHING or DO UPDATE.
-    # First, ensure a row exists (INSERT ... ON CONFLICT DO NOTHING, then update)
-    conn.execute(text("""
-        INSERT INTO wallet_balance (user_id, balance)
-        VALUES (:uid, 0)
-        ON CONFLICT (user_id) DO NOTHING
-    """), {"uid": referrer_id})
-
-    # Update wallet balance
-    conn.execute(text("""
-        UPDATE wallet_balance
-        SET balance = balance + :reward
-        WHERE user_id = :uid
-    """), {"reward": reward, "uid": referrer_id})
-
-    # Compute unlock date (7 days from now)
-    unlock_date = datetime.utcnow() + timedelta(days=7)
-
-    # Record wallet transaction (locked until unlock_date)
-    conn.execute(text("""
-        INSERT INTO wallet_transactions
-        (user_id, amount, type, source, reference_id, status, unlock_at)
-        VALUES (:uid, :amount, 'credit', 'referral_reward', :ref_id, 'locked', :unlock)
-    """), {
-        "uid": referrer_id,
-        "amount": reward,
-        "ref_id": payment_id,
-        "unlock": unlock_date
-    })
-
-    # Record referral transaction
-    conn.execute(text("""
-        INSERT INTO referral_transactions
-        (referrer_id, referred_user_id, reward_amount, status)
-        VALUES (:referrer, :referred, :reward, 'completed')
-    """), {
-        "referrer": referrer_id,
-        "referred": user_id,
-        "reward": reward
-    })
-
-    conn.commit()
+    """LEGACY / DISABLED. Old flat ₹25/50/100 rewards. Live path is 10% + 5%."""
+    logger.error(
+        "LEGACY DISABLED: referral_service.process_referral_reward is not the live commission path"
+    )
+    return None
 
 
 def create_referral_assets(user_id, referral_code):

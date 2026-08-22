@@ -7,6 +7,7 @@ from sqlalchemy import text
 from config.payment_config import billed_term, get_plan_spec
 from database.init_db import get_db_connection
 from extensions import get_razorpay_client
+from services.referral_commission import enqueue_referral_commission_job, ensure_referral_commission_schema
 
 # Payment row source of truth:
 #   created    — Razorpay order stored, not verified
@@ -220,6 +221,7 @@ def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_p
       activated → return current expiry, do not extend
     """
     uid = _as_int_user_id(user_id) if user_id is not None else None
+    ensure_referral_commission_schema()
     conn = get_db_connection()
     try:
         row = _load_order_row_for_update(conn, razorpay_order_id, razorpay_payment_id, uid)
@@ -246,14 +248,28 @@ def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_p
 
         owner_id = row.get("user_id")
         status = (row.get("status") or "").lower()
+        amount_rupees = float(expected_paise) / 100.0
+        enqueue_referral_commission_job(
+            conn,
+            payment_id=razorpay_payment_id,
+            razorpay_payment_id=razorpay_payment_id,
+            referred_user_id=owner_id,
+            amount_rupees=amount_rupees,
+        )
+        extra = {
+            "razorpay_payment_id": razorpay_payment_id,
+            "referred_user_id": owner_id,
+            "amount_paise": expected_paise,
+        }
         if status == ACTIVATED_STATUS:
             expiry = _read_user_expiry_on_conn(conn, owner_id)
             conn.commit()
+            extra["duplicate"] = True
             return success_payload(
                 "Payment already processed",
                 spec,
                 expiry,
-                extra={"duplicate": True},
+                extra=extra,
             )
 
         expiry = _activate_user_on_conn(conn, owner_id, spec, duration_days)
@@ -266,7 +282,7 @@ def finalize_paid_order(razorpay_order_id, razorpay_payment_id, spec, expected_p
             spec["plan"],
         )
         conn.commit()
-        return success_payload("Subscription activated", spec, expiry)
+        return success_payload("Subscription activated", spec, expiry, extra=extra)
     except Exception:
         try:
             conn.rollback()

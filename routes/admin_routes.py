@@ -568,7 +568,11 @@ def api_audit_log():
 @admin_bp.route("/api/admin/referrals/<int:ref_id>/verify", methods=["POST"])
 @admin_required
 def verify_referral(ref_id):
-    """Admin verifies a referral – converts pending rewards to credit"""
+    """LEGACY: converts historical referral_transactions pending ₹2 rows.
+
+    Not the live 10%/5% commission path (services.referral_commission).
+    Do not wire new payments through this endpoint.
+    """
     try:
         admin_id, admin_phone = get_admin_info()
         ip = request.remote_addr

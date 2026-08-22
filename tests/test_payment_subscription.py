@@ -87,6 +87,7 @@ class LockedPaymentDB:
         self.row_lock = threading.Lock()
         self.user_updates = 0
         self.payment_status_writes = []
+        self.jobs = []
 
     def connect(self):
         return LockedConn(self)
@@ -125,6 +126,11 @@ class LockedConn:
             self.store.payment["amount"] = params["amount"]
             self.store.payment["status"] = params["status"]
             self.store.payment["plan"] = params["plan"]
+            return res
+        if "INSERT INTO referral_commission_jobs" in qs:
+            pid = params.get("payment_id")
+            if pid and not any(j.get("payment_id") == pid for j in self.store.jobs):
+                self.store.jobs.append(dict(params))
             return res
         if "FROM users" in qs:
             res.fetchone.return_value = _row(self.store.user)
@@ -190,6 +196,11 @@ class FrontendContractTests(unittest.TestCase):
 
 
 class VerifyPaymentServiceTests(unittest.TestCase):
+    def setUp(self):
+        self._ensure = patch("services.payment_service.ensure_referral_commission_schema")
+        self._ensure.start()
+        self.addCleanup(self._ensure.stop)
+
     def _client(self, signature_ok=True, order=None):
         client = MagicMock()
         if signature_ok:
@@ -469,9 +480,11 @@ class ReferralAndWalletWiringTests(unittest.TestCase):
         payout = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn("'referral_first_bonus'", commission)
         self.assertNotIn("'5%_base_+_5%_activation'", commission)
-        self.assertIn("'referral_first_bonus'", payout)
+        self.assertIn("release_locked_referral_payouts", payout)
+        self.assertIn("release_locked_referral_payouts", commission)
+        self.assertIn("'referral_first_bonus'", commission)
         self.assertIn("'referral_recurring'", commission)
-        self.assertIn("'referral_recurring'", payout)
+        self.assertIn("FOR UPDATE SKIP LOCKED", commission)
 
     def test_wallet_transactions_do_not_select_description(self):
         wallet_routes = (ROOT / "routes" / "wallet_routes.py").read_text(encoding="utf-8")

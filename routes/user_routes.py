@@ -271,7 +271,9 @@ def verify_payment():
         })
 
     from services.payment_service import verify_payment_service
+    from services.referral_commission import after_payment_finalized
     result = verify_payment_service(data, user_id)
+    after_payment_finalized(result, razorpay_payment_id=data.get("razorpay_payment_id"))
     http = 200 if result.get("success") else result.pop("_http", 400)
     result.pop("_http", None)
     return jsonify(result), http

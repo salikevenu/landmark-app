@@ -5,8 +5,11 @@ import string
 import logging
 from datetime import timedelta
 
+from urllib.parse import quote
+
 from flask import Blueprint, request, jsonify, current_app, render_template, redirect, session
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
 
 from database.init_db import get_db_connection
@@ -40,6 +43,8 @@ from sqlalchemy import text
 VERIFICATION_EXPIRY_SECONDS = 60
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 MAX_OTP_ATTEMPTS = 5
+PENDING_REFERRAL_TTL = timedelta(days=7)
+REFERRAL_CODE_INSERT_ATTEMPTS = 8
 
 
 # =================================
@@ -59,6 +64,161 @@ def clean_phone(raw_phone):
     digits = ''.join(filter(str.isdigit, raw_phone or ''))
     return digits[-10:] if len(digits) >= 10 else digits
 
+
+def extract_referral_code(data=None):
+    """Resolve ref from query, JSON body, then Flask session (cache)."""
+    data = data or {}
+    for candidate in (
+        request.args.get("ref") if request else None,
+        data.get("ref"),
+        data.get("referral_code"),
+        session.get("ref_code") if session else None,
+    ):
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value:
+            return value
+    return ""
+
+
+def register_url_with_ref(ref_code):
+    """Canonical signup URL that preserves a referral code."""
+    code = str(ref_code or "").strip()
+    if not code:
+        return "/register"
+    return "/register?ref=" + quote(code, safe="")
+
+
+def fetch_referrer_by_code(ref_code):
+    """Return referrer user dict or None. referral_code match is exact."""
+    code = (ref_code or "").strip()
+    if not code:
+        return None
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, phone, referral_code FROM users WHERE referral_code = :code"),
+            {"code": code},
+        ).fetchone()
+    if not row:
+        return None
+    return dict(row._mapping)
+
+
+def cache_landing_referral_code(ref_code):
+    """Session cache for landing pages that have no phone yet. Invalid codes are ignored."""
+    referrer = fetch_referrer_by_code(ref_code)
+    if not referrer:
+        return False
+    session["ref_code"] = referrer.get("referral_code") or str(ref_code).strip()
+    return True
+
+
+def get_pending_referral(phone):
+    """Load a non-expired pending referral for a normalized 10-digit phone."""
+    if not phone:
+        return None
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT ref_code, referrer_id, expires_at
+                FROM pending_referrals
+                WHERE phone = :phone
+                  AND expires_at > NOW()
+            """),
+            {"phone": phone},
+        ).fetchone()
+    if not row:
+        return None
+    return dict(row._mapping)
+
+
+def upsert_pending_referral(phone, ref_code, referrer_id):
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO pending_referrals (phone, ref_code, referrer_id, created_at, expires_at)
+                VALUES (
+                    :phone, :ref_code, :referrer_id,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP + INTERVAL '7 days'
+                )
+                ON CONFLICT (phone) DO UPDATE SET
+                    ref_code = EXCLUDED.ref_code,
+                    referrer_id = EXCLUDED.referrer_id,
+                    created_at = CURRENT_TIMESTAMP,
+                    expires_at = CURRENT_TIMESTAMP + INTERVAL '7 days'
+            """),
+            {
+                "phone": phone,
+                "ref_code": ref_code,
+                "referrer_id": int(referrer_id),
+            },
+        )
+        conn.commit()
+
+
+def clear_pending_referral(phone):
+    if not phone:
+        return
+    with engine.connect() as conn:
+        conn.execute(
+            text("DELETE FROM pending_referrals WHERE phone = :phone"),
+            {"phone": phone},
+        )
+        conn.commit()
+    session.pop("ref_code", None)
+
+
+def persist_referral_for_phone(phone, data=None):
+    """
+    Validate and persist a referral for this phone.
+    Empty ref is allowed (no attribution).
+    Invalid or self-referral codes are rejected.
+    Returns (ok, error_message).
+    """
+    ref = extract_referral_code(data)
+    if not ref:
+        pending = get_pending_referral(phone)
+        if pending:
+            session["ref_code"] = pending.get("ref_code") or session.get("ref_code")
+        return True, None
+
+    referrer = fetch_referrer_by_code(ref)
+    if not referrer:
+        return False, "Invalid referral code."
+
+    referrer_phone = clean_phone(referrer.get("phone") or "")
+    if referrer_phone and referrer_phone == phone:
+        return False, "You cannot use your own referral code."
+
+    stored_code = referrer.get("referral_code") or ref
+    session["ref_code"] = stored_code
+    upsert_pending_referral(phone, stored_code, referrer["id"])
+    return True, None
+
+
+def resolve_referrer_id_for_signup(phone, data=None):
+    """Referrer user id for a new account, or None. Does not reassign existing users."""
+    ok, err = persist_referral_for_phone(phone, data)
+    if not ok:
+        return None, err
+
+    pending = get_pending_referral(phone)
+    if pending and pending.get("referrer_id"):
+        return int(pending["referrer_id"]), None
+
+    session_code = (session.get("ref_code") or "").strip()
+    if session_code:
+        referrer = fetch_referrer_by_code(session_code)
+        if referrer:
+            referrer_phone = clean_phone(referrer.get("phone") or "")
+            if referrer_phone and referrer_phone == phone:
+                return None, "You cannot use your own referral code."
+            return int(referrer["id"]), None
+    return None, None
+
+
 def otp_phone_key():
     """Rate-limit key by submitted phone (falls back to IP if missing)."""
     data = request.get_json(silent=True) or {}
@@ -76,40 +236,85 @@ def _parse_coord(value):
         return None
 
 
-def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None):
-    """Get existing user or create a new one."""
+def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, referrer_id=None):
+    """Get existing user or create a new one. Sets referred_by only on INSERT."""
     with engine.connect() as conn:
         user = conn.execute(
-            text("SELECT id, phone, name, role, referral_code FROM users WHERE phone = :phone"),
+            text("""
+                SELECT id, phone, name, role, referral_code, referred_by
+                FROM users WHERE phone = :phone
+            """),
             {"phone": phone}
         ).fetchone()
 
         if user:
             return dict(user._mapping), "existing"
 
-        referral_code = generate_referral_code()
-        result = conn.execute(text("""
-            INSERT INTO users (phone, name, role, referral_code, ip_address, latitude, longitude, created_at)
-            VALUES (:phone, '', 'free', :code, :ip, :lat, :lng, CURRENT_TIMESTAMP)
-            RETURNING id
-        """), {
-            "phone": phone,
-            "code": referral_code,
-            "ip": ip_address or request.remote_addr,
-            "lat": _parse_coord(latitude),
-            "lng": _parse_coord(longitude),
-        })
-        user_id = result.fetchone()[0]
-        conn.commit()
+        bound_referrer = None
+        if referrer_id is not None:
+            try:
+                bound_referrer = int(referrer_id)
+            except (TypeError, ValueError):
+                bound_referrer = None
 
-        return {
-            "id": user_id,
-            "phone": phone,
-            "name": "",
-            "role": "free",
-            "referral_code": referral_code,
-            "referred_by": None,
-        }, "new"
+        last_integrity = None
+        for _ in range(REFERRAL_CODE_INSERT_ATTEMPTS):
+            referral_code = generate_referral_code()
+            try:
+                result = conn.execute(text("""
+                    INSERT INTO users (
+                        phone, name, role, referral_code, referred_by,
+                        ip_address, latitude, longitude, created_at
+                    )
+                    VALUES (
+                        :phone, '', 'free', :code, :referred_by,
+                        :ip, :lat, :lng, CURRENT_TIMESTAMP
+                    )
+                    RETURNING id
+                """), {
+                    "phone": phone,
+                    "code": referral_code,
+                    "referred_by": bound_referrer,
+                    "ip": ip_address or request.remote_addr,
+                    "lat": _parse_coord(latitude),
+                    "lng": _parse_coord(longitude),
+                })
+                user_id = result.fetchone()[0]
+                conn.commit()
+                if bound_referrer is not None and bound_referrer == user_id:
+                    conn.execute(
+                        text("UPDATE users SET referred_by = NULL WHERE id = :uid AND referred_by = :uid"),
+                        {"uid": user_id},
+                    )
+                    conn.commit()
+                    bound_referrer = None
+                return {
+                    "id": user_id,
+                    "phone": phone,
+                    "name": "",
+                    "role": "free",
+                    "referral_code": referral_code,
+                    "referred_by": bound_referrer,
+                }, "new"
+            except IntegrityError as exc:
+                last_integrity = exc
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raced = conn.execute(
+                    text("""
+                        SELECT id, phone, name, role, referral_code, referred_by
+                        FROM users WHERE phone = :phone
+                    """),
+                    {"phone": phone},
+                ).fetchone()
+                if raced:
+                    return dict(raced._mapping), "existing"
+
+        logger.exception("User insert failed after referral_code retries: %s", last_integrity)
+        raise last_integrity
+
 
 def generate_jwt_tokens(user_data, remember_me=False):
     """Generate access and refresh tokens."""
@@ -217,15 +422,12 @@ def send_otp():
 
         full_phone = COUNTRY_CODE + phone
 
-        ref = (request.args.get("ref") or "").strip()
-        if ref:
-            with engine.connect() as conn:
-                referrer = conn.execute(
-                    text("SELECT id FROM users WHERE referral_code = :code"),
-                    {"code": ref},
-                ).fetchone()
-            if referrer:
-                session["ref_code"] = ref
+        ok, ref_error = persist_referral_for_phone(phone, data)
+        if not ok:
+            return jsonify({
+                "success": False,
+                "message": ref_error or "Invalid referral code."
+            }), 400
 
         # Cooldown check
         existing = get_verification(full_phone)
@@ -281,6 +483,16 @@ def verify_otp():
         if not validate_phone(phone) or not re.match(r'^\d{6}$', user_otp):
             return jsonify({"success": False, "message": "Invalid phone number or OTP"}), 400
 
+        explicit_ref = (
+            (request.args.get("ref") or "").strip()
+            or str(data.get("ref") or "").strip()
+            or str(data.get("referral_code") or "").strip()
+        )
+        if explicit_ref:
+            ok, ref_error = persist_referral_for_phone(phone, {"ref": explicit_ref})
+            if not ok:
+                return jsonify({"success": False, "message": ref_error or "Invalid referral code."}), 400
+
         full_phone = COUNTRY_CODE + phone
 
         # Retrieve the stored verification_id from PostgreSQL
@@ -311,38 +523,36 @@ def verify_otp():
         # OTP verified successfully - delete the record
         delete_verification(full_phone)
 
+        referrer_id, ref_error = resolve_referrer_id_for_signup(phone, data)
+        if ref_error:
+            return jsonify({"success": False, "message": ref_error}), 400
+
         # Create or login the user
         user_data, status = get_or_create_user(
             phone,
             ip_address=request.remote_addr,
             latitude=data.get("latitude"),
             longitude=data.get("longitude"),
+            referrer_id=referrer_id,
         )
 
         with engine.connect() as conn:
             try:
-                if status == "new" and user_data.get("referred_by") is None:
-                    ref_code = session.get("ref_code")
-                    if ref_code:
-                        referrer = conn.execute(
-                            text("SELECT id FROM users WHERE referral_code = :code"),
-                            {"code": ref_code},
-                        ).fetchone()
-                        if referrer:
-                            referrer_id = referrer._mapping["id"]
-                            if referrer_id != user_data["id"]:
-                                conn.execute(
-                                    text("""
-                                        UPDATE users
-                                        SET referred_by = :rid
-                                        WHERE id = :uid AND referred_by IS NULL
-                                    """),
-                                    {"rid": referrer_id, "uid": user_data["id"]},
-                                )
-                                conn.commit()
-                                user_data["referred_by"] = referrer_id
+                # Fallback only for brand-new users whose INSERT did not bind referred_by.
+                if status == "new" and not user_data.get("referred_by") and referrer_id:
+                    if int(referrer_id) != int(user_data["id"]):
+                        conn.execute(
+                            text("""
+                                UPDATE users
+                                SET referred_by = :rid
+                                WHERE id = :uid AND referred_by IS NULL
+                            """),
+                            {"rid": int(referrer_id), "uid": user_data["id"]},
+                        )
+                        conn.commit()
+                        user_data["referred_by"] = int(referrer_id)
             finally:
-                session.pop("ref_code", None)
+                clear_pending_referral(phone)
 
             # Generate JWT tokens
             if remember_me:
@@ -402,6 +612,13 @@ def resend_otp():
             return jsonify({"success": False, "message": "Invalid phone number"}), 400
 
         full_phone = COUNTRY_CODE + phone
+
+        ok, ref_error = persist_referral_for_phone(phone, data)
+        if not ok:
+            return jsonify({
+                "success": False,
+                "message": ref_error or "Invalid referral code."
+            }), 400
 
         stored = get_verification(full_phone)
         if stored:

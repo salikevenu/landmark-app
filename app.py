@@ -249,33 +249,9 @@ def execute_query(query, params=None, fetchone=False, fetchall=False, commit=Fal
 from services.subscription_access import legacy_add_business_gone
 
 def _execute_payout():
-    from database.init_db import get_db_connection
-    with get_db_connection() as conn:
-        locked = conn.execute(text("""
-            SELECT id, user_id, amount
-            FROM wallet_transactions
-            WHERE type = 'credit'
-              AND source IN ('referral_first_bonus', 'referral_recurring')
-              AND status = 'locked'
-              AND unlock_at <= NOW()
-        """)).fetchall()
-        released_count = 0
-        for row in locked:
-            uid = row._mapping["user_id"]
-            amt = row._mapping["amount"]
-            tid = row._mapping["id"]
-            conn.execute(text("""
-                INSERT INTO wallet_balance (user_id, balance, updated_at)
-                VALUES (:uid, :amt, NOW())
-                ON CONFLICT (user_id) DO UPDATE
-                SET balance = wallet_balance.balance + :amt2,
-                    updated_at = NOW()
-            """), {"uid": uid, "amt": amt, "amt2": amt})
-            conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"), {"amt": amt, "uid": uid})
-            conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"), {"tid": tid})
-            released_count += 1
-        conn.commit()
-    return released_count
+    """Canonical Saturday/admin payout — wallet_balance.balance only."""
+    from services.referral_commission import release_locked_referral_payouts
+    return release_locked_referral_payouts()
 
 @app.before_request
 def before_request_actions():
@@ -288,6 +264,11 @@ def before_request_actions():
 # ==================== WEB ROUTES ====================
 @app.route("/")
 def index():
+    ref = (request.args.get("ref") or "").strip()
+    if ref:
+        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+        cache_landing_referral_code(ref)
+        return redirect(register_url_with_ref(ref))
     lang = session.get("lang", "en")
     t = get_translations(lang)
     return render_template("public/index.html", t=t)
@@ -413,9 +394,11 @@ def refresh():
 
 @app.route('/download-app')
 def download_app():
-    ref = request.args.get('ref')
+    ref = (request.args.get("ref") or "").strip()
     if ref:
-        pass
+        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+        cache_landing_referral_code(ref)
+        return redirect(register_url_with_ref(ref))
     apk_path = os.path.join(app.root_path, 'static', 'app')
     return send_from_directory(apk_path, 'landmark.apk', as_attachment=True)
 
@@ -424,8 +407,10 @@ from io import BytesIO
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
-    download_url = request.host_url.rstrip('/') + f'/download-app?ref={referral_code}'
-    qr = qrcode.make(download_url)
+    from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+    cache_landing_referral_code(referral_code)
+    signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
+    qr = qrcode.make(signup_url)
     img_io = BytesIO()
     qr.save(img_io, 'PNG')
     img_io.seek(0)
