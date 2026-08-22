@@ -54,7 +54,7 @@ def api_create_listing():
 
         conn = get_db_connection()
         user = conn.execute(
-            text("SELECT id, role, plan, subscription_expiry, is_active FROM users WHERE id = :uid"),
+            text("SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased FROM users WHERE id = :uid"),
             {"uid": user_id}
         ).fetchone()
 
@@ -71,9 +71,10 @@ def api_create_listing():
             {"uid": user_id}
         ).fetchone()._mapping["cnt"]
 
+        extra_slots = int(user._mapping.get("extra_businesses_purchased") or 0)
         if plan == "business_basic" and listing_count >= 1:
             return jsonify({"error": "Basic plan allows only 1 listing. Upgrade to Premium."}), 403
-        elif plan == "business_premium" and listing_count >= 3:
+        elif plan == "business_premium" and listing_count >= 3 + extra_slots:
             return jsonify({"error": "Premium plan allows up to 3 listings."}), 403
         elif plan == "service_provider" and listing_count >= 10:
             return jsonify({"error": "Service provider limit reached (10 listings)."}), 403

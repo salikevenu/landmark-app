@@ -242,33 +242,13 @@ def verify_payment():
     data = request.get_json(silent=True) or {}
     plan_type = data.get("plan")
 
-    # extra_business is not on /pricing; keep the existing slot purchase path
+    # extra_business is a slot purchase, not a subscription/commission event.
     if plan_type == "extra_business":
-        payment_id = data.get("razorpay_payment_id")
-        order_id = data.get("razorpay_order_id")
-        signature = data.get("razorpay_signature")
-        if not all([payment_id, order_id, signature]):
-            return jsonify({"success": False, "error": "Missing payment details"}), 400
-        params = {
-            "razorpay_order_id": order_id,
-            "razorpay_payment_id": payment_id,
-            "razorpay_signature": signature,
-        }
-        try:
-            razor_client.utility.verify_payment_signature(params)
-        except razorpay.errors.SignatureVerificationError:
-            return jsonify({"success": False, "error": "Invalid payment signature"}), 400
-        conn = get_db_connection()
-        conn.execute(
-            text("UPDATE users SET extra_businesses_purchased = extra_businesses_purchased + 1 WHERE id = :uid"),
-            {"uid": user_id},
-        )
-        conn.commit()
-        return jsonify({
-            "success": True,
-            "message": "Extra business slot purchased successfully",
-            "redirect": "/create-listing",
-        })
+        from services.payment_service import verify_extra_business_payment
+        result = verify_extra_business_payment(data, user_id)
+        http = 200 if result.get("success") else result.pop("_http", 400)
+        result.pop("_http", None)
+        return jsonify(result), http
 
     from services.payment_service import verify_payment_service
     from services.referral_commission import after_payment_finalized
