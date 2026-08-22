@@ -359,8 +359,8 @@ def readiness():
         with get_db_connection() as conn:
             conn.execute(text("SELECT 1"))
         return {"status": "ready"}, 200
-    except Exception as e:
-        return {"status": "not ready", "error": str(e)}, 503
+    except Exception:
+        return {"status": "not ready"}, 503
 
 @app.route("/api/refresh", methods=["POST"])
 @jwt_required(refresh=True)

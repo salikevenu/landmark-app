@@ -31,9 +31,12 @@ _avatar_column_ready = False
 
 def _as_user_id(identity):
     try:
-        return int(identity)
+        uid = int(identity)
     except (TypeError, ValueError):
-        return identity
+        return None
+    if uid <= 0:
+        return None
+    return uid
 
 
 def get_user_by_id(user_id):
@@ -117,6 +120,8 @@ def profile():
 def profile_data():
     """Optional explicit JSON profile endpoint."""
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = None
     try:
         conn = get_db_connection()
@@ -147,6 +152,8 @@ def profile_data():
 def update_profile():
     """Update the current user's display name."""
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
 
@@ -178,15 +185,19 @@ def upload_profile_avatar():
     from flask import current_app
 
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     file = request.files.get("avatar") or request.files.get("file")
     if not file or not file.filename:
         return jsonify({"error": "No image file provided"}), 400
 
     filename = secure_filename(file.filename)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    allowed = {"jpg", "jpeg", "png", "webp", "gif"}
-    if ext not in allowed:
-        return jsonify({"error": "Invalid image type. Use jpg, png, webp, or gif"}), 400
+    allowed = {"jpg", "jpeg", "png", "webp"}
+    allowed_mimes = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+    mime = (file.mimetype or "").split(";")[0].strip().lower()
+    if ext not in allowed or mime not in allowed_mimes:
+        return jsonify({"error": "Invalid image type. Use jpg, png, or webp"}), 400
 
     # Soft size guard (10MB) in addition to app MAX_CONTENT_LENGTH
     file.stream.seek(0, os.SEEK_END)
@@ -200,7 +211,7 @@ def upload_profile_avatar():
         avatar_dir = os.path.join(current_app.root_path, upload_root, "avatars")
         os.makedirs(avatar_dir, exist_ok=True)
 
-        stored_name = f"user_{user_id}_{int(time())}.{ext}"
+        stored_name = f"user_{int(user_id)}_{int(time())}.{ext}"
         abs_path = os.path.join(avatar_dir, stored_name)
         file.save(abs_path)
 

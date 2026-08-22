@@ -29,6 +29,8 @@ def role_required(required_roles):
             claims = get_jwt()
             if claims.get("role") not in required_roles:
                 return jsonify({"error": "Insufficient permissions"}), 403
+            if "admin" in required_roles and not db_user_is_admin(get_jwt_identity()):
+                return jsonify({"error": "Insufficient permissions"}), 403
             return fn(*args, **kwargs)
         return wrapper
     return decorator

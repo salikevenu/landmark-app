@@ -248,6 +248,8 @@ def api_change_role(user_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = change_user_role(user_id, new_role, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 400
     return jsonify(result)
 
 @admin_bp.route("/api/admin/users/<int:user_id>/reset-subscription", methods=["POST"])
@@ -514,6 +516,8 @@ def impersonate_user(user_id):
     ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
+    if (user._mapping.get("role") or "") == "admin":
+        return jsonify({"error": "Cannot impersonate an admin"}), 403
 
     # Generate short-lived token (10 minutes)
     token = create_access_token(

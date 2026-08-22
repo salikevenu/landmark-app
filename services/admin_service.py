@@ -197,11 +197,21 @@ def unban_user(user_id, admin_id, admin_phone, ip):
     return {'status': 'unbanned'}
 
 def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
-    valid_roles = ['user', 'business_basic', 'business_premium', 'admin']
+    valid_roles = ['user', 'business_basic', 'business_premium', 'service_provider']
     if new_role not in valid_roles:
-        return {'error': 'Invalid role'}
+        return {'error': 'Invalid role', '_http': 400}
     conn = get_db_connection()
-    conn.execute(text("UPDATE users SET role = :role WHERE id = :user_id"), {"role": new_role, "user_id": user_id})
+    current = conn.execute(
+        text("SELECT role FROM users WHERE id = :user_id"),
+        {"user_id": user_id},
+    ).fetchone()
+    if not current:
+        conn.close()
+        return {'error': 'User not found', '_http': 404}
+    if (current._mapping.get("role") or "") == "admin":
+        conn.close()
+        return {'error': 'Cannot change an admin role from this API', '_http': 403}
+    conn.execute(text("UPDATE users SET role = :role WHERE id = :user_id AND role <> 'admin'"), {"role": new_role, "user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'change_role', 'user', str(user_id), f'Role changed to {new_role}', ip)
     conn.close()
