@@ -94,17 +94,8 @@ def promotions():
 @promotions_bp.route("/api/promotions/onboard", methods=["POST"])
 @jwt_required()
 def create_promotion():
-    user_id = get_jwt_identity()
-    data = request.json
-    plan = data.get('plan')
-    listing_url = data.get('listing_url')
-    headline = data.get('headline')
-
-    conn = get_db_connection()
-    conn.execute(
-        text("INSERT INTO sponsored_ads (user_id, listing_id, plan, start_date, end_date, is_active) VALUES (:uid, 1, :plan, NOW(), NOW() + INTERVAL '1 month', 1)"),
-        {"uid": user_id, "plan": plan}
-    )
-    conn.commit()
-    
-    return jsonify({"success": True, "message": "Promotion started successfully!"})
+    """Disabled: must not create sponsored ads without a captured payment."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled",
+    }), 410

@@ -313,7 +313,7 @@ def browse():
 @user_bp.route("/api/browse")
 def api_browse():
     try:
-        page = int(request.args.get("page", 1))
+        page = max(1, min(int(request.args.get("page", 1) or 1), 10000))
         search = request.args.get("search", "")
         category = request.args.get("category", "")
         distance = request.args.get("distance")
@@ -358,7 +358,7 @@ def api_browse():
                 END as distance
             FROM listings
             WHERE is_active = 1
-            AND (status IS NULL OR status = 'approved')
+            AND status = 'approved'
             AND (:search = '' OR business_name ILIKE :search OR category ILIKE :search)
             AND (:category = '' OR category = :category)
             AND (:distance IS NULL OR (

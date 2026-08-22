@@ -43,6 +43,41 @@ def _listing_upload_allowed(file_storage, allowed_exts, allowed_mimes):
     mime = (file_storage.mimetype or "").split(";")[0].strip().lower()
     return ext in allowed_exts and mime in allowed_mimes
 
+
+def _parse_coord(value, lo, hi, field):
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid {field}")
+    if not (lo <= num <= hi):
+        raise ValueError(f"Invalid {field}")
+    return num
+
+
+def _paid_listing_user(conn, user_id, *, for_update=False):
+    """Load the authenticated user from DB. JWT role/plan claims are ignored."""
+    sql = """
+        SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased
+        FROM users WHERE id = :uid
+    """
+    if for_update:
+        sql += " FOR UPDATE"
+    row = conn.execute(text(sql), {"uid": user_id}).fetchone()
+    if not row or not row._mapping.get("is_active"):
+        return None, (jsonify({"error": "User not found or inactive"}), 404)
+    user_dict = dict(row._mapping)
+    if not is_subscription_active(user_dict):
+        return None, (jsonify({"error": "Active subscription required"}), 403)
+    return user_dict, None
+
+
+def _normalize_image_type(raw):
+    allowed = {"logo", "shop", "service"}
+    value = (raw or "shop").strip().lower()
+    if value in ("gallery", "image", "photo"):
+        return "shop"
+    return value if value in allowed else "shop"
+
 # =========================
 # CREATE LISTING API
 # =========================
@@ -55,58 +90,59 @@ def api_create_listing():
         user_phone = claims.get("phone")
 
         conn = get_db_connection()
-        user = conn.execute(
-            text("SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased FROM users WHERE id = :uid"),
-            {"uid": user_id}
-        ).fetchone()
+        user_dict, err = _paid_listing_user(conn, user_id, for_update=True)
+        if err:
+            return err
 
-        if not user or not user._mapping["is_active"]:
-            return jsonify({"error": "User not found or inactive"}), 404
-
-        user_dict = dict(user._mapping)
-        if not is_subscription_active(user_dict):
-            return jsonify({"error": "Active subscription required"}), 403
-
-        plan = user._mapping["plan"]
+        plan = user_dict.get("plan")
         listing_count = conn.execute(
             text("SELECT COUNT(*) as cnt FROM listings WHERE user_id = :uid"),
             {"uid": user_id}
         ).fetchone()._mapping["cnt"]
 
-        extra_slots = int(user._mapping.get("extra_businesses_purchased") or 0)
+        extra_slots = int(user_dict.get("extra_businesses_purchased") or 0)
         if plan == "business_basic" and listing_count >= 1:
             return jsonify({"error": "Basic plan allows only 1 listing. Upgrade to Premium."}), 403
         elif plan == "business_premium" and listing_count >= 3 + extra_slots:
             return jsonify({"error": "Premium plan allows up to 3 listings."}), 403
         elif plan == "service_provider" and listing_count >= 10:
             return jsonify({"error": "Service provider limit reached (10 listings)."}), 403
+        elif plan not in ("business_basic", "business_premium", "service_provider"):
+            return jsonify({"error": "Active subscription required"}), 403
 
         business_name = request.form.get("business_name")
         category = request.form.get("category")
-        latitude = request.form.get("latitude")
-        longitude = request.form.get("longitude")
+        try:
+            latitude = _parse_coord(request.form.get("latitude"), -90, 90, "latitude")
+            longitude = _parse_coord(request.form.get("longitude"), -180, 180, "longitude")
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+
+        listing_type = (request.form.get("listing_type") or "business").strip().lower()
+        if listing_type not in ("business", "service"):
+            listing_type = "business"
 
         if not business_name or not category:
             return jsonify({"success": False, "error": "Business name and category required"}), 400
-        if not latitude or not longitude:
-            return jsonify({"success": False, "error": "Location required"}), 400
 
-        # Insert listing with RETURNING id
+        # Owner and status are server-controlled. Ignore client user_id/status/premium flags.
         result = conn.execute(text("""
             INSERT INTO listings (
                 user_id, user_phone, listing_type, business_name, category,
                 city, state, latitude, longitude,
-                description, whatsapp, website, status
+                description, whatsapp, website, status, is_active,
+                is_premium, is_featured, is_sponsored, is_verified
             ) VALUES (
                 :user_id, :user_phone, :listing_type, :business_name, :category,
                 :city, :state, :latitude, :longitude,
-                :description, :whatsapp, :website, :status
+                :description, :whatsapp, :website, 'pending', 1,
+                0, 0, 0, 0
             )
             RETURNING id
         """), {
             "user_id": user_id,
             "user_phone": user_phone,
-            "listing_type": request.form.get("listing_type", "business"),
+            "listing_type": listing_type,
             "business_name": business_name,
             "category": category,
             "city": request.form.get("city", ""),
@@ -116,7 +152,6 @@ def api_create_listing():
             "description": request.form.get("description", ""),
             "whatsapp": request.form.get("whatsapp", ""),
             "website": request.form.get("website", ""),
-            "status": "pending"
         })
         listing_id = result.fetchone()[0]
 
@@ -130,7 +165,10 @@ def api_create_listing():
                         "success": False,
                         "error": "Invalid image type. Use jpg, jpeg, png, or webp"
                     }), 400
-                filename = f"{int(time.time()*1000)}_{secure_filename(img.filename)}"
+                safe = secure_filename(img.filename)
+                ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "jpg"
+                filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
+                os.makedirs(upload_dir, exist_ok=True)
                 path = os.path.join(upload_dir, filename)
                 img.save(path)
                 conn.execute(text(
@@ -149,7 +187,10 @@ def api_create_listing():
                     "success": False,
                     "error": "Invalid video type. Use mp4 or mov"
                 }), 400
-            filename = f"{int(time.time()*1000)}_{secure_filename(video.filename)}"
+            safe = secure_filename(video.filename)
+            ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "mp4"
+            filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
+            os.makedirs(upload_dir, exist_ok=True)
             path = os.path.join(upload_dir, filename)
             video.save(path)
             conn.execute(text(
@@ -217,14 +258,16 @@ def my_listings():
 # =========================
 @listing_bp.route("/update-listing/<int:listing_id>", methods=["PUT"])
 @jwt_required()
-@role_required(["service_provider", "business_basic", "business_premium"])
 def update_listing(listing_id):
     user_id = get_jwt_identity()
     data = request.get_json(silent=True) or request.form.to_dict()
 
     conn = get_db_connection()
+    _, err = _paid_listing_user(conn, user_id)
+    if err:
+        return err
     listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
+        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid AND is_active = 1"),
         {"lid": listing_id, "uid": user_id}
     ).fetchone()
     if not listing:
@@ -233,14 +276,15 @@ def update_listing(listing_id):
     conn.execute(text("""
         UPDATE listings
         SET business_name = :bname, category = :cat, city = :city, state = :state, description = :desc
-        WHERE id = :lid
+        WHERE id = :lid AND user_id = :uid
     """), {
         "bname": data.get("business_name"),
         "cat": data.get("category"),
         "city": data.get("city"),
         "state": data.get("state"),
         "desc": data.get("description"),
-        "lid": listing_id
+        "lid": listing_id,
+        "uid": user_id,
     })
     conn.commit()
     return jsonify({"message": "Listing updated"})
@@ -251,10 +295,12 @@ def update_listing(listing_id):
 # =========================
 @listing_bp.route("/delete-listing/<int:listing_id>", methods=["DELETE"])
 @jwt_required()
-@role_required(["service_provider", "business_basic", "business_premium"])
 def delete_listing(listing_id):
     user_id = get_jwt_identity()
     conn = get_db_connection()
+    _, err = _paid_listing_user(conn, user_id)
+    if err:
+        return err
     listing = conn.execute(
         text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
         {"lid": listing_id, "uid": user_id}
@@ -262,7 +308,8 @@ def delete_listing(listing_id):
     if not listing:
         return jsonify({"error": "Not found or unauthorized"}), 404
 
-    conn.execute(text("DELETE FROM listings WHERE id = :lid"), {"lid": listing_id})
+    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :lid"), {"lid": listing_id})
+    conn.execute(text("DELETE FROM listings WHERE id = :lid AND user_id = :uid"), {"lid": listing_id, "uid": user_id})
     conn.commit()
     return jsonify({"message": "Listing deleted"})
 
@@ -272,14 +319,13 @@ def delete_listing(listing_id):
 # =========================
 @listing_bp.route("/upload-listing-image", methods=["POST"])
 @jwt_required()
-@role_required(["service_provider", "business_basic", "business_premium"])
 def upload_listing_image():
     user_id = get_jwt_identity()
     try:
         listing_id = int(request.form.get("listing_id"))
     except (TypeError, ValueError):
         return jsonify({"error": "listing_id required"}), 400
-    image_type = request.form.get("image_type", "gallery")
+    image_type = _normalize_image_type(request.form.get("image_type", "shop"))
     image = request.files.get("image")
     if not image or not image.filename:
         return jsonify({"error": "Image required"}), 400
@@ -287,6 +333,9 @@ def upload_listing_image():
         return jsonify({"error": "Invalid image type. Use jpg, jpeg, png, or webp"}), 400
 
     conn = get_db_connection()
+    _, err = _paid_listing_user(conn, user_id)
+    if err:
+        return err
     owned = conn.execute(
         text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
         {"lid": listing_id, "uid": user_id},
@@ -320,10 +369,12 @@ def upload_listing_image():
 # =========================
 @listing_bp.route("/listing/<int:listing_id>")
 @jwt_required()
-@role_required(["service_provider", "business_basic", "business_premium"])
 def get_listing(listing_id):
     user_id = get_jwt_identity()
     conn = get_db_connection()
+    _, err = _paid_listing_user(conn, user_id)
+    if err:
+        return err
     row = conn.execute(text("""
         SELECT id, business_name, category, city, state, latitude, longitude, description
         FROM listings
@@ -338,23 +389,13 @@ def get_listing(listing_id):
 # RATE BUSINESS (public)
 # =========================
 @listing_bp.route("/rate", methods=["POST"])
+@jwt_required()
 def rate_business():
-    data = request.json if request.is_json else request.form.to_dict()
-    listing_id = data.get("listing_id")
-    rating = data.get("rating")
-    if not listing_id or not rating:
-        return jsonify({"error": "listing_id and rating required"}), 400
-
-    conn = get_db_connection()
-    conn.execute(text("INSERT INTO reviews (listing_id, rating) VALUES (:lid, :rating)"),
-                 {"lid": listing_id, "rating": rating})
-    conn.execute(text("""
-        UPDATE listings
-        SET rating = (SELECT AVG(rating) FROM reviews WHERE listing_id = :lid),
-            rating_count = rating_count + 1
-        WHERE id = :lid
-    """), {"lid": listing_id})
-    conn.commit()
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    user_id = get_jwt_identity()
+    result = add_review_service(data, user_id)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), result.get("_http") or 400
     return jsonify({"status": "success"})
 
 
@@ -364,14 +405,20 @@ def rate_business():
 @listing_bp.route("/click-call/<int:listing_id>", methods=["POST"])
 def track_call_click(listing_id):
     conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET call_clicks = call_clicks + 1 WHERE id = :lid"), {"lid": listing_id})
+    conn.execute(text("""
+        UPDATE listings SET clicks = COALESCE(clicks, 0) + 1
+        WHERE id = :lid AND status = 'approved' AND is_active = 1
+    """), {"lid": listing_id})
     conn.commit()
     return jsonify({"status": "ok"})
 
 @listing_bp.route("/click-whatsapp/<int:listing_id>", methods=["POST"])
 def track_whatsapp_click(listing_id):
     conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET whatsapp_clicks = whatsapp_clicks + 1 WHERE id = :lid"), {"lid": listing_id})
+    conn.execute(text("""
+        UPDATE listings SET whatsapp_clicks = COALESCE(whatsapp_clicks, 0) + 1
+        WHERE id = :lid AND status = 'approved' AND is_active = 1
+    """), {"lid": listing_id})
     conn.commit()
     return jsonify({"status": "ok"})
 
@@ -506,8 +553,11 @@ def browse_api():
 @listing_bp.route("/review", methods=["POST"])
 @jwt_required()
 def add_review():
-    user_phone = get_jwt().get("phone")
-    return add_review_service(request.json, user_phone)
+    user_id = get_jwt_identity()
+    result = add_review_service(request.get_json(silent=True) or {}, user_id)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), result.get("_http") or 400
+    return jsonify(result)
 
 
 # =========================

@@ -280,6 +280,7 @@ def verify_listing_admin(listing_id, admin_id, admin_phone, ip):
 
 def delete_listing_admin(listing_id, admin_id, admin_phone, ip):
     conn = get_db_connection()
+    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :listing_id"), {"listing_id": listing_id})
     conn.execute(text("DELETE FROM listings WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'delete_listing', 'listing', str(listing_id), f'Deleted listing {listing_id}', ip)

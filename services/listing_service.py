@@ -9,31 +9,9 @@ from database.init_db import get_db_connection
 # CREATE LISTING
 # ===============================
 def create_listing(data):
-    conn = get_db_connection()
-    conn.execute(text("""
-        INSERT INTO listings
-        (user_id, listing_type, business_name, category, city, state,
-         latitude, longitude, description, phone, whatsapp, website,
-         logo_url, premium, sponsored, is_active)
-        VALUES (:user_id, :listing_type, :business_name, :category, :city, :state,
-                :latitude, :longitude, :description, :phone, :whatsapp, :website,
-                :logo_url, 0, 0, 1)
-    """), {
-        "user_id": data["user_id"],
-        "listing_type": data.get("listing_type", "business"),
-        "business_name": data["business_name"],
-        "category": data.get("category"),
-        "city": data.get("city"),
-        "state": data.get("state"),
-        "latitude": data["latitude"],
-        "longitude": data["longitude"],
-        "description": data.get("description"),
-        "phone": data.get("phone"),
-        "whatsapp": data.get("whatsapp"),
-        "website": data.get("website"),
-        "logo_url": data.get("logo_url"),
-    })
-    conn.commit()
+    """LEGACY / DISABLED. Live path: POST /api/listing/create-listing."""
+    logger.error("LEGACY DISABLED: listing_service.create_listing must not insert listings")
+    return None
 
 
 # ===============================
@@ -65,39 +43,18 @@ def get_listing(listing_id):
 # UPDATE LISTING
 # ===============================
 def update_listing(listing_id, data):
-    conn = get_db_connection()
-    conn.execute(text("""
-        UPDATE listings
-        SET business_name = :business_name,
-            category = :category,
-            city = :city,
-            state = :state,
-            description = :description,
-            phone = :phone,
-            whatsapp = :whatsapp,
-            website = :website
-        WHERE id = :id
-    """), {
-        "business_name": data["business_name"],
-        "category": data["category"],
-        "city": data["city"],
-        "state": data["state"],
-        "description": data["description"],
-        "phone": data["phone"],
-        "whatsapp": data["whatsapp"],
-        "website": data["website"],
-        "id": listing_id
-    })
-    conn.commit()
+    """LEGACY / DISABLED. Live path: PUT /api/listing/update-listing/<id>."""
+    logger.error("LEGACY DISABLED: listing_service.update_listing must not mutate listings")
+    return None
 
 
 # ===============================
 # DELETE LISTING
 # ===============================
 def delete_listing(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("DELETE FROM listings WHERE id = :id"), {"id": listing_id})
-    conn.commit()
+    """LEGACY / DISABLED. Live path: DELETE /api/listing/delete-listing/<id>."""
+    logger.error("LEGACY DISABLED: listing_service.delete_listing must not delete listings")
+    return None
 
 
 # ===============================
@@ -106,12 +63,14 @@ def delete_listing(listing_id):
 def get_nearby_listings(lat_grid, lng_grid, category):
     conn = get_db_connection()
     rows = conn.execute(text("""
-        SELECT *
+        SELECT id, business_name, category, city, state, latitude, longitude,
+               user_phone, whatsapp, rating, is_verified, is_premium
         FROM listings
         WHERE lat_grid = :lat_grid
           AND lng_grid = :lng_grid
           AND category = :category
           AND is_active = 1
+          AND status = 'approved'
     """), {
         "lat_grid": lat_grid,
         "lng_grid": lng_grid,
@@ -134,20 +93,9 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 
 def find_nearby(user_lat, user_lng, radius_km=10):
-    conn = get_db_connection()
-    listings = conn.execute(text("SELECT * FROM listings")).fetchall()
-    results = []
-    for row in listings:
-        # Use row._mapping for safe column access
-        lat = row._mapping["latitude"]
-        lng = row._mapping["longitude"]
-        distance = calculate_distance(user_lat, user_lng, lat, lng)
-        if distance <= radius_km:
-            item = dict(row._mapping)   # Convert the whole row to a dict
-            item["distance"] = round(distance, 2)
-            results.append(item)
-    results.sort(key=lambda x: x["distance"])
-    return results
+    """LEGACY / DISABLED. Live path: /api/nearby with approved listings only."""
+    logger.error("LEGACY DISABLED: listing_service.find_nearby must not scan all listings")
+    return []
 
 
 def update_sponsored_status():
@@ -177,6 +125,7 @@ def browse_listings(location, category, page):
                    description, phone, whatsapp, is_verified, is_premium
             FROM listings
             WHERE is_active = 1
+              AND status = 'approved'
             AND (:location IS NULL OR city LIKE :loc)
             AND (:category IS NULL OR category = :cat)
             ORDER BY is_premium DESC, id DESC
@@ -200,6 +149,7 @@ def browse_listings(location, category, page):
             SELECT COUNT(*)
             FROM listings
             WHERE is_active = 1
+              AND status = 'approved'
             AND (:location IS NULL OR city LIKE :loc)
             AND (:category IS NULL OR category = :cat)
         """)
@@ -257,6 +207,7 @@ def verify_listing_service(listing_id):
 
 def delete_listing_service(listing_id):
     conn = get_db_connection()
+    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :id"), {"id": listing_id})
     conn.execute(text("DELETE FROM listings WHERE id = :id"), {"id": listing_id})
     conn.commit()
     return {"status": "deleted"}
@@ -281,19 +232,37 @@ def sponsor_listing_service(listing_id):
 
 # --- Review services (uses user_id instead of phone session) ---
 def add_review_service(data, user_id):
-    listing_id = data.get("listing_id")
-    rating = data.get("rating")
-    review = data.get("review", "")
+    try:
+        listing_id = int((data or {}).get("listing_id"))
+    except (TypeError, ValueError):
+        return {"error": "listing_id required", "_http": 400}
+    try:
+        rating = int((data or {}).get("rating"))
+    except (TypeError, ValueError):
+        return {"error": "rating required", "_http": 400}
+    if rating < 1 or rating > 5:
+        return {"error": "rating must be between 1 and 5", "_http": 400}
+    review = str((data or {}).get("review") or "")[:2000]
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return {"error": "Authentication required", "_http": 401}
 
     conn = get_db_connection()
-    # Fetch user phone from users table using user_id
+    listing = conn.execute(
+        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
+        {"lid": listing_id},
+    ).fetchone()
+    if not listing:
+        return {"error": "Listing not found", "_http": 404}
+
     user_row = conn.execute(
-        text("SELECT phone FROM users WHERE id = :user_id"), {"user_id": user_id}
+        text("SELECT phone FROM users WHERE id = :user_id"), {"user_id": uid}
     ).fetchone()
     if not user_row:
-        return {"error": "User not found"}
+        return {"error": "User not found", "_http": 404}
 
-    user_phone = user_row._mapping["phone"]   # Safe access
+    user_phone = user_row._mapping["phone"]
 
     conn.execute(text("""
         INSERT INTO reviews (listing_id, user_phone, rating, review)
@@ -305,11 +274,11 @@ def add_review_service(data, user_id):
         "review": review
     })
 
-    # Update aggregate rating and count
     conn.execute(text("""
         UPDATE listings
         SET rating = (SELECT AVG(rating) FROM reviews WHERE listing_id = :lid),
-            total_reviews = (SELECT COUNT(*) FROM reviews WHERE listing_id = :lid)
+            total_reviews = (SELECT COUNT(*) FROM reviews WHERE listing_id = :lid),
+            rating_count = (SELECT COUNT(*) FROM reviews WHERE listing_id = :lid)
         WHERE id = :lid
     """), {"lid": listing_id})
     conn.commit()
@@ -319,18 +288,23 @@ def add_review_service(data, user_id):
 
 def get_reviews_service(listing_id):
     conn = get_db_connection()
+    listing = conn.execute(
+        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
+        {"lid": listing_id},
+    ).fetchone()
+    if not listing:
+        return {"reviews": []}
     rows = conn.execute(text("""
-        SELECT r.user_phone,
-               u.name AS user_name,
+        SELECT COALESCE(u.name, 'Anonymous') AS user_name,
                r.rating,
                r.review,
+               r.owner_reply,
                r.created_at
         FROM reviews r
-        JOIN users u ON r.user_phone = u.phone
+        LEFT JOIN users u ON r.user_phone = u.phone
         WHERE r.listing_id = :listing_id
         ORDER BY r.created_at DESC
     """), {"listing_id": listing_id}).fetchall()
 
-    # Convert each Row to a normal dict
     reviews = [dict(r._mapping) for r in rows]
     return {"reviews": reviews}

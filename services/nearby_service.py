@@ -5,9 +5,14 @@ from utils.geo_utils import calculate_distance
 GRID_SIZE = 0.1
 
 def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, radius):
+    try:
+        radius = float(radius)
+    except (TypeError, ValueError):
+        radius = 30
+    radius = max(1.0, min(radius, 50.0))
     lat_grid = int(user_lat / GRID_SIZE)
     lng_grid = int(user_lng / GRID_SIZE)
-    grid_range = int(radius / 11) + 1
+    grid_range = min(int(radius / 11) + 1, 8)
 
     conn = get_db_connection()
     query = text("""
@@ -19,7 +24,7 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
                state,
                latitude,
                longitude,
-               phone,
+               user_phone AS phone,
                whatsapp,
                description,
                rating,
@@ -29,6 +34,7 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
                is_sponsored
         FROM listings
         WHERE is_active = 1
+          AND status = 'approved'
           AND lat_grid BETWEEN :lat_min AND :lat_max
           AND lng_grid BETWEEN :lng_min AND :lng_max
     """)
