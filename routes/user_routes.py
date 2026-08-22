@@ -306,7 +306,7 @@ def create_listing():
 
     if business_count >= max_allowed:
         if user._mapping["role"] == "business_premium":
-            flash("You have reached your free business limit. Purchase an extra slot for ₹259.", "warning")
+            flash("You have reached your free business limit. Purchase an extra slot for ₹249.", "warning")
             return redirect(url_for('user.extra_business_payment'))
         else:
             flash("You have reached your business limit. Upgrade to Premium for more slots.", "warning")
