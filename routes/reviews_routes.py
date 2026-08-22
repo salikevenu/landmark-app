@@ -36,7 +36,7 @@ def _list_filters(user_id):
     if search:
         clauses.append(
             "(COALESCE(r.review, '') ILIKE :q OR COALESCE(u.name, '') ILIKE :q "
-            "OR COALESCE(l.business_name, '') ILIKE :q OR COALESCE(r.user_phone, '') ILIKE :q)"
+            "OR COALESCE(l.business_name, '') ILIKE :q)"
         )
         params["q"] = f"%{search}%"
 
@@ -73,7 +73,7 @@ def list_reviews():
                 SELECT COUNT(*)::int AS cnt
                 FROM reviews r
                 JOIN listings l ON l.id = r.listing_id
-                LEFT JOIN users u ON u.phone = r.user_phone
+                LEFT JOIN users u ON u.id = r.user_id
                 WHERE {where_sql}
             """),
             {k: v for k, v in params.items() if k not in ("limit", "offset")},
@@ -84,8 +84,7 @@ def list_reviews():
                 SELECT
                     r.id,
                     r.listing_id,
-                    r.user_phone,
-                    COALESCE(u.name, r.user_phone, 'Anonymous') AS reviewer_name,
+                    COALESCE(u.name, 'Anonymous') AS reviewer_name,
                     r.rating,
                     r.review,
                     r.owner_reply,
@@ -94,7 +93,7 @@ def list_reviews():
                     l.business_name
                 FROM reviews r
                 JOIN listings l ON l.id = r.listing_id
-                LEFT JOIN users u ON u.phone = r.user_phone
+                LEFT JOIN users u ON u.id = r.user_id
                 WHERE {where_sql}
                 ORDER BY r.created_at DESC
                 LIMIT :limit OFFSET :offset
@@ -112,7 +111,6 @@ def list_reviews():
                 "listing_id": m["listing_id"],
                 "business_name": m["business_name"] or "Listing",
                 "reviewer_name": m["reviewer_name"] or "Anonymous",
-                "user_phone": m["user_phone"],
                 "rating": int(m["rating"] or 0),
                 "review": m["review"] or "",
                 "owner_reply": m["owner_reply"],
@@ -208,29 +206,21 @@ def reply_to_review():
     try:
         conn = get_db_connection()
         _ensure_reply_columns_once(conn)
-
-        owned = conn.execute(
-            text("""
-                SELECT r.id
-                FROM reviews r
-                JOIN listings l ON l.id = r.listing_id
-                WHERE r.id = :rid AND l.user_id = :uid
-            """),
-            {"rid": review_id, "uid": user_id},
-        ).fetchone()
-
-        if not owned:
-            return jsonify({"success": False, "error": "Review not found or not owned by you"}), 404
-
         now = datetime.utcnow()
-        conn.execute(
+
+        result = conn.execute(
             text("""
-                UPDATE reviews
+                UPDATE reviews r
                 SET owner_reply = :reply, replied_at = :replied_at
-                WHERE id = :rid
+                FROM listings l
+                WHERE r.listing_id = l.id
+                  AND r.id = :rid
+                  AND l.user_id = :uid
             """),
-            {"reply": reply_text, "replied_at": now, "rid": review_id},
+            {"reply": reply_text, "replied_at": now, "rid": review_id, "uid": user_id},
         )
+        if result.rowcount != 1:
+            return jsonify({"success": False, "error": "Review not found or not owned by you"}), 404
         conn.commit()
 
         return jsonify({

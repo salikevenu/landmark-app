@@ -255,11 +255,49 @@ def get_admin_listings(page=1, limit=50, search='', status_filter='', category_f
     return {'listings': listings, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_listing_admin(listing_id, admin_id, admin_phone, ip):
+    """CAS: only pending + active listings become approved. Never report success on 0 rows."""
     conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET status = 'approved', is_active = 1 WHERE id = :listing_id"), {"listing_id": listing_id})
-    conn.commit()
+    try:
+        result = conn.execute(
+            text("""
+                UPDATE listings
+                SET status = 'approved', is_active = 1
+                WHERE id = :listing_id
+                  AND status = 'pending'
+                  AND is_active = 1
+            """),
+            {"listing_id": listing_id},
+        )
+        if result.rowcount != 1:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            existing = conn.execute(
+                text("SELECT id, status, is_active FROM listings WHERE id = :listing_id"),
+                {"listing_id": listing_id},
+            ).fetchone()
+            if not existing:
+                return {"error": "Listing not found", "_http": 404}
+            return {
+                "error": "Listing cannot be approved",
+                "_http": 409,
+                "current_status": existing._mapping.get("status"),
+                "is_active": existing._mapping.get("is_active"),
+            }
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     log_admin_action(admin_id, admin_phone, 'approve_listing', 'listing', str(listing_id), f'Approved listing {listing_id}', ip)
-    conn.close()
     return {'status': 'approved'}
 
 def disable_listing_admin(listing_id, admin_id, admin_phone, ip):

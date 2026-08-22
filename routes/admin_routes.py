@@ -308,6 +308,8 @@ def api_approve_listing(listing_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = approve_listing_admin(listing_id, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 409
     return jsonify(result)
 
 @admin_bp.route("/api/admin/listings/<int:listing_id>/disable", methods=["POST"])

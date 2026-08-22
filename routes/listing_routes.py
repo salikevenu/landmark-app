@@ -10,7 +10,12 @@ from functools import wraps
 from sqlalchemy import text
 
 from database.init_db import get_db_connection
-from services.listing_service import add_review_service, get_reviews_service
+from services.listing_service import (
+    add_review_service,
+    get_reviews_service,
+    update_review_service,
+    delete_review_service,
+)
 from services.subscription_access import is_subscription_active
 from services.authz import db_user_is_admin
 import logging
@@ -565,7 +570,27 @@ def add_review():
 # =========================
 @listing_bp.route("/reviews/<int:listing_id>")
 def get_reviews(listing_id):
-    return get_reviews_service(listing_id)
+    return jsonify(get_reviews_service(listing_id))
+
+
+@listing_bp.route("/review/<int:review_id>", methods=["PUT", "PATCH"])
+@jwt_required()
+def update_review(review_id):
+    user_id = get_jwt_identity()
+    result = update_review_service(review_id, request.get_json(silent=True) or {}, user_id)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), result.get("_http") or 400
+    return jsonify(result)
+
+
+@listing_bp.route("/review/<int:review_id>", methods=["DELETE"])
+@jwt_required()
+def delete_review(review_id):
+    user_id = get_jwt_identity()
+    result = delete_review_service(review_id, user_id)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), result.get("_http") or 400
+    return jsonify(result)
 
 
 # =========================

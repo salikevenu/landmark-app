@@ -216,6 +216,9 @@ class PaymentAgent:
         }
     
     def verify_payment(self, payment_id: str, user_id: int) -> Dict[str, Any]:
+        logger.error(
+            "LEGACY DISABLED: PaymentAgent.verify_payment must not credit wallets"
+        )
         return {
             "success": False,
             "error": "Use POST /api/payment/verify-payment",

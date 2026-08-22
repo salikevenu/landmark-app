@@ -391,6 +391,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS reviews (
             id SERIAL PRIMARY KEY,
             listing_id INTEGER REFERENCES listings(id),
+            user_id INTEGER REFERENCES users(id),
             user_phone TEXT,
             rating INTEGER CHECK(rating BETWEEN 1 AND 5),
             review TEXT,

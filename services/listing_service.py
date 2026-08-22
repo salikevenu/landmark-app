@@ -3,6 +3,7 @@ import logging
 logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from database.init_db import get_db_connection
 
 # ===============================
@@ -192,25 +193,21 @@ def browse_listings(location, category, page):
 
 # --- Admin service functions ---
 def disable_listing_service(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET is_active = 0 WHERE id = :id"), {"id": listing_id})
-    conn.commit()
-    return {"status": "disabled"}
+    """LEGACY / DISABLED. Live path: admin_service.disable_listing_admin."""
+    logger.error("LEGACY DISABLED: listing_service.disable_listing_service must not mutate listings")
+    return {"error": "legacy_listing_disable_disabled"}
 
 
 def verify_listing_service(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET is_verified = 1 WHERE id = :id"), {"id": listing_id})
-    conn.commit()
-    return {"status": "verified"}
+    """LEGACY / DISABLED. Live path: admin_service.verify_listing_admin."""
+    logger.error("LEGACY DISABLED: listing_service.verify_listing_service must not mutate listings")
+    return {"error": "legacy_listing_verify_disabled"}
 
 
 def delete_listing_service(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :id"), {"id": listing_id})
-    conn.execute(text("DELETE FROM listings WHERE id = :id"), {"id": listing_id})
-    conn.commit()
-    return {"status": "deleted"}
+    """LEGACY / DISABLED. Live path: admin_service.delete_listing_admin."""
+    logger.error("LEGACY DISABLED: listing_service.delete_listing_service must not delete listings")
+    return {"error": "legacy_listing_delete_disabled"}
 
 
 def sponsor_listing_service(listing_id):
@@ -230,50 +227,14 @@ def sponsor_listing_service(listing_id):
     return {"status": "sponsored"}
 
 
-# --- Review services (uses user_id instead of phone session) ---
-def add_review_service(data, user_id):
+def _as_int_id(value):
     try:
-        listing_id = int((data or {}).get("listing_id"))
+        return int(value)
     except (TypeError, ValueError):
-        return {"error": "listing_id required", "_http": 400}
-    try:
-        rating = int((data or {}).get("rating"))
-    except (TypeError, ValueError):
-        return {"error": "rating required", "_http": 400}
-    if rating < 1 or rating > 5:
-        return {"error": "rating must be between 1 and 5", "_http": 400}
-    review = str((data or {}).get("review") or "")[:2000]
-    try:
-        uid = int(user_id)
-    except (TypeError, ValueError):
-        return {"error": "Authentication required", "_http": 401}
+        return None
 
-    conn = get_db_connection()
-    listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
-        {"lid": listing_id},
-    ).fetchone()
-    if not listing:
-        return {"error": "Listing not found", "_http": 404}
 
-    user_row = conn.execute(
-        text("SELECT phone FROM users WHERE id = :user_id"), {"user_id": uid}
-    ).fetchone()
-    if not user_row:
-        return {"error": "User not found", "_http": 404}
-
-    user_phone = user_row._mapping["phone"]
-
-    conn.execute(text("""
-        INSERT INTO reviews (listing_id, user_phone, rating, review)
-        VALUES (:listing_id, :user_phone, :rating, :review)
-    """), {
-        "listing_id": listing_id,
-        "user_phone": user_phone,
-        "rating": rating,
-        "review": review
-    })
-
+def _recalc_listing_ratings(conn, listing_id):
     conn.execute(text("""
         UPDATE listings
         SET rating = (SELECT AVG(rating) FROM reviews WHERE listing_id = :lid),
@@ -281,30 +242,182 @@ def add_review_service(data, user_id):
             rating_count = (SELECT COUNT(*) FROM reviews WHERE listing_id = :lid)
         WHERE id = :lid
     """), {"lid": listing_id})
-    conn.commit()
 
-    return {"status": "review_added"}
+
+# --- Review services: canonical identity is JWT user_id, never client phone/user_id ---
+def add_review_service(data, user_id):
+    payload = data or {}
+    try:
+        listing_id = int(payload.get("listing_id"))
+    except (TypeError, ValueError):
+        return {"error": "listing_id required", "_http": 400}
+    try:
+        rating = int(payload.get("rating"))
+    except (TypeError, ValueError):
+        return {"error": "rating required", "_http": 400}
+    if rating < 1 or rating > 5:
+        return {"error": "rating must be between 1 and 5", "_http": 400}
+    review = str(payload.get("review") or "")[:2000]
+    uid = _as_int_id(user_id)
+    if uid is None:
+        return {"error": "Authentication required", "_http": 401}
+
+    conn = get_db_connection()
+    try:
+        listing = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
+            {"lid": listing_id},
+        ).fetchone()
+        if not listing:
+            return {"error": "Listing not found", "_http": 404}
+
+        user_row = conn.execute(
+            text("SELECT id, phone FROM users WHERE id = :user_id AND COALESCE(is_active, 1) = 1"),
+            {"user_id": uid},
+        ).fetchone()
+        if not user_row:
+            return {"error": "User not found", "_http": 404}
+
+        # Phone is denormalized from the authenticated user row. Client user_phone/user_id ignored.
+        user_phone = user_row._mapping["phone"]
+
+        existing = conn.execute(
+            text("SELECT id FROM reviews WHERE listing_id = :lid AND user_id = :uid"),
+            {"lid": listing_id, "uid": uid},
+        ).fetchone()
+        if existing:
+            return {"error": "Review already exists", "_http": 409}
+
+        conn.execute(text("""
+            INSERT INTO reviews (listing_id, user_id, user_phone, rating, review)
+            VALUES (:listing_id, :user_id, :user_phone, :rating, :review)
+        """), {
+            "listing_id": listing_id,
+            "user_id": uid,
+            "user_phone": user_phone,
+            "rating": rating,
+            "review": review,
+        })
+        _recalc_listing_ratings(conn, listing_id)
+        conn.commit()
+        return {"status": "review_added"}
+    except IntegrityError:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"error": "Review already exists", "_http": 409}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def update_review_service(review_id, data, user_id):
+    rid = _as_int_id(review_id)
+    uid = _as_int_id(user_id)
+    if rid is None or uid is None:
+        return {"error": "Authentication required", "_http": 401}
+    payload = data or {}
+    fields = []
+    params = {"rid": rid, "uid": uid}
+    if payload.get("rating") is not None:
+        try:
+            rating = int(payload.get("rating"))
+        except (TypeError, ValueError):
+            return {"error": "rating required", "_http": 400}
+        if rating < 1 or rating > 5:
+            return {"error": "rating must be between 1 and 5", "_http": 400}
+        fields.append("rating = :rating")
+        params["rating"] = rating
+    if "review" in payload:
+        fields.append("review = :review")
+        params["review"] = str(payload.get("review") or "")[:2000]
+    if not fields:
+        return {"error": "No review fields to update", "_http": 400}
+
+    conn = get_db_connection()
+    try:
+        result = conn.execute(
+            text(f"""
+                UPDATE reviews
+                SET {", ".join(fields)}
+                WHERE id = :rid AND user_id = :uid
+            """),
+            params,
+        )
+        if result.rowcount != 1:
+            return {"error": "Review not found", "_http": 404}
+        listing = conn.execute(
+            text("SELECT listing_id FROM reviews WHERE id = :rid AND user_id = :uid"),
+            {"rid": rid, "uid": uid},
+        ).fetchone()
+        if listing:
+            _recalc_listing_ratings(conn, listing._mapping["listing_id"])
+        conn.commit()
+        return {"status": "review_updated"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def delete_review_service(review_id, user_id):
+    rid = _as_int_id(review_id)
+    uid = _as_int_id(user_id)
+    if rid is None or uid is None:
+        return {"error": "Authentication required", "_http": 401}
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            text("SELECT listing_id FROM reviews WHERE id = :rid AND user_id = :uid"),
+            {"rid": rid, "uid": uid},
+        ).fetchone()
+        if not row:
+            return {"error": "Review not found", "_http": 404}
+        listing_id = row._mapping["listing_id"]
+        result = conn.execute(
+            text("DELETE FROM reviews WHERE id = :rid AND user_id = :uid"),
+            {"rid": rid, "uid": uid},
+        )
+        if result.rowcount != 1:
+            return {"error": "Review not found", "_http": 404}
+        _recalc_listing_ratings(conn, listing_id)
+        conn.commit()
+        return {"status": "review_deleted"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def get_reviews_service(listing_id):
     conn = get_db_connection()
-    listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
-        {"lid": listing_id},
-    ).fetchone()
-    if not listing:
-        return {"reviews": []}
-    rows = conn.execute(text("""
-        SELECT COALESCE(u.name, 'Anonymous') AS user_name,
-               r.rating,
-               r.review,
-               r.owner_reply,
-               r.created_at
-        FROM reviews r
-        LEFT JOIN users u ON r.user_phone = u.phone
-        WHERE r.listing_id = :listing_id
-        ORDER BY r.created_at DESC
-    """), {"listing_id": listing_id}).fetchall()
-
-    reviews = [dict(r._mapping) for r in rows]
-    return {"reviews": reviews}
+    try:
+        listing = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND status = 'approved' AND is_active = 1"),
+            {"lid": listing_id},
+        ).fetchone()
+        if not listing:
+            return {"reviews": []}
+        rows = conn.execute(text("""
+            SELECT COALESCE(u.name, 'Anonymous') AS user_name,
+                   r.rating,
+                   r.review,
+                   r.owner_reply,
+                   r.created_at
+            FROM reviews r
+            LEFT JOIN users u ON u.id = r.user_id
+            WHERE r.listing_id = :listing_id
+            ORDER BY r.created_at DESC
+        """), {"listing_id": listing_id}).fetchall()
+        reviews = [dict(r._mapping) for r in rows]
+        return {"reviews": reviews}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
