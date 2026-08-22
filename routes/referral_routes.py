@@ -1,10 +1,12 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.referral_service import get_referral_info
+import logging
 
 referral_bp = Blueprint("referral", __name__)
+logger = logging.getLogger(__name__)
 
 # =========================
 # REFERRAL LEADERBOARD (public)
@@ -25,8 +27,9 @@ def referral_leaderboard():
 
         return jsonify([dict(r._mapping) for r in rows])
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("referral_leaderboard error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # =========================
@@ -93,8 +96,9 @@ def invite_business():
             "message": "Business invited successfully"
         })
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("invite_business error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # =========================

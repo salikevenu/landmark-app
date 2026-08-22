@@ -22,6 +22,7 @@ from flask_jwt_extended import (
     get_jwt_identity,
     unset_jwt_cookies,
 )
+from services.jwt_session import revoke_tokens_from_request
 from services.sms_service import get_sms_service
 from extensions import limiter
 from flask_limiter.util import get_remote_address
@@ -657,6 +658,7 @@ def resend_otp():
 
 @auth_bp.route("/logout", methods=["GET", "POST"])
 def logout():
+    revoke_tokens_from_request()
     if request.method == "GET":
         response = redirect("/logout")
         unset_jwt_cookies(response)

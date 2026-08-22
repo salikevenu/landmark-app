@@ -1,5 +1,6 @@
 """Reviews dashboard API — owner-facing review list, stats, and replies."""
 from datetime import datetime
+import logging
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -8,6 +9,7 @@ from sqlalchemy import text
 from database.init_db import get_db_connection
 
 reviews_api_bp = Blueprint("reviews_api", __name__, url_prefix="/api/reviews")
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 10
 _reply_columns_ready = False
@@ -127,8 +129,9 @@ def list_reviews():
             "total": int(total),
             "has_more": (page * PAGE_SIZE) < int(total),
         })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        logger.exception("list_reviews error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
 
 
 @reviews_api_bp.route("/stats", methods=["GET"])
@@ -183,8 +186,9 @@ def review_stats():
                 "distribution": distribution,
             },
         })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        logger.exception("list_reviews error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
 
 
 @reviews_api_bp.route("/reply", methods=["POST"])
@@ -229,5 +233,6 @@ def reply_to_review():
             "owner_reply": reply_text,
             "replied_at": now.isoformat() + "Z",
         })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        logger.exception("list_reviews error")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500

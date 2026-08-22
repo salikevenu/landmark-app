@@ -36,6 +36,7 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies
 )
+import hmac
 from werkzeug.exceptions import HTTPException
 from pydantic_settings import BaseSettings
 from language.translations import TRANSLATIONS
@@ -176,6 +177,9 @@ def _jwt_invalid(reason):
         return redirect("/api/auth/public/login")
     return jsonify({"success": False, "error": "Invalid session"}), 401
 
+from services.jwt_session import register_jwt_security, revoke_tokens_from_request
+register_jwt_security(jwt)
+
 # ==================== REGISTER ROUTES ====================
 _boot("import routes / register_routes")
 from routes import register_routes
@@ -238,13 +242,9 @@ def inject_language():
 
 # ==================== HELPERS ====================
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
-    from database.init_db import get_db_connection
-    with get_db_connection() as conn:
-        result = conn.execute(text(query), params or {})
-        if commit: conn.commit()
-        if fetchone: return result.fetchone()
-        elif fetchall: return result.fetchall()
-    return None
+    """Disabled: raw SQL helper is unused and unsafe if wired to a request path."""
+    logger.error("execute_query is disabled")
+    raise RuntimeError("execute_query is disabled")
 
 from services.subscription_access import legacy_add_business_gone
 
@@ -316,6 +316,7 @@ def pricing():
 
 @app.route("/logout")
 def logout_page():
+    revoke_tokens_from_request()
     response = make_response(render_template("logout.html"))
     unset_jwt_cookies(response)
     return response
@@ -363,28 +364,36 @@ def readiness():
         return {"status": "not ready"}, 503
 
 @app.route("/api/refresh", methods=["POST"])
+@limiter.limit("30 per minute")
 @jwt_required(refresh=True)
 def refresh():
     from flask_jwt_extended import get_jwt
     current_user_id = get_jwt_identity()
+    try:
+        uid = int(current_user_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid session"}), 401
     remember_me = bool(get_jwt().get("remember_me"))
-    role = "free"
-    phone = ""
     try:
         from database.init_db import get_db_connection
         with get_db_connection() as conn:
             row = conn.execute(
-                text("SELECT role, phone FROM users WHERE id = :uid"),
-                {"uid": current_user_id},
+                text("SELECT role, phone, is_blocked, is_active FROM users WHERE id = :uid"),
+                {"uid": uid},
             ).fetchone()
-            if row:
-                role = row._mapping.get("role") or "free"
-                phone = row._mapping.get("phone") or ""
     except Exception:
-        pass
+        logger.exception("refresh user lookup failed")
+        return jsonify({"success": False, "error": "Service unavailable"}), 503
+    if not row:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+    mapping = row._mapping
+    if mapping.get("is_blocked") or mapping.get("is_active") == 0:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+    role = mapping.get("role") or "free"
+    phone = mapping.get("phone") or ""
     access_expires = timedelta(days=30) if remember_me else timedelta(hours=2)
     new_access_token = create_access_token(
-        identity=str(current_user_id),
+        identity=str(uid),
         additional_claims={"role": role, "phone": phone, "remember_me": remember_me},
         expires_delta=access_expires,
     )
@@ -424,13 +433,30 @@ def api_add_business():
     body, code = legacy_add_business_gone()
     return jsonify(body), code
 
+def _secrets_match(left, right):
+    if not left or not right or len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
 def _internal_job_authorized():
     """Shared bearer check for Saturday payout and commission retry crons."""
     expected = (os.getenv("SATURDAY_PAYOUT_SECRET") or "").strip()
     if not expected:
         return False
-    token = request.headers.get("Authorization") or ""
-    return token == f"Bearer {expected}"
+    jwt_secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
+    app_secret = (os.getenv("SECRET_KEY") or "").strip()
+    if _secrets_match(expected, jwt_secret) or _secrets_match(expected, app_secret):
+        logger.error("SATURDAY_PAYOUT_SECRET must be distinct from app/JWT secrets")
+        return False
+    auth = (request.headers.get("Authorization") or "").strip()
+    prefix = "Bearer "
+    if not auth.startswith(prefix):
+        return False
+    provided = auth[len(prefix):].strip()
+    if not _secrets_match(provided, expected):
+        return False
+    return True
 
 
 @app.route("/api/wallet/overview")

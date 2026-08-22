@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token, unset_jwt_cookies
+from services.jwt_session import revoke_tokens_from_request
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
 from database.init_db import get_db_connection
@@ -238,6 +239,7 @@ def upload_profile_avatar():
 
 @user_bp.route("/logout", methods=["POST"])
 def logout():
+    revoke_tokens_from_request()
     response = jsonify({"success": True, "message": "Logged out"})
     unset_jwt_cookies(response)
     return response, 200

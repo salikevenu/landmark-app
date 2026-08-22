@@ -1,4 +1,6 @@
 # extensions.py
+import os
+import logging
 import razorpay
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -8,19 +10,37 @@ from config.payment_config import get_razorpay_key_pair, log_razorpay_config
 # Global clients
 limiter = None
 razor_client = None
+logger = logging.getLogger(__name__)
 
 
 def init_extensions(app):
     global limiter, razor_client
 
-    # In-memory storage: counters reset on process restart and are not shared
-    # across workers. Move to Redis (storage_uri="redis://...") later —
-    # same caveat as otp_storage in auth/otp_service.py.
+    # Prefer Redis so counters are shared across gunicorn workers. If REDIS_URL
+    # is unset or Redis is down, fall back to per-process memory.
+    redis_url = (os.getenv("REDIS_URL") or "").strip()
+    storage_uri = "memory://"
+    if redis_url:
+        try:
+            import redis as redis_lib
+            client = redis_lib.from_url(
+                redis_url,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+                retry_on_timeout=False,
+            )
+            client.ping()
+            storage_uri = redis_url
+        except Exception:
+            logger.warning(
+                "REDIS_URL set but Redis is unreachable; rate limiter using in-memory storage"
+            )
+
     limiter = Limiter(
         key_func=get_remote_address,
         app=app,
         default_limits=[],
-        storage_uri="memory://",
+        storage_uri=storage_uri,
         strategy="fixed-window",
     )
 

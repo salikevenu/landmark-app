@@ -554,11 +554,9 @@ def browse_api():
                 "is_sponsored": bool(rm.get("sponsored")),
             })
         return jsonify({"listings": listings, "page": page, "count": len(listings)})
-    except Exception as e:
-        import traceback
-        logger.error(traceback.format_exc())
-        logger.info("BROWSE API ERROR:", e)
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("browse API error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
     
 # =========================
 # ADD REVIEW (auth required)

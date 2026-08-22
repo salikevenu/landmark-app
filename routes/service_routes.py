@@ -1,8 +1,7 @@
-from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
+from flask import Blueprint, render_template, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
 from database.init_db import get_db_connection
-from datetime import datetime
 from routes.decorators import requires_active_plan
 
 service_bp = Blueprint('service', __name__, url_prefix='/service')
@@ -11,31 +10,10 @@ service_bp = Blueprint('service', __name__, url_prefix='/service')
 @requires_active_plan('service_provider')
 def add_service():
     if request.method == 'POST':
-        title = request.form.get('title')
-        description = request.form.get('description')
-        category = request.form.get('category')
-        price = request.form.get('price')
-        city = request.form.get('city')
-        # ... validation ...
-
-        user_id = get_jwt_identity()
-        conn = get_db_connection()
-        conn.execute(text("""
-            INSERT INTO services 
-            (user_id, title, description, category, price, city, created_at) 
-            VALUES (:user_id, :title, :description, :category, :price, :city, :created_at)
-        """), {
-            "user_id": user_id,
-            "title": title,
-            "description": description,
-            "category": category,
-            "price": price,
-            "city": city,
-            "created_at": datetime.utcnow()
-        })
-        conn.commit()
-        flash('Service added successfully!', 'success')
-        return redirect(url_for('service.my_services'))
+        return jsonify({
+            "success": False,
+            "error": "This endpoint is disabled",
+        }), 410
 
     return render_template('services/add_service.html')
 
@@ -48,6 +26,5 @@ def my_services():
     rows = conn.execute(text(
         "SELECT * FROM services WHERE user_id = :uid ORDER BY created_at DESC"
     ), {"uid": user_id}).fetchall()
-    # Convert to dicts for template compatibility (if template uses dict access)
     services = [dict(r._mapping) for r in rows]
     return render_template('services/my_services.html', services=services)
