@@ -452,7 +452,13 @@ def saturday_payout():
     if not _internal_job_authorized():
         return jsonify({"error": "Unauthorized"}), 403
     released = _execute_payout()
-    return jsonify({"released": released}), 200
+    sponsorship = {"cleared": 0}
+    try:
+        from services.sponsorship import cleanup_expired_sponsorships
+        sponsorship = cleanup_expired_sponsorships()
+    except Exception:
+        logger.exception("sponsorship expiry cleanup failed; payout already completed")
+    return jsonify({"released": released, "sponsorship_cleared": sponsorship.get("cleared", 0)}), 200
 
 
 @app.route('/internal/referral-commission-retry', methods=['POST'])

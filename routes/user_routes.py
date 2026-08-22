@@ -10,6 +10,7 @@ import secrets
 import logging
 from routes.decorators import requires_active_plan
 from services.subscription_access import is_subscription_active
+from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 
 user_bp = Blueprint("user", __name__)
 logger = logging.getLogger(__name__)
@@ -324,9 +325,11 @@ def api_browse():
         offset = (page - 1) * limit
 
         conn = get_db_connection()
+        live = public_is_sponsored_sql("")
+        rank = sponsorship_rank_sql("")
 
         # Base query with optional distance calculation
-        query = text("""
+        query = text(f"""
             SELECT
                 id,
                 business_name,
@@ -342,6 +345,8 @@ def api_browse():
                 COALESCE(is_featured, 0) AS featured,
                 COALESCE(is_verified, 0) AS verified,
                 COALESCE(is_premium, 0) AS premium,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS sponsored,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored,
                 latitude,
                 longitude,
                 CASE
@@ -372,7 +377,7 @@ def api_browse():
                     )
                 ) <= :distance
             ))
-            ORDER BY featured DESC, premium DESC, distance ASC NULLS LAST
+            ORDER BY {rank} DESC, featured DESC, premium DESC, distance ASC NULLS LAST
             LIMIT :limit OFFSET :offset
         """)
 

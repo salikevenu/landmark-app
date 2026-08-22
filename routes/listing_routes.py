@@ -18,6 +18,7 @@ from services.listing_service import (
 )
 from services.subscription_access import is_subscription_active
 from services.authz import db_user_is_admin
+from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 import logging
 logger = logging.getLogger(__name__)
 # ---------- Custom role‑required decorator (JWT) ----------
@@ -482,9 +483,11 @@ def browse_api():
         offset = (page - 1) * limit
 
         conn = get_db_connection()
+        live = public_is_sponsored_sql("l")
+        rank = sponsorship_rank_sql("l")
 
         # Use a CTE to calculate distance once, then filter and order
-        query = text("""
+        query = text(f"""
             WITH dist AS (
                 SELECT l.*,
                     (6371 * acos(
@@ -497,6 +500,7 @@ def browse_api():
                     COALESCE(l.is_verified, 0) as verified,
                     COALESCE(l.is_premium, 0) as premium,
                     COALESCE(l.is_featured, 0) as featured,
+                    CASE WHEN {live} THEN 1 ELSE 0 END as sponsored,
                     (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as main_image
                 FROM listings l
                 WHERE l.status = 'approved'
@@ -507,7 +511,7 @@ def browse_api():
             SELECT *
             FROM dist
             WHERE (:distance IS NULL OR distance <= :distance)
-            ORDER BY featured DESC, premium DESC, verified DESC, distance ASC, rating DESC
+            ORDER BY sponsored DESC, featured DESC, premium DESC, verified DESC, distance ASC, rating DESC
             LIMIT :limit OFFSET :offset
         """)
 
@@ -543,7 +547,9 @@ def browse_api():
                 "longitude": rm["longitude"],
                 "verified": bool(rm["verified"]),
                 "premium": bool(rm["premium"]),
-                "featured": bool(rm["featured"])
+                "featured": bool(rm["featured"]),
+                "sponsored": bool(rm.get("sponsored")),
+                "is_sponsored": bool(rm.get("sponsored")),
             })
         return jsonify({"listings": listings, "page": page, "count": len(listings)})
     except Exception as e:
@@ -599,10 +605,12 @@ def delete_review(review_id):
 @listing_bp.route("/api/listing/<int:listing_id>")
 def public_listing_detail(listing_id):
     conn = get_db_connection()
-    listing = conn.execute(text("""
+    live = public_is_sponsored_sql("")
+    listing = conn.execute(text(f"""
         SELECT id, business_name, category, city, state, latitude, longitude,
                description, whatsapp, website, rating, rating_count,
-               is_verified, is_premium, is_featured, user_phone
+               is_verified, is_premium, is_featured, user_phone,
+               CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
         FROM listings
         WHERE id = :lid AND status = 'approved'
     """), {"lid": listing_id}).fetchone()

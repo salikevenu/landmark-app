@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from services.nearby_service import find_nearby_listings
+from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 from extensions import limiter
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
@@ -29,6 +30,8 @@ def _row_to_business(row):
         "longitude": float(m["longitude"]),
         "phone": m["phone"] or "",
         "whatsapp": m["whatsapp"] or m["phone"] or "",
+        "sponsored": bool(m.get("is_sponsored") or m.get("sponsored")),
+        "is_sponsored": bool(m.get("is_sponsored") or m.get("sponsored")),
     }
 
 
@@ -49,6 +52,8 @@ def _fetch_businesses(search=None, limit=500):
         )
         params["q"] = f"%{search}%"
     where_sql = " AND ".join(clauses)
+    live = public_is_sponsored_sql("")
+    rank = sponsorship_rank_sql("")
     rows = conn.execute(
         text(f"""
             SELECT
@@ -59,10 +64,11 @@ def _fetch_businesses(search=None, limit=500):
                 latitude,
                 longitude,
                 user_phone AS phone,
-                whatsapp
+                whatsapp,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
             FROM listings
             WHERE {where_sql}
-            ORDER BY is_sponsored DESC, is_premium DESC, COALESCE(rating, 0) DESC
+            ORDER BY {rank} DESC, is_premium DESC, COALESCE(rating, 0) DESC
             LIMIT :limit
         """),
         params,

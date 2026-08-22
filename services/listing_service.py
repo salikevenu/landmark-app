@@ -100,18 +100,9 @@ def find_nearby(user_lat, user_lng, radius_km=10):
 
 
 def update_sponsored_status():
-    conn = get_db_connection()
-    # PostgreSQL supports this as a single statement
-    conn.execute(text("""
-        UPDATE listings
-        SET is_sponsored = 0
-        WHERE id IN (
-            SELECT listing_id
-            FROM sponsored_ads
-            WHERE end_date < CURRENT_TIMESTAMP
-        )
-    """))
-    conn.commit()
+    """Expire stale listings.is_sponsored flags. Does not delete sponsored_ads."""
+    from services.sponsorship import cleanup_expired_sponsorships
+    return cleanup_expired_sponsorships()
 
 
 # --- Browse with filters ---
