@@ -385,6 +385,206 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         self.assertEqual(store.user["role"], "service_provider")
 
 
+class OwnershipAwarePaymentDB:
+    """In-memory payments store that honors user_id=:uid (unlike LockedPaymentDB)."""
+
+    def __init__(self, payment, user):
+        self.payment = dict(payment)
+        self.user = dict(user)
+        self.user_updates = []
+        self.wallet_inserts = []
+        self.payment_status_writes = []
+
+    def connect(self):
+        return OwnershipAwareConn(self)
+
+
+class OwnershipAwareConn:
+    def __init__(self, store):
+        self.store = store
+
+    def execute(self, query, params=None):
+        qs = str(query)
+        params = params or {}
+        res = MagicMock()
+        if "INSERT INTO wallet_transactions" in qs:
+            self.store.wallet_inserts.append(dict(params))
+            return res
+        if "FROM payments" in qs:
+            res.fetchone.return_value = self._owned_payment(qs, params)
+            return res
+        if "UPDATE users" in qs and "SET role" in qs:
+            self.store.user_updates.append(dict(params))
+            self.store.user.update({
+                "plan": params.get("plan"),
+                "role": params.get("role"),
+                "subscription_expiry": params.get("expiry_date"),
+                "business_limit": params.get("blimit"),
+            })
+            return res
+        if "UPDATE payments" in qs:
+            self.store.payment_status_writes.append(params.get("status"))
+            self.store.payment["payment_id"] = params.get("pid", self.store.payment["payment_id"])
+            self.store.payment["order_id"] = params.get("oid", self.store.payment["order_id"])
+            if params.get("amount") is not None:
+                self.store.payment["amount"] = params["amount"]
+            if params.get("status") is not None:
+                self.store.payment["status"] = params["status"]
+            if params.get("plan") is not None:
+                self.store.payment["plan"] = params["plan"]
+            return res
+        if "FROM users" in qs:
+            uid = params.get("uid")
+            if uid is not None and int(uid) == int(self.store.user.get("id", -1)):
+                res.fetchone.return_value = _row(self.store.user)
+            else:
+                res.fetchone.return_value = None
+            return res
+        res.fetchone.return_value = None
+        return res
+
+    def _owned_payment(self, qs, params):
+        if ":uid" in qs or "uid" in params:
+            try:
+                if int(params["uid"]) != int(self.store.payment["user_id"]):
+                    return None
+            except (KeyError, TypeError, ValueError):
+                return None
+        oid = params.get("oid")
+        pid = params.get("pid")
+        if oid is not None or pid is not None:
+            stored_oid = self.store.payment.get("order_id")
+            stored_pid = self.store.payment.get("payment_id")
+            match = (
+                oid in (stored_oid, stored_pid)
+                or pid == stored_pid
+            )
+            if not match:
+                return None
+        return _row(self.store.payment)
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+    def close(self):
+        return None
+
+
+class CrossUserVerifyPaymentTests(unittest.TestCase):
+    """User B must not activate User A's order even with a valid Razorpay signature."""
+
+    OWNER_ID = 42
+    ATTACKER_ID = 99
+
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.config["JWT_SECRET_KEY"] = "test-jwt-secret"
+        self.app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+        JWTManager(self.app)
+        self.app.register_blueprint(payment_bp, url_prefix="/api/payment")
+        self.client = self.app.test_client()
+
+    def _token(self, identity):
+        with self.app.app_context():
+            return create_access_token(identity=str(identity))
+
+    def _store(self):
+        return OwnershipAwarePaymentDB(
+            {
+                "id": 1,
+                "user_id": self.OWNER_ID,
+                "order_id": "order_a",
+                "payment_id": "order_a",
+                "amount": 99900,
+                "status": "created",
+                "plan": "business_basic",
+            },
+            {
+                "id": self.OWNER_ID,
+                "plan": "free",
+                "role": "user",
+                "subscription_expiry": None,
+                "referred_by": 7,
+                "first_sub_commission_paid": 0,
+            },
+        )
+
+    def _rzp(self, notes_user_id):
+        client = MagicMock()
+        client.utility.verify_payment_signature.return_value = True
+        client.order.fetch.return_value = {
+            "status": "paid",
+            "amount": 99900,
+            "notes": {"plan": "business_basic", "user_id": str(notes_user_id)},
+        }
+        client.order.create.side_effect = AssertionError("must not create a Razorpay order")
+        return client
+
+    def _post(self, identity, notes_user_id, store):
+        rzp = self._rzp(notes_user_id)
+        with patch("services.payment_service.get_razorpay_client", return_value=rzp), \
+             patch("services.payment_service.ensure_payments_plan_column"), \
+             patch("services.payment_service.get_db_connection", side_effect=store.connect), \
+             patch.object(payment_routes_mod, "get_db_connection", side_effect=store.connect), \
+             patch.object(payment_routes_mod, "process_referral_commission") as credit:
+            res = self.client.post(
+                "/api/payment/verify-payment",
+                json={
+                    "razorpay_order_id": "order_a",
+                    "razorpay_payment_id": "pay_a",
+                    "razorpay_signature": "valid-but-mocked",
+                },
+                headers={"Authorization": f"Bearer {self._token(identity)}"},
+            )
+        return res, credit, rzp
+
+    def _assert_no_side_effects(self, store, credit):
+        self.assertEqual(store.payment["status"], "created")
+        self.assertEqual(store.user["plan"], "free")
+        self.assertIsNone(store.user["subscription_expiry"])
+        self.assertEqual(store.user_updates, [])
+        self.assertEqual(store.wallet_inserts, [])
+        credit.assert_not_called()
+
+    def test_user_b_rejected_when_notes_identify_owner_a(self):
+        store = self._store()
+        res, credit, rzp = self._post(self.ATTACKER_ID, self.OWNER_ID, store)
+        body = res.get_json()
+        self.assertFalse(body["success"])
+        self.assertIn("belong", body["error"].lower())
+        self._assert_no_side_effects(store, credit)
+        rzp.utility.verify_payment_signature.assert_called()
+        rzp.order.create.assert_not_called()
+
+    def test_user_b_rejected_when_notes_claim_b_but_row_owned_by_a(self):
+        store = self._store()
+        res, credit, rzp = self._post(self.ATTACKER_ID, self.ATTACKER_ID, store)
+        body = res.get_json()
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(body["success"])
+        self.assertEqual(body["error"], "Order not found for this account")
+        self._assert_no_side_effects(store, credit)
+        rzp.utility.verify_payment_signature.assert_called()
+        rzp.order.create.assert_not_called()
+
+    def test_user_a_can_verify_own_order_with_same_mocks(self):
+        store = self._store()
+        res, credit, rzp = self._post(self.OWNER_ID, self.OWNER_ID, store)
+        body = res.get_json()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(store.payment["status"], "activated")
+        self.assertEqual(store.user["plan"], "business_basic")
+        self.assertEqual(len(store.user_updates), 1)
+        self.assertEqual(store.wallet_inserts, [])
+        credit.assert_called_once()
+        rzp.utility.verify_payment_signature.assert_called()
+        rzp.order.create.assert_not_called()
+
+
 class PaymentRouteTests(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
