@@ -13,54 +13,22 @@ logger = logging.getLogger(__name__)
 @orchestration_bp.route('/workflow/subscription', methods=['POST'])
 @jwt_required()
 def execute_subscription_workflow():
-    """Execute subscription workflow"""
-    user_id = int(get_jwt_identity())
-    data = request.get_json()
-    
-    plan = data.get('plan')
-    payment_id = data.get('payment_id')
-    
-    if not plan or not payment_id:
-        return jsonify({'error': 'Missing plan or payment_id'}), 400
-    
-    result = master_agent.orchestrate_workflow(
-        'business_subscription',
-        {
-            'user_id': user_id,
-            'plan': plan,
-            'payment_id': payment_id
-        }
-    )
-    
-    return jsonify(result), 200 if result['status'] == 'completed' else 400
+    """Disabled: must not activate subscriptions outside canonical payment verify."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled. Use POST /api/payment/verify-payment",
+        "canonical": "/api/payment/verify-payment",
+    }), 410
 
 @orchestration_bp.route('/workflow/fraud-check', methods=['POST'])
 @admin_required
 def execute_fraud_check():
-    """Execute fraud check workflow"""
-    data = request.get_json()
-    user_id = data.get('user_id')
-    
-    if not user_id:
-        return jsonify({'error': 'Missing user_id'}), 400
-    
-    result = master_agent.orchestrate_workflow(
-        'fraud_check',
-        {'user_id': user_id}
-    )
-    
-    return jsonify(result), 200
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @orchestration_bp.route('/workflow/daily-maintenance', methods=['POST'])
 @admin_required
 def execute_daily_maintenance():
-    """Execute daily maintenance workflow"""
-    result = master_agent.orchestrate_workflow(
-        'daily_maintenance',
-        {}
-    )
-    
-    return jsonify(result), 200
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @orchestration_bp.route('/agents/status', methods=['GET'])
 @admin_required

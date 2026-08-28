@@ -24,6 +24,7 @@ from services.admin_service import (
 import logging
 logger = logging.getLogger(__name__)
 from services.payment_service import activate_subscription
+from services.authz import db_user_is_admin
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -34,20 +35,34 @@ def admin_required(fn):
         claims = get_jwt()
         if claims.get("role") != "admin":
             return jsonify({"error": "Admin access required"}), 403
+        if not db_user_is_admin(get_jwt_identity()):
+            return jsonify({"error": "Admin access required"}), 403
         return fn(*args, **kwargs)
     return wrapper
 
 def get_admin_info():
-    """Helper to get current admin id and phone from JWT"""
+    """Helper to get current admin id and phone from JWT (id or phone identity)."""
     identity = get_jwt_identity()
     conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT id, phone FROM users WHERE phone = :phone"),
-        {"phone": identity}
-    ).fetchone()
-    if not user:
-        return None, None
-    return user._mapping['id'], user._mapping['phone']
+    try:
+        if str(identity).isdigit():
+            user = conn.execute(
+                text("SELECT id, phone, role FROM users WHERE id = :id"),
+                {"id": int(identity)},
+            ).fetchone()
+        else:
+            user = conn.execute(
+                text("SELECT id, phone, role FROM users WHERE phone = :phone"),
+                {"phone": identity},
+            ).fetchone()
+        if not user or (user._mapping.get("role") or "") != "admin":
+            return None, None
+        return user._mapping["id"], user._mapping["phone"]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # -------------------------------
 # HTML PAGES (shells)
@@ -153,11 +168,12 @@ def _load_admin_user(user_id):
     try:
         row = conn.execute(
             text("""
-                SELECT id, phone, name, role, plan, subscription_expiry,
-                       wallet_balance, is_blocked, referral_code, created_at,
-                       latitude, longitude
-                FROM users
-                WHERE id = :uid
+                SELECT u.id, u.phone, u.name, u.role, u.plan, u.subscription_expiry,
+                       COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.referral_code, u.created_at,
+                       u.latitude, u.longitude
+                FROM users u
+                LEFT JOIN wallet_balance wb ON wb.user_id = u.id
+                WHERE u.id = :uid
             """),
             {"uid": user_id},
         ).fetchone()
@@ -232,6 +248,8 @@ def api_change_role(user_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = change_user_role(user_id, new_role, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 400
     return jsonify(result)
 
 @admin_bp.route("/api/admin/users/<int:user_id>/reset-subscription", methods=["POST"])
@@ -292,6 +310,8 @@ def api_approve_listing(listing_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = approve_listing_admin(listing_id, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 409
     return jsonify(result)
 
 @admin_bp.route("/api/admin/listings/<int:listing_id>/disable", methods=["POST"])
@@ -321,9 +341,12 @@ def api_delete_listing(listing_id):
 @admin_bp.route("/api/admin/listings/<int:listing_id>/sponsor", methods=["POST"])
 @admin_required
 def api_sponsor_listing(listing_id):
+    """Admin-granted unpaid ranking boost. Not a Razorpay/wallet purchase."""
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = sponsor_listing_admin(listing_id, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 409
     return jsonify(result)
 
 # Payments
@@ -435,6 +458,18 @@ def api_update_setting():
     value = data.get('value')
     if not key:
         return jsonify({'error': 'Missing key'}), 400
+    frozen = {
+        "withdrawal_min_amount",
+        "withdrawal_max_amount",
+        "commission_rate",
+        "referral_bonus_percent",
+        "recurring_commission_percent",
+    }
+    if key in frozen:
+        return jsonify({
+            "error": "This setting is frozen and cannot be changed from the admin API",
+            "key": key,
+        }), 403
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = update_setting(key, value, admin_id, admin_phone, ip)
@@ -481,6 +516,8 @@ def impersonate_user(user_id):
     ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
+    if (user._mapping.get("role") or "") == "admin":
+        return jsonify({"error": "Cannot impersonate an admin"}), 403
 
     # Generate short-lived token (10 minutes)
     token = create_access_token(
@@ -568,66 +605,14 @@ def api_audit_log():
 @admin_bp.route("/api/admin/referrals/<int:ref_id>/verify", methods=["POST"])
 @admin_required
 def verify_referral(ref_id):
-    """Admin verifies a referral – converts pending rewards to credit"""
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
+    """LEGACY. Must not credit wallets or mutate spendable ledger.
 
-        ref = conn.execute(
-            text("SELECT referrer_id, referred_user_id, status FROM referral_transactions WHERE id = :id"),
-            {"id": ref_id}
-        ).fetchone()
-
-        if not ref:
-            return jsonify({"error": "Referral not found"}), 404
-
-        referrer_id = ref._mapping["referrer_id"]
-        referred_user_id = ref._mapping["referred_user_id"]
-
-        # Mark referral as completed
-        conn.execute(
-            text("UPDATE referral_transactions SET status = 'completed' WHERE id = :id"),
-            {"id": ref_id}
-        )
-
-        # Convert all pending wallet transactions for this referral to credit
-        conn.execute(
-            text("""
-                UPDATE wallet_transactions
-                SET status = 'credit'
-                WHERE reference_id = :ref_id AND source = 'referral' AND status = 'pending'
-            """),
-            {"ref_id": str(ref_id)}
-        )
-
-        # If referred user has a paid business plan, increment referrer's business count
-        plan_row = conn.execute(
-            text("SELECT plan FROM users WHERE id = :uid"),
-            {"uid": referred_user_id}
-        ).fetchone()
-
-        if plan_row and plan_row._mapping["plan"] in ("business_basic", "business_premium"):
-            conn.execute(
-                text("""
-                    UPDATE wallet_balance
-                    SET active_business_referrals_count = active_business_referrals_count + 1
-                    WHERE user_id = :uid
-                """),
-                {"uid": referrer_id}
-            )
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "verify_referral", "referral", ref_id,
-                         details="Referral verified and rewards credited", ip_address=ip)
-
-        return jsonify({"message": "Referral verified and rewards credited"}), 200
-
-    except Exception as e:
-        logger.exception("verify_referral error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
+    Live commissions: services.referral_commission.
+    """
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled. Referral commissions are processed automatically.",
+    }), 410
 
 
 # ============================
@@ -636,45 +621,13 @@ def verify_referral(ref_id):
 @admin_bp.route("/api/admin/withdrawals/<int:wid>/paid-with-flag", methods=["POST"])
 @admin_required
 def mark_withdraw_paid_with_flag(wid):
-    """Mark withdrawal as paid AND set first-withdrawal flag"""
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
-
-        withdrawal = conn.execute(
-            text("SELECT user_id, status FROM withdraw_requests WHERE id = :id"),
-            {"id": wid}
-        ).fetchone()
-
-        if not withdrawal:
-            return jsonify({"error": "Withdrawal not found"}), 404
-
-        user_id = withdrawal._mapping["user_id"]
-
-        # Mark as paid
-        conn.execute(
-            text("UPDATE withdraw_requests SET status = 'paid', processed_at = NOW() WHERE id = :id"),
-            {"id": wid}
-        )
-
-        # Set first withdrawal flag
-        conn.execute(
-            text("UPDATE wallet_balance SET had_first_withdrawal = TRUE WHERE user_id = :uid AND had_first_withdrawal = FALSE"),
-            {"uid": user_id}
-        )
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "mark_withdraw_paid", "withdrawal", wid,
-                         details="Withdrawal marked as paid, first-withdrawal flag set", ip_address=ip)
-
-        return jsonify({"message": "Withdrawal marked as paid"}), 200
-
-    except Exception as e:
-        logger.exception("mark_withdraw_paid_with_flag error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
+    """Mark withdrawal as paid using the canonical state machine."""
+    admin_id, admin_phone = get_admin_info()
+    ip = request.remote_addr
+    result = mark_withdraw_paid(wid, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+    return jsonify({"message": "Withdrawal marked as paid", "status": "paid"}), 200
 
 
 # ============================
@@ -683,233 +636,38 @@ def mark_withdraw_paid_with_flag(wid):
 @admin_bp.route("/api/admin/run-migration/withdrawal-policy", methods=["POST"])
 @admin_required
 def run_withdrawal_policy_migration():
-    """
-    Adds withdrawal policy columns and syncs wallet_balance for all users.
-    Run ONCE after deployment, then DELETE this endpoint.
-    """
-    try:
-        admin_id, admin_phone = get_admin_info()
-        ip = request.remote_addr
-        conn = get_db_connection()
+    """Disabled: must not ALTER production from a live HTTP route."""
+    return jsonify({
+        "success": False,
+        "error": "This migration endpoint is disabled",
+    }), 410
 
-        # Add new columns (safe to re-run – uses IF NOT EXISTS)
-        conn.execute(text("""
-            ALTER TABLE wallet_balance
-            ADD COLUMN IF NOT EXISTS had_first_withdrawal BOOLEAN DEFAULT FALSE
-        """))
-        conn.execute(text("""
-            ALTER TABLE wallet_balance
-            ADD COLUMN IF NOT EXISTS active_business_referrals_count INTEGER DEFAULT 0
-        """))
-
-        # Sync wallet_balance for all users who don't have a row yet
-        users = conn.execute(text("SELECT id, wallet_balance FROM users")).fetchall()
-        count = 0
-        for u in users:
-            uid = u._mapping["id"]
-            wb = u._mapping["wallet_balance"] or 0
-            result = conn.execute(text("""
-                INSERT INTO wallet_balance (user_id, balance)
-                VALUES (:uid, :bal)
-                ON CONFLICT (user_id) DO NOTHING
-            """), {"uid": uid, "bal": wb})
-            if result.rowcount > 0:
-                count += 1
-
-        conn.commit()
-
-        # Log admin action
-        log_admin_action(admin_id, admin_phone, "run_migration", "system", None,
-                         details="Withdrawal policy migration completed", ip_address=ip)
-
-        return jsonify({
-            "success": True,
-            "message": "Migration completed",
-            "new_wallets_created": count,
-            "columns_added": ["had_first_withdrawal", "active_business_referrals_count"]
-        }), 200
-
-    except Exception as e:
-        logger.exception("run_withdrawal_policy_migration error")
-        return jsonify({"error": "Something went wrong. Please try again."}), 500
-    
+ 
 @admin_bp.route("/api/send-sms", methods=["POST"])
 @jwt_required()
 def send_sms():
-    """Send SMS via Message Central"""
-    try:
-        data = request.json
-        phone = data.get('phone')
-        message = data.get('message')
-        
-        if not phone or not message:
-            return jsonify({"error": "Phone and message required"}), 400
-        
-        sms_service = get_sms_service()
-        success, response = sms_service.send_sms(phone, message)
-        
-        log_admin_action(
-            admin_id=get_jwt_identity(),
-            action="SEND_SMS",
-            details=f"SMS sent to {phone}",
-            ip=request.remote_addr
-        )
-        
-        if success:
-            return jsonify({"success": True, "message": "SMS sent", "details": response}), 200
-        else:
-            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
-            
-    except Exception as e:
-        logger.exception("Send SMS error")
-        return jsonify({"error": "Internal server error"}), 500
+    """Disabled: arbitrary SMS send is an abuse and cost vector."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
 @admin_bp.route("/api/send-otp", methods=["POST"])
 @jwt_required()
 def send_otp():
-    """Send OTP via SMS"""
-    try:
-        data = request.json
-        phone = data.get('phone')
-        
-        if not phone:
-            return jsonify({"error": "Phone number required"}), 400
-        
-        sms_service = get_sms_service()
-        success, response, otp = sms_service.send_otp(phone)
-        
-        log_admin_action(
-            admin_id=get_jwt_identity(),
-            action="SEND_OTP",
-            details=f"OTP sent to {phone}",
-            ip=request.remote_addr
-        )
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "OTP sent",
-                "otp": otp if os.getenv('DEBUG_SMS', 'false').lower() == 'true' else None
-            }), 200
-        else:
-            return jsonify({"success": False, "error": response.get('error', 'Unknown error')}), 400
-            
-    except Exception as e:
-        logger.exception("Send OTP error")
-        return jsonify({"error": "Internal server error"}), 500
+    """Disabled: must not send OTP or return codes outside /api/auth/send-otp."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
     
 @admin_bp.route("/api/test-sms-ui", methods=["GET"])
 @jwt_required()
 def test_sms_ui():
-    """
-    Simple HTML page to test SMS sending
-    """
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SMS Test - Message Central</title>
-        <style>
-            body { font-family: Arial; max-width: 500px; margin: 50px auto; padding: 20px; }
-            input, textarea { width: 100%; padding: 8px; margin: 5px 0; }
-            button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
-            button:hover { background: #0056b3; }
-            #result { margin-top: 20px; padding: 10px; border: 1px solid #ddd; }
-            .success { color: green; }
-            .error { color: red; }
-        </style>
-    </head>
-    <body>
-        <div style="background-color: #fff3cd; padding: 10px; border: 1px solid #ffeeba; margin-bottom: 20px;">
-            ⚠️ <strong>Production Admin Tool</strong> — Only for testing. Do not share this link.
-        </div>
-        <h2>📱 Send Test SMS via Message Central</h2>
-        <form id="smsForm">
-            <div>
-                <label>Phone Number (10 digits for India):</label>
-                <input type="text" id="phone" placeholder="9876543210" required>
-                <small>Enter 10-digit Indian phone number (without +91)</small>
-            </div>
-            <div>
-                <label>Message:</label>
-                <textarea id="message" rows="4" required>Test message from LANDMARK system</textarea>
-            </div>
-            <button type="submit">Send SMS</button>
-        </form>
-        <div id="result"></div>
-        
-        <script>
-            document.getElementById('smsForm').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const result = document.getElementById('result');
-                result.innerHTML = '⏳ Sending...';
-                result.className = '';
-                
-                try {
-                    const phone = document.getElementById('phone').value;
-                    const formattedPhone = phone.replace(/[^0-9]/g, '');
-                    const fetchFn = window.LandmarkSession ? LandmarkSession.authFetch.bind(LandmarkSession) : fetch;
-                    const response = await fetchFn('/api/send-sms', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        credentials: 'include',
-                        body: JSON.stringify({
-                            phone: formattedPhone,
-                            message: document.getElementById('message').value
-                        })
-                    });
-                    
-                    const data = await response.json();
-                    if (data.success) {
-                        result.innerHTML = '✅ SMS sent successfully!';
-                        result.className = 'success';
-                    } else {
-                        result.innerHTML = '❌ Error: ' + data.error;
-                        result.className = 'error';
-                    }
-                } catch (error) {
-                    result.innerHTML = '❌ Error: ' + error.message;
-                    result.className = 'error';
-                }
-            });
-        </script>
-    </body>
-    </html>
-    '''
+    """Disabled development SMS console."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
-# TEMPORARY: remove after visiting once.
 @admin_bp.route("/api/make-me-admin", methods=["GET"])
 def make_me_admin():
-    conn = get_db_connection()
-    try:
-        result = conn.execute(
-            text("""
-                UPDATE users
-                SET role = 'admin'
-                WHERE phone = :phone
-                   OR phone = :phone91
-                   OR RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = :phone
-            """),
-            {"phone": "9959543954", "phone91": "919959543954"},
-        )
-        conn.commit()
-        if result.rowcount == 0:
-            return jsonify({"error": "No user found with phone 9959543954"}), 404
-        return jsonify({"message": "✅ User 9959543954 is now an admin!"})
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logger.exception("make-me-admin failed")
-        return jsonify({"error": "Failed to update role"}), 500
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    """Disabled: unauthenticated role grant is a financial-control bypass."""
+    return jsonify({
+        "success": False,
+        "error": "This endpoint is disabled",
+    }), 410
 

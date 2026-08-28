@@ -1,9 +1,70 @@
+# Render Blueprint. Secrets are never stored here (sync: false).
+# Cron schedules are UTC. "30 12 * * 6" = Saturday 12:30 UTC = Saturday 18:00 IST.
+
 services:
   - type: web
     name: landmark-backend
     runtime: python
     buildCommand: pip install --no-cache-dir -r requirements.txt && chmod +x start.sh
     startCommand: bash start.sh
+    healthCheckPath: /api/readiness
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: SATURDAY_PAYOUT_SECRET
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: RAZORPAY_MODE
+        value: live
+      - key: BASE_URL
+        value: https://landmarkvts.in
+      - key: REDIS_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://landmarkvts.in,https://www.landmarkvts.in
+      - key: MESSAGE_CENTRAL_CUSTOMER_ID
+        sync: false
+      - key: MESSAGE_CENTRAL_AUTH_TOKEN
+        sync: false
+      - key: MESSAGE_CENTRAL_COUNTRY
+        value: "91"
+
+  - type: cron
+    name: landmark-saturday-payout
+    runtime: python
+    # Saturday 12:30 UTC == Saturday 18:00 IST
+    schedule: "30 12 * * 6"
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python3 scripts/run_internal_job.py /internal/saturday-payout
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BASE_URL
+        value: https://landmarkvts.in
+      - key: SATURDAY_PAYOUT_SECRET
+        sync: false
+
+  - type: cron
+    name: landmark-referral-commission-retry
+    runtime: python
+    schedule: "*/15 * * * *"
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python3 scripts/run_internal_job.py /internal/referral-commission-retry
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BASE_URL
+        value: https://landmarkvts.in
+      - key: SATURDAY_PAYOUT_SECRET
+        sync: false

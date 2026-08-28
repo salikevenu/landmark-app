@@ -86,20 +86,18 @@ function registerUser() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: phone })
+        body: JSON.stringify({ phone: phone, name: name, ref: referral })
     })
     .then(res => res.json())
     .then(data => {
-        if (data.error) {
-            status.innerText = data.error;
-        } else if (data.success || data.message) {
+        if (data.success) {
             status.innerText = "✅ OTP sent. Please login to verify.";
             const loginQs = referral ? ("?ref=" + encodeURIComponent(referral)) : "";
             setTimeout(() => {
                 window.location.href = "/api/auth/public/login" + loginQs;
             }, 800);
         } else {
-            status.innerText = "Unexpected response.";
+            status.innerText = data.message || data.error || "Failed to send OTP.";
         }
     })
     .catch(() => {

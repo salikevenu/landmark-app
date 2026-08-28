@@ -1,10 +1,12 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.referral_service import get_referral_info
+import logging
 
 referral_bp = Blueprint("referral", __name__)
+logger = logging.getLogger(__name__)
 
 # =========================
 # REFERRAL LEADERBOARD (public)
@@ -25,8 +27,9 @@ def referral_leaderboard():
 
         return jsonify([dict(r._mapping) for r in rows])
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("referral_leaderboard error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # =========================
@@ -34,34 +37,8 @@ def referral_leaderboard():
 # =========================
 @referral_bp.route("/api/nearby-leads", methods=["GET"])
 def nearby_leads():
-    lat = request.args.get("lat", type=float)
-    lng = request.args.get("lng", type=float)
-
-    if lat is None or lng is None:
-        return jsonify({"error": "lat and lng required"}), 400
-
-    lat_grid = int(lat * 100)
-    lng_grid = int(lng * 100)
-
-    try:
-        conn = get_db_connection()
-        rows = conn.execute(text("""
-            SELECT *
-            FROM business_leads
-            WHERE lat_grid BETWEEN :lat_min AND :lat_max
-            AND lng_grid BETWEEN :lng_min AND :lng_max
-            LIMIT 50
-        """), {
-            "lat_min": lat_grid - 1,
-            "lat_max": lat_grid + 1,
-            "lng_min": lng_grid - 1,
-            "lng_max": lng_grid + 1
-        }).fetchall()
-
-        return jsonify([dict(r._mapping) for r in rows])
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """Disabled: unauthenticated SELECT * leaked lead phone numbers."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
 # =========================
@@ -119,16 +96,18 @@ def invite_business():
             "message": "Business invited successfully"
         })
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("invite_business error")
+        return jsonify({"error": "Something went wrong. Please try again."}), 500
 
 
 # =========================
-# REFERRAL INFO (public)
+# REFERRAL INFO (authenticated — own wallet/code only)
 # =========================
 @referral_bp.route("/api/referral/info")
+@jwt_required()
 def referral_info():
-    user_id = request.args.get("user_id")
+    user_id = get_jwt_identity()
     data = get_referral_info(user_id)
     if not data:
         return jsonify({"error": "User not found"}), 404

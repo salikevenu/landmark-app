@@ -3,7 +3,7 @@ import io
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.init_db import get_db_connection
-from services.wallet_service import credit_wallet, debit_wallet
+from services.wallet_service import approve_withdrawal, mark_withdrawal_paid, reject_withdrawal
 from services.payment_service import activate_subscription
 
 # Helper to convert SQLAlchemy row to dict (for compatibility with old code)
@@ -131,26 +131,28 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
     where_clauses = []
 
     if search:
-        where_clauses.append("(phone LIKE :search OR name LIKE :search)")
+        where_clauses.append("(u.phone LIKE :search OR u.name LIKE :search)")
         params['search'] = f'%{search}%'
     if role_filter:
-        where_clauses.append("role = :role_filter")
+        where_clauses.append("u.role = :role_filter")
         params['role_filter'] = role_filter
     if status_filter == 'active':
-        where_clauses.append("is_blocked = 0")
+        where_clauses.append("u.is_blocked = 0")
     elif status_filter == 'banned':
-        where_clauses.append("is_blocked = 1")
+        where_clauses.append("u.is_blocked = 1")
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-    count_query = f"SELECT COUNT(*) FROM users WHERE {where_sql}"
+    count_query = f"SELECT COUNT(*) FROM users u WHERE {where_sql}"
     total = conn.execute(text(count_query), params).scalar()
 
     query = f"""
-        SELECT id, phone, name, role, subscription_expiry, wallet_balance, is_blocked, created_at
-        FROM users
+        SELECT u.id, u.phone, u.name, u.role, u.subscription_expiry,
+               COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at
+        FROM users u
+        LEFT JOIN wallet_balance wb ON wb.user_id = u.id
         WHERE {where_sql}
-        ORDER BY id DESC
+        ORDER BY u.id DESC
         LIMIT :limit OFFSET :offset
     """
     params['limit'] = limit
@@ -195,11 +197,21 @@ def unban_user(user_id, admin_id, admin_phone, ip):
     return {'status': 'unbanned'}
 
 def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
-    valid_roles = ['user', 'business_basic', 'business_premium', 'admin']
+    valid_roles = ['user', 'business_basic', 'business_premium', 'service_provider']
     if new_role not in valid_roles:
-        return {'error': 'Invalid role'}
+        return {'error': 'Invalid role', '_http': 400}
     conn = get_db_connection()
-    conn.execute(text("UPDATE users SET role = :role WHERE id = :user_id"), {"role": new_role, "user_id": user_id})
+    current = conn.execute(
+        text("SELECT role FROM users WHERE id = :user_id"),
+        {"user_id": user_id},
+    ).fetchone()
+    if not current:
+        conn.close()
+        return {'error': 'User not found', '_http': 404}
+    if (current._mapping.get("role") or "") == "admin":
+        conn.close()
+        return {'error': 'Cannot change an admin role from this API', '_http': 403}
+    conn.execute(text("UPDATE users SET role = :role WHERE id = :user_id AND role <> 'admin'"), {"role": new_role, "user_id": user_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'change_role', 'user', str(user_id), f'Role changed to {new_role}', ip)
     conn.close()
@@ -253,11 +265,49 @@ def get_admin_listings(page=1, limit=50, search='', status_filter='', category_f
     return {'listings': listings, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_listing_admin(listing_id, admin_id, admin_phone, ip):
+    """CAS: only pending + active listings become approved. Never report success on 0 rows."""
     conn = get_db_connection()
-    conn.execute(text("UPDATE listings SET status = 'approved', is_active = 1 WHERE id = :listing_id"), {"listing_id": listing_id})
-    conn.commit()
+    try:
+        result = conn.execute(
+            text("""
+                UPDATE listings
+                SET status = 'approved', is_active = 1
+                WHERE id = :listing_id
+                  AND status = 'pending'
+                  AND is_active = 1
+            """),
+            {"listing_id": listing_id},
+        )
+        if result.rowcount != 1:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            existing = conn.execute(
+                text("SELECT id, status, is_active FROM listings WHERE id = :listing_id"),
+                {"listing_id": listing_id},
+            ).fetchone()
+            if not existing:
+                return {"error": "Listing not found", "_http": 404}
+            return {
+                "error": "Listing cannot be approved",
+                "_http": 409,
+                "current_status": existing._mapping.get("status"),
+                "is_active": existing._mapping.get("is_active"),
+            }
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     log_admin_action(admin_id, admin_phone, 'approve_listing', 'listing', str(listing_id), f'Approved listing {listing_id}', ip)
-    conn.close()
     return {'status': 'approved'}
 
 def disable_listing_admin(listing_id, admin_id, admin_phone, ip):
@@ -278,6 +328,7 @@ def verify_listing_admin(listing_id, admin_id, admin_phone, ip):
 
 def delete_listing_admin(listing_id, admin_id, admin_phone, ip):
     conn = get_db_connection()
+    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :listing_id"), {"listing_id": listing_id})
     conn.execute(text("DELETE FROM listings WHERE id = :listing_id"), {"listing_id": listing_id})
     conn.commit()
     log_admin_action(admin_id, admin_phone, 'delete_listing', 'listing', str(listing_id), f'Deleted listing {listing_id}', ip)
@@ -285,11 +336,81 @@ def delete_listing_admin(listing_id, admin_id, admin_phone, ip):
     return {'status': 'deleted'}
 
 def sponsor_listing_admin(listing_id, admin_id, admin_phone, ip):
-    from services.listing_service import sponsor_listing_service
-    result = sponsor_listing_service(listing_id)
-    if result.get('status') == 'sponsored':
-        log_admin_action(admin_id, admin_phone, 'sponsor_listing', 'listing', str(listing_id), f'Sponsored listing {listing_id}', ip)
-    return result
+    """Admin-granted nearby ranking boost. Not a customer payment.
+
+    Does not credit wallets, write payments, or enqueue referral commission.
+    Only approved + active listings can be sponsored.
+    """
+    conn = get_db_connection()
+    try:
+        result = conn.execute(
+            text("""
+                UPDATE listings
+                SET is_sponsored = 1
+                WHERE id = :listing_id
+                  AND status = 'approved'
+                  AND is_active = 1
+                RETURNING id, user_id
+            """),
+            {"listing_id": listing_id},
+        )
+        row = result.fetchone()
+        if not row:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            existing = conn.execute(
+                text("SELECT id, status, is_active FROM listings WHERE id = :listing_id"),
+                {"listing_id": listing_id},
+            ).fetchone()
+            if not existing:
+                return {"error": "Listing not found", "_http": 404}
+            return {
+                "error": "Listing cannot be sponsored",
+                "_http": 409,
+                "current_status": existing._mapping.get("status"),
+                "is_active": existing._mapping.get("is_active"),
+            }
+
+        start = datetime.utcnow()
+        end = start + timedelta(days=30)
+        conn.execute(
+            text("""
+                INSERT INTO sponsored_ads (
+                    user_id, listing_id, plan, amount, start_date, end_date, is_active
+                ) VALUES (
+                    :uid, :lid, 'admin_grant', 0, :start, :end, 1
+                )
+            """),
+            {
+                "uid": row._mapping["user_id"],
+                "lid": listing_id,
+                "start": start,
+                "end": end,
+            },
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    log_admin_action(
+        admin_id, admin_phone, 'sponsor_listing', 'listing', str(listing_id),
+        f'Admin-granted unpaid sponsorship for listing {listing_id}', ip,
+    )
+    return {
+        "status": "sponsored",
+        "granted_by": "admin",
+        "paid": False,
+    }
 
 # -------------------------------
 # PAYMENT MANAGEMENT
@@ -381,36 +502,24 @@ def get_withdraw_requests(page=1, limit=50, status_filter=''):
     return {'withdrawals': withdrawals, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 def approve_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    row = conn.execute(
-        text("SELECT user_id, amount FROM withdraw_requests WHERE id = :wid AND status='pending'"),
-        {"wid": wid}
-    ).fetchone()
-    if not row:
-        return {'error': 'Withdrawal not found or already processed'}
-    success = debit_wallet(row[0], row[1], f"Withdraw approved WD-{wid}", f"WD-{wid}")
-    if not success:
-        return {'error': 'Insufficient balance'}
-    conn.execute(text("UPDATE withdraw_requests SET status = 'approved' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = approve_withdrawal(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or already processed')}
     log_admin_action(admin_id, admin_phone, 'approve_withdraw', 'withdraw', str(wid), f'Approved withdrawal {wid}', ip)
-    conn.close()
     return {'status': 'approved'}
 
 def reject_withdraw_request(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE withdraw_requests SET status = 'rejected' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = reject_withdrawal(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or already processed')}
     log_admin_action(admin_id, admin_phone, 'reject_withdraw', 'withdraw', str(wid), f'Rejected withdrawal {wid}', ip)
-    conn.close()
     return {'status': 'rejected'}
 
 def mark_withdraw_paid(wid, admin_id, admin_phone, ip):
-    conn = get_db_connection()
-    conn.execute(text("UPDATE withdraw_requests SET status = 'paid' WHERE id = :wid"), {"wid": wid})
-    conn.commit()
+    result = mark_withdrawal_paid(wid)
+    if not result.get("success"):
+        return {'error': result.get('error', 'Withdrawal not found or not payable')}
     log_admin_action(admin_id, admin_phone, 'mark_paid', 'withdraw', str(wid), f'Marked withdrawal {wid} as paid', ip)
-    conn.close()
     return {'status': 'paid'}
 
 def bulk_approve_withdrawals(wids, admin_id, admin_phone, ip):
@@ -462,7 +571,13 @@ def get_admin_referrals(page=1, limit=50, search=''):
 # -------------------------------
 def export_users_csv():
     conn = get_db_connection()
-    rows = conn.execute(text("SELECT id, phone, name, role, subscription_expiry, wallet_balance, is_blocked, created_at FROM users ORDER BY id")).fetchall()
+    rows = conn.execute(text("""
+        SELECT u.id, u.phone, u.name, u.role, u.subscription_expiry,
+               COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at
+        FROM users u
+        LEFT JOIN wallet_balance wb ON wb.user_id = u.id
+        ORDER BY u.id
+    """)).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['ID', 'Phone', 'Name', 'Role', 'Subscription Expiry', 'Wallet Balance', 'Banned', 'Created At'])
@@ -507,7 +622,22 @@ def get_settings():
     conn.close()
     return settings
 
+FROZEN_ADMIN_SETTINGS = frozenset({
+    "withdrawal_min_amount",
+    "withdrawal_max_amount",
+    "commission_rate",
+    "referral_bonus_percent",
+    "recurring_commission_percent",
+})
+
+
 def update_setting(key, value, admin_id, admin_phone, ip):
+    if key in FROZEN_ADMIN_SETTINGS:
+        return {
+            "status": "forbidden",
+            "error": "This setting is frozen and cannot be changed from the admin API",
+            "key": key,
+        }
     conn = get_db_connection()
     conn.execute(text("UPDATE admin_settings SET value = :value, updated_at = CURRENT_TIMESTAMP WHERE key = :key"), {"value": value, "key": key})
     conn.commit()

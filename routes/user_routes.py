@@ -1,5 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
+from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token, unset_jwt_cookies
+from services.jwt_session import revoke_tokens_from_request
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
 from database.init_db import get_db_connection
@@ -10,6 +11,7 @@ import secrets
 import logging
 from routes.decorators import requires_active_plan
 from services.subscription_access import is_subscription_active
+from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 
 user_bp = Blueprint("user", __name__)
 logger = logging.getLogger(__name__)
@@ -30,31 +32,41 @@ _avatar_column_ready = False
 
 def _as_user_id(identity):
     try:
-        return int(identity)
+        uid = int(identity)
     except (TypeError, ValueError):
-        return identity
+        return None
+    if uid <= 0:
+        return None
+    return uid
 
 
 def get_user_by_id(user_id):
-    global _avatar_column_ready
     user_id = _as_user_id(user_id)
     conn = get_db_connection()
-    if not _avatar_column_ready:
-        try:
-            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
-            conn.commit()
-            _avatar_column_ready = True
-        except Exception:
-            pass
-    user = conn.execute(
-        text("""
-            SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
-            FROM users
-            WHERE id = :uid
-        """),
-        {"uid": user_id},
-    ).fetchone()
-    return dict(user._mapping) if user else None
+    try:
+        user = conn.execute(
+            text("""
+                SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        return dict(user._mapping) if user else None
+    except Exception:
+        user = conn.execute(
+            text("""
+                SELECT id, name, phone, role, plan, referral_code, subscription_expiry
+                FROM users
+                WHERE id = :uid
+            """),
+            {"uid": user_id},
+        ).fetchone()
+        if not user:
+            return None
+        payload = dict(user._mapping)
+        payload["avatar_url"] = ""
+        return payload
 
 
 def _profile_payload(user):
@@ -109,6 +121,8 @@ def profile():
 def profile_data():
     """Optional explicit JSON profile endpoint."""
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = None
     try:
         conn = get_db_connection()
@@ -139,6 +153,8 @@ def profile_data():
 def update_profile():
     """Update the current user's display name."""
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
 
@@ -170,15 +186,19 @@ def upload_profile_avatar():
     from flask import current_app
 
     user_id = _as_user_id(get_jwt_identity())
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
     file = request.files.get("avatar") or request.files.get("file")
     if not file or not file.filename:
         return jsonify({"error": "No image file provided"}), 400
 
     filename = secure_filename(file.filename)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    allowed = {"jpg", "jpeg", "png", "webp", "gif"}
-    if ext not in allowed:
-        return jsonify({"error": "Invalid image type. Use jpg, png, webp, or gif"}), 400
+    allowed = {"jpg", "jpeg", "png", "webp"}
+    allowed_mimes = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+    mime = (file.mimetype or "").split(";")[0].strip().lower()
+    if ext not in allowed or mime not in allowed_mimes:
+        return jsonify({"error": "Invalid image type. Use jpg, png, or webp"}), 400
 
     # Soft size guard (10MB) in addition to app MAX_CONTENT_LENGTH
     file.stream.seek(0, os.SEEK_END)
@@ -192,14 +212,13 @@ def upload_profile_avatar():
         avatar_dir = os.path.join(current_app.root_path, upload_root, "avatars")
         os.makedirs(avatar_dir, exist_ok=True)
 
-        stored_name = f"user_{user_id}_{int(time())}.{ext}"
+        stored_name = f"user_{int(user_id)}_{int(time())}.{ext}"
         abs_path = os.path.join(avatar_dir, stored_name)
         file.save(abs_path)
 
         avatar_url = f"/static/uploads/avatars/{stored_name}"
 
         conn = get_db_connection()
-        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
         result = conn.execute(
             text("UPDATE users SET avatar_url = :url WHERE id = :uid RETURNING id"),
             {"url": avatar_url, "uid": user_id},
@@ -220,7 +239,10 @@ def upload_profile_avatar():
 
 @user_bp.route("/logout", methods=["POST"])
 def logout():
-    return jsonify({"message": "Logged out"}), 200
+    revoke_tokens_from_request()
+    response = jsonify({"success": True, "message": "Logged out"})
+    unset_jwt_cookies(response)
+    return response, 200
 
 # ------------------------------------------------------------
 # PLAN DETAILS
@@ -242,36 +264,18 @@ def verify_payment():
     data = request.get_json(silent=True) or {}
     plan_type = data.get("plan")
 
-    # extra_business is not on /pricing; keep the existing slot purchase path
+    # extra_business is a slot purchase, not a subscription/commission event.
     if plan_type == "extra_business":
-        payment_id = data.get("razorpay_payment_id")
-        order_id = data.get("razorpay_order_id")
-        signature = data.get("razorpay_signature")
-        if not all([payment_id, order_id, signature]):
-            return jsonify({"success": False, "error": "Missing payment details"}), 400
-        params = {
-            "razorpay_order_id": order_id,
-            "razorpay_payment_id": payment_id,
-            "razorpay_signature": signature,
-        }
-        try:
-            razor_client.utility.verify_payment_signature(params)
-        except razorpay.errors.SignatureVerificationError:
-            return jsonify({"success": False, "error": "Invalid payment signature"}), 400
-        conn = get_db_connection()
-        conn.execute(
-            text("UPDATE users SET extra_businesses_purchased = extra_businesses_purchased + 1 WHERE id = :uid"),
-            {"uid": user_id},
-        )
-        conn.commit()
-        return jsonify({
-            "success": True,
-            "message": "Extra business slot purchased successfully",
-            "redirect": "/create-listing",
-        })
+        from services.payment_service import verify_extra_business_payment
+        result = verify_extra_business_payment(data, user_id)
+        http = 200 if result.get("success") else result.pop("_http", 400)
+        result.pop("_http", None)
+        return jsonify(result), http
 
     from services.payment_service import verify_payment_service
+    from services.referral_commission import after_payment_finalized
     result = verify_payment_service(data, user_id)
+    after_payment_finalized(result, razorpay_payment_id=data.get("razorpay_payment_id"))
     http = 200 if result.get("success") else result.pop("_http", 400)
     result.pop("_http", None)
     return jsonify(result), http
@@ -302,7 +306,7 @@ def create_listing():
 
     if business_count >= max_allowed:
         if user._mapping["role"] == "business_premium":
-            flash("You have reached your free business limit. Purchase an extra slot for ₹259.", "warning")
+            flash("You have reached your free business limit. Purchase an extra slot for ₹249.", "warning")
             return redirect(url_for('user.extra_business_payment'))
         else:
             flash("You have reached your business limit. Upgrade to Premium for more slots.", "warning")
@@ -323,7 +327,7 @@ def browse():
 @user_bp.route("/api/browse")
 def api_browse():
     try:
-        page = int(request.args.get("page", 1))
+        page = max(1, min(int(request.args.get("page", 1) or 1), 10000))
         search = request.args.get("search", "")
         category = request.args.get("category", "")
         distance = request.args.get("distance")
@@ -334,9 +338,11 @@ def api_browse():
         offset = (page - 1) * limit
 
         conn = get_db_connection()
+        live = public_is_sponsored_sql("")
+        rank = sponsorship_rank_sql("")
 
         # Base query with optional distance calculation
-        query = text("""
+        query = text(f"""
             SELECT
                 id,
                 business_name,
@@ -352,6 +358,8 @@ def api_browse():
                 COALESCE(is_featured, 0) AS featured,
                 COALESCE(is_verified, 0) AS verified,
                 COALESCE(is_premium, 0) AS premium,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS sponsored,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored,
                 latitude,
                 longitude,
                 CASE
@@ -368,7 +376,7 @@ def api_browse():
                 END as distance
             FROM listings
             WHERE is_active = 1
-            AND (status IS NULL OR status = 'approved')
+            AND status = 'approved'
             AND (:search = '' OR business_name ILIKE :search OR category ILIKE :search)
             AND (:category = '' OR category = :category)
             AND (:distance IS NULL OR (
@@ -382,7 +390,7 @@ def api_browse():
                     )
                 ) <= :distance
             ))
-            ORDER BY featured DESC, premium DESC, distance ASC NULLS LAST
+            ORDER BY {rank} DESC, featured DESC, premium DESC, distance ASC NULLS LAST
             LIMIT :limit OFFSET :offset
         """)
 
@@ -441,28 +449,13 @@ def api_invite():
 @user_bp.route("/api/track", methods=["POST"])
 @jwt_required()
 def track():
-    data = request.json
-    user_id = get_jwt_identity()
-    conn = get_db_connection()
-    conn.execute(
-        text("INSERT INTO interactions (business_id, user_id, action) VALUES (:bid, :uid, :action)"),
-        {"bid": data["business_id"], "uid": user_id, "action": data["action"]}
-    )
-    conn.commit()
-    return jsonify({"status": "ok"})
+    """Disabled: `interactions` is not a production table."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @user_bp.route("/api/recommend")
 def recommend():
-    conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT b.*, COUNT(i.id) as score
-        FROM businesses b
-        LEFT JOIN interactions i ON b.id = i.business_id
-        GROUP BY b.id
-        ORDER BY score DESC
-        LIMIT 10
-    """)).fetchall()
-    return jsonify([dict(r._mapping) for r in rows])
+    """Disabled: joined missing `interactions` and leaked legacy `businesses` rows."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 @user_bp.route("/subscription-status", methods=["GET"])
 @jwt_required()

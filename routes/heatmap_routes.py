@@ -13,12 +13,17 @@ heatmap_bp = Blueprint("heatmap", __name__)
 def heatmap():
     conn = get_db_connection()
     category = request.args.get("category")
-    limit = int(request.args.get("limit", 1000))
+    try:
+        limit = int(request.args.get("limit", 100) or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 200))
 
     query = text("""
         SELECT latitude, longitude
         FROM listings
         WHERE is_active = 1
+          AND status = 'approved'
         AND (:category IS NULL OR category = :cat)
         LIMIT :limit
     """)
@@ -26,7 +31,7 @@ def heatmap():
     rows = conn.execute(query, {
         "category": category,
         "cat": category,
-        "limit": limit
+        "limit": limit,
     }).fetchall()
 
     return jsonify([

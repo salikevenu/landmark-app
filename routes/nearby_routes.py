@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from services.nearby_service import find_nearby_listings
+from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 from extensions import limiter
-from services.geo_service import find_nearby_friends
 from flask_jwt_extended import jwt_required
 from sqlalchemy import text
 from database.init_db import get_db_connection
@@ -30,6 +30,8 @@ def _row_to_business(row):
         "longitude": float(m["longitude"]),
         "phone": m["phone"] or "",
         "whatsapp": m["whatsapp"] or m["phone"] or "",
+        "sponsored": bool(m.get("is_sponsored") or m.get("sponsored")),
+        "is_sponsored": bool(m.get("is_sponsored") or m.get("sponsored")),
     }
 
 
@@ -37,7 +39,7 @@ def _fetch_businesses(search=None, limit=500):
     conn = get_db_connection()
     clauses = [
         "is_active = 1",
-        "(status IS NULL OR status = 'approved')",
+        "(status = 'approved')",
         "latitude IS NOT NULL",
         "longitude IS NOT NULL",
         "latitude <> 0",
@@ -50,6 +52,8 @@ def _fetch_businesses(search=None, limit=500):
         )
         params["q"] = f"%{search}%"
     where_sql = " AND ".join(clauses)
+    live = public_is_sponsored_sql("")
+    rank = sponsorship_rank_sql("")
     rows = conn.execute(
         text(f"""
             SELECT
@@ -60,10 +64,11 @@ def _fetch_businesses(search=None, limit=500):
                 latitude,
                 longitude,
                 user_phone AS phone,
-                whatsapp
+                whatsapp,
+                CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
             FROM listings
             WHERE {where_sql}
-            ORDER BY is_sponsored DESC, is_premium DESC, COALESCE(rating, 0) DESC
+            ORDER BY {rank} DESC, is_premium DESC, COALESCE(rating, 0) DESC
             LIMIT :limit
         """),
         params,
@@ -94,15 +99,8 @@ def nearby_listings():
 @nearby_bp.route("/api/nearby-friends", methods=["GET"])
 @jwt_required()
 def nearby_friends():
-    user_lat = request.args.get("lat", type=float)
-    user_lng = request.args.get("lng", type=float)
-    radius = request.args.get("radius", default=30, type=float)
-
-    if user_lat is None or user_lng is None:
-        return {"error": "User location required"}, 400
-
-    friends = find_nearby_friends(user_lat, user_lng, radius)
-    return jsonify({"friends": friends})
+    """Disabled: listed every nearby user's phone and coordinates."""
+    return jsonify({"success": False, "error": "This endpoint is disabled"}), 410
 
 
 @nearby_bp.route("/businesses", methods=["GET"])
@@ -136,7 +134,7 @@ def get_map_business(listing_id):
                     whatsapp
                 FROM listings
                 WHERE id = :id AND is_active = 1
-                  AND (status IS NULL OR status = 'approved')
+                  AND status = 'approved'
             """),
             {"id": listing_id},
         ).fetchone()

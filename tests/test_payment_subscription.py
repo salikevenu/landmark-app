@@ -87,6 +87,7 @@ class LockedPaymentDB:
         self.row_lock = threading.Lock()
         self.user_updates = 0
         self.payment_status_writes = []
+        self.jobs = []
 
     def connect(self):
         return LockedConn(self)
@@ -117,14 +118,30 @@ class LockedConn:
                 "subscription_expiry": params["expiry_date"],
                 "business_limit": params["blimit"],
             })
+            res.rowcount = 1
+            return res
+        if "extra_businesses_purchased" in qs and "UPDATE users" in qs:
+            self.store.user["extra_businesses_purchased"] = int(
+                self.store.user.get("extra_businesses_purchased") or 0
+            ) + 1
+            res.rowcount = 1
             return res
         if "UPDATE payments" in qs:
             self.store.payment_status_writes.append(params.get("status"))
+            if (self.store.payment.get("status") or "").lower() == "activated":
+                res.rowcount = 0
+                return res
             self.store.payment["payment_id"] = params["pid"]
             self.store.payment["order_id"] = params["oid"]
             self.store.payment["amount"] = params["amount"]
             self.store.payment["status"] = params["status"]
             self.store.payment["plan"] = params["plan"]
+            res.rowcount = 1
+            return res
+        if "INSERT INTO referral_commission_jobs" in qs:
+            pid = params.get("payment_id")
+            if pid and not any(j.get("payment_id") == pid for j in self.store.jobs):
+                self.store.jobs.append(dict(params))
             return res
         if "FROM users" in qs:
             res.fetchone.return_value = _row(self.store.user)
@@ -190,13 +207,27 @@ class FrontendContractTests(unittest.TestCase):
 
 
 class VerifyPaymentServiceTests(unittest.TestCase):
-    def _client(self, signature_ok=True, order=None):
+    def setUp(self):
+        self._ensure = patch("services.payment_service.ensure_referral_commission_schema")
+        self._ensure.start()
+        self.addCleanup(self._ensure.stop)
+
+    def _client(self, signature_ok=True, order=None, payment=None):
         client = MagicMock()
         if signature_ok:
             client.utility.verify_payment_signature.return_value = True
         else:
             client.utility.verify_payment_signature.side_effect = Exception("bad sig")
-        client.order.fetch.return_value = order or {}
+        order = order or {}
+        client.order.fetch.return_value = order
+        pay = payment or {
+            "id": "pay_1",
+            "order_id": "order_1",
+            "status": "captured",
+            "amount": order.get("amount", 99900),
+            "notes": order.get("notes") or {},
+        }
+        client.payment.fetch.return_value = pay
         return client
 
     def _conn(self, order_row=None):
@@ -370,7 +401,14 @@ class VerifyPaymentServiceTests(unittest.TestCase):
             {"plan": "free", "role": "user", "subscription_expiry": None},
         )
         order = self._paid_order(amount=49900, plan="service_provider")
-        with patch("services.payment_service.get_razorpay_client", return_value=self._client(True, order)), \
+        pay = {
+            "id": "pay_9",
+            "order_id": "order_9",
+            "status": "captured",
+            "amount": 49900,
+            "notes": order.get("notes") or {},
+        }
+        with patch("services.payment_service.get_razorpay_client", return_value=self._client(True, order, pay)), \
              patch("services.payment_service.ensure_payments_plan_column"), \
              patch("services.payment_service.get_db_connection", side_effect=store.connect):
             result = verify_payment_service({
@@ -613,7 +651,7 @@ class PaymentRouteTests(unittest.TestCase):
             data=b"{}",
             content_type="application/json",
         )
-        self.assertIn(res.status_code, (400, 503))
+        self.assertIn(res.status_code, (400, 403, 503))
 
     def test_authenticated_create_order(self):
         rzp = MagicMock()
@@ -669,9 +707,11 @@ class ReferralAndWalletWiringTests(unittest.TestCase):
         payout = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn("'referral_first_bonus'", commission)
         self.assertNotIn("'5%_base_+_5%_activation'", commission)
-        self.assertIn("'referral_first_bonus'", payout)
+        self.assertIn("release_locked_referral_payouts", payout)
+        self.assertIn("release_locked_referral_payouts", commission)
+        self.assertIn("'referral_first_bonus'", commission)
         self.assertIn("'referral_recurring'", commission)
-        self.assertIn("'referral_recurring'", payout)
+        self.assertIn("FOR UPDATE SKIP LOCKED", commission)
 
     def test_wallet_transactions_do_not_select_description(self):
         wallet_routes = (ROOT / "routes" / "wallet_routes.py").read_text(encoding="utf-8")

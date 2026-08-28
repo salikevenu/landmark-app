@@ -3,12 +3,20 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.referral_commission import next_saturday_6pm_ist
+from extensions import limiter
 from services.wallet_service import (
-    get_wallet_balance,
-    debit_wallet
+    request_withdrawal,
 )
 
 wallet_bp = Blueprint("wallet", __name__)
+
+
+def _safe_limit(limit_value):
+    def decorator(f):
+        if limiter:
+            return limiter.limit(limit_value)(f)
+        return f
+    return decorator
 
 @wallet_bp.route("/wallet")
 def wallet_page():
@@ -64,44 +72,28 @@ def wallet_overview():
     })
 
 @wallet_bp.route("/api/withdraw", methods=["POST"])
+@_safe_limit("10 per minute")
 @jwt_required()
 def withdraw():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     if not data:
         return jsonify({"error": "Invalid request"}), 400
-
-    amount = data.get("amount")
-    upi_id = data.get("upi_id")
-    if not amount or not upi_id:
-        return jsonify({"error": "Amount and UPI ID required"}), 400
-
-    try:
-        amount = float(amount)
-    except ValueError:
-        return jsonify({"error": "Invalid amount"}), 400
-
-    if amount < 500:
-        return jsonify({"error": "Minimum withdraw ₹500"}), 400
-
     user_id = get_jwt_identity()
-
-    current_balance = get_wallet_balance(user_id)
-    if current_balance < amount:
-        return jsonify({"error": "Insufficient balance"}), 400
-
-    success = debit_wallet(user_id, amount, source="withdraw_request", reference_id=None)
-    if not success:
-        return jsonify({"error": "Failed to debit wallet"}), 500
-
-    conn = get_db_connection()
-    conn.execute(text("""
-        INSERT INTO withdraw_requests (user_id, amount, upi_id, status, created_at)
-        VALUES (:uid, :amount, :upi_id, 'pending', CURRENT_TIMESTAMP)
-    """), {
-        "uid": user_id,
-        "amount": amount,
-        "upi_id": upi_id
-    })
-    conn.commit()
-
-    return jsonify({"status": "Withdrawal request submitted"}), 200
+    # Never trust client user_id / balance.
+    idem = data.get("idempotency_key") or request.headers.get("Idempotency-Key")
+    result = request_withdrawal(
+        user_id,
+        data.get("amount"),
+        data.get("upi_id"),
+        idempotency_key=idem,
+    )
+    http = result.pop("_http", None) if isinstance(result, dict) else 400
+    if result.get("success"):
+        return jsonify({
+            "status": "Withdrawal request submitted",
+            "message": result.get("message"),
+            "withdrawal_id": result.get("withdrawal_id"),
+            "new_balance": result.get("new_balance"),
+            "duplicate": result.get("duplicate", False),
+        }), 200
+    return jsonify({"error": result.get("error", "Request failed")}), http or 400

@@ -77,6 +77,43 @@ def billed_term(monthly_paise, cycle=None):
     return key, billed_amount_paise(monthly_paise, key), billed_duration_days(key)
 
 
+# Extra business is a listing-slot purchase, not a subscription plan.
+# Amount matches the existing PLAN_DETAILS extra_business path (₹249).
+EXTRA_BUSINESS_PLAN = "extra_business"
+EXTRA_BUSINESS_AMOUNT_PAISE = 24900
+_EXTRA_BUSINESS_ALIASES = {
+    "extra_business",
+    "extra-business",
+    "extrabusiness",
+    "extra business",
+}
+
+
+def is_extra_business_plan(plan_key):
+    if not plan_key:
+        return False
+    key = str(plan_key).strip().lower().replace("_", " ").replace("-", " ")
+    compact = key.replace(" ", "")
+    return compact in ("extrabusiness",) or key in _EXTRA_BUSINESS_ALIASES
+
+
+def duration_days_for_stored_amount(monthly_paise, stored_amount):
+    """Resolve billing duration from the server-stored Razorpay amount.
+
+    Notes/frontend duration are not trusted. Returns (cycle, duration_days)
+    or (None, None) if the stored amount is not a known billed term.
+    """
+    try:
+        stored = int(stored_amount)
+    except (TypeError, ValueError):
+        return None, None
+    for cycle in BILLING_CYCLES:
+        _, paise, days = billed_term(monthly_paise, cycle)
+        if stored == int(paise):
+            return cycle, days
+    return None, None
+
+
 def _resolve_razorpay_mode():
     raw = (os.getenv("RAZORPAY_MODE") or "").strip().lower()
     if raw in ("live", "test"):
@@ -97,6 +134,13 @@ def get_razorpay_key_pair():
     if mode == "test":
         key_id = key_id or (os.getenv("RAZORPAY_TEST_KEY_ID") or "").strip() or None
         key_secret = key_secret or (os.getenv("RAZORPAY_TEST_KEY_SECRET") or "").strip() or None
+    if key_id:
+        if mode == "live" and key_id.startswith("rzp_test_"):
+            print("ERROR: Razorpay TEST keys are not allowed in live/production mode")
+            return None, None
+        if mode == "test" and key_id.startswith("rzp_live_"):
+            print("ERROR: Razorpay LIVE keys are not allowed in test mode")
+            return None, None
     return key_id, key_secret
 
 

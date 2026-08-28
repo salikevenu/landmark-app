@@ -204,7 +204,8 @@
   <!-- Withdraw Form -->
   <div class="withdraw-card">
     <h3>Withdraw to UPI</h3>
-    <input type="number" id="withdraw_amount" placeholder="Enter amount (min ₹1)">
+    <p class="payout-info">First withdrawal: ₹500 balance and 1 paid business referral. After that, minimum ₹100.</p>
+    <input type="number" id="withdraw_amount" placeholder="Enter amount (min ₹100)" min="100" step="0.01">
     <input type="text" id="upi_id" placeholder="Enter your UPI ID">
     <button onclick="submitWithdraw()">Request Withdrawal</button>
   </div>
@@ -252,10 +253,8 @@
         const cls = isCredit ? 'credit' : 'debit';
 
         const sourceMap = {
-          'activation_bonus': 'Activation Bonus (5%)',
-          'base_referral': 'Base Referral (5%)',
-          'referral_first_bonus': 'First Payment Bonus (10%)',
-          'referral_recurring': 'Recurring Commission (5%)',
+          'referral_first_bonus': 'First subscription bonus (10%)',
+          'referral_recurring': 'Recurring commission (5%)',
           'withdraw_request': 'Withdrawal Request',
           'withdrawal': 'Withdrawal',
           'admin_adjustment': 'Adjustment'

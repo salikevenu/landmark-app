@@ -1,4 +1,6 @@
 """Transactions dashboard — page + API for wallet_transactions."""
+import logging
+
 from flask import Blueprint, jsonify, render_template, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import text
@@ -7,6 +9,7 @@ from database.init_db import get_db_connection
 
 transaction_bp = Blueprint("transactions", __name__, url_prefix="/transactions")
 transactions_api_bp = Blueprint("transactions_api", __name__, url_prefix="/api/transactions")
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 20
 
@@ -116,7 +119,7 @@ def list_transactions():
             "has_more": (page * PAGE_SIZE) < int(total),
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
 
 
 @transactions_api_bp.route("/stats", methods=["GET"])
@@ -153,4 +156,4 @@ def transaction_stats():
             },
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500

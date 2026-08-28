@@ -36,6 +36,7 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies
 )
+import hmac
 from werkzeug.exceptions import HTTPException
 from pydantic_settings import BaseSettings
 from language.translations import TRANSLATIONS
@@ -176,6 +177,9 @@ def _jwt_invalid(reason):
         return redirect("/api/auth/public/login")
     return jsonify({"success": False, "error": "Invalid session"}), 401
 
+from services.jwt_session import register_jwt_security, revoke_tokens_from_request
+register_jwt_security(jwt)
+
 # ==================== REGISTER ROUTES ====================
 _boot("import routes / register_routes")
 from routes import register_routes
@@ -238,44 +242,16 @@ def inject_language():
 
 # ==================== HELPERS ====================
 def execute_query(query, params=None, fetchone=False, fetchall=False, commit=False):
-    from database.init_db import get_db_connection
-    with get_db_connection() as conn:
-        result = conn.execute(text(query), params or {})
-        if commit: conn.commit()
-        if fetchone: return result.fetchone()
-        elif fetchall: return result.fetchall()
-    return None
+    """Disabled: raw SQL helper is unused and unsafe if wired to a request path."""
+    logger.error("execute_query is disabled")
+    raise RuntimeError("execute_query is disabled")
 
 from services.subscription_access import legacy_add_business_gone
 
 def _execute_payout():
-    from database.init_db import get_db_connection
-    with get_db_connection() as conn:
-        locked = conn.execute(text("""
-            SELECT id, user_id, amount
-            FROM wallet_transactions
-            WHERE type = 'credit'
-              AND source IN ('referral_first_bonus', 'referral_recurring')
-              AND status = 'locked'
-              AND unlock_at <= NOW()
-        """)).fetchall()
-        released_count = 0
-        for row in locked:
-            uid = row._mapping["user_id"]
-            amt = row._mapping["amount"]
-            tid = row._mapping["id"]
-            conn.execute(text("""
-                INSERT INTO wallet_balance (user_id, balance, updated_at)
-                VALUES (:uid, :amt, NOW())
-                ON CONFLICT (user_id) DO UPDATE
-                SET balance = wallet_balance.balance + :amt2,
-                    updated_at = NOW()
-            """), {"uid": uid, "amt": amt, "amt2": amt})
-            conn.execute(text("UPDATE users SET wallet_balance = wallet_balance + :amt WHERE id = :uid"), {"amt": amt, "uid": uid})
-            conn.execute(text("UPDATE wallet_transactions SET status = 'released' WHERE id = :tid"), {"tid": tid})
-            released_count += 1
-        conn.commit()
-    return released_count
+    """Canonical Saturday/admin payout — wallet_balance.balance only."""
+    from services.referral_commission import release_locked_referral_payouts
+    return release_locked_referral_payouts()
 
 @app.before_request
 def before_request_actions():
@@ -288,6 +264,11 @@ def before_request_actions():
 # ==================== WEB ROUTES ====================
 @app.route("/")
 def index():
+    ref = (request.args.get("ref") or "").strip()
+    if ref:
+        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+        cache_landing_referral_code(ref)
+        return redirect(register_url_with_ref(ref))
     lang = session.get("lang", "en")
     t = get_translations(lang)
     return render_template("public/index.html", t=t)
@@ -335,6 +316,7 @@ def pricing():
 
 @app.route("/logout")
 def logout_page():
+    revoke_tokens_from_request()
     response = make_response(render_template("logout.html"))
     unset_jwt_cookies(response)
     return response
@@ -378,32 +360,40 @@ def readiness():
         with get_db_connection() as conn:
             conn.execute(text("SELECT 1"))
         return {"status": "ready"}, 200
-    except Exception as e:
-        return {"status": "not ready", "error": str(e)}, 503
+    except Exception:
+        return {"status": "not ready"}, 503
 
 @app.route("/api/refresh", methods=["POST"])
+@limiter.limit("30 per minute")
 @jwt_required(refresh=True)
 def refresh():
     from flask_jwt_extended import get_jwt
     current_user_id = get_jwt_identity()
+    try:
+        uid = int(current_user_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid session"}), 401
     remember_me = bool(get_jwt().get("remember_me"))
-    role = "free"
-    phone = ""
     try:
         from database.init_db import get_db_connection
         with get_db_connection() as conn:
             row = conn.execute(
-                text("SELECT role, phone FROM users WHERE id = :uid"),
-                {"uid": current_user_id},
+                text("SELECT role, phone, is_blocked, is_active FROM users WHERE id = :uid"),
+                {"uid": uid},
             ).fetchone()
-            if row:
-                role = row._mapping.get("role") or "free"
-                phone = row._mapping.get("phone") or ""
     except Exception:
-        pass
+        logger.exception("refresh user lookup failed")
+        return jsonify({"success": False, "error": "Service unavailable"}), 503
+    if not row:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+    mapping = row._mapping
+    if mapping.get("is_blocked") or mapping.get("is_active") == 0:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+    role = mapping.get("role") or "free"
+    phone = mapping.get("phone") or ""
     access_expires = timedelta(days=30) if remember_me else timedelta(hours=2)
     new_access_token = create_access_token(
-        identity=str(current_user_id),
+        identity=str(uid),
         additional_claims={"role": role, "phone": phone, "remember_me": remember_me},
         expires_delta=access_expires,
     )
@@ -413,9 +403,11 @@ def refresh():
 
 @app.route('/download-app')
 def download_app():
-    ref = request.args.get('ref')
+    ref = (request.args.get("ref") or "").strip()
     if ref:
-        pass
+        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+        cache_landing_referral_code(ref)
+        return redirect(register_url_with_ref(ref))
     apk_path = os.path.join(app.root_path, 'static', 'app')
     return send_from_directory(apk_path, 'landmark.apk', as_attachment=True)
 
@@ -424,8 +416,9 @@ from io import BytesIO
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
-    download_url = request.host_url.rstrip('/') + f'/download-app?ref={referral_code}'
-    qr = qrcode.make(download_url)
+    from routes.auth_routes import register_url_with_ref
+    signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
+    qr = qrcode.make(signup_url)
     img_io = BytesIO()
     qr.save(img_io, 'PNG')
     img_io.seek(0)
@@ -439,6 +432,32 @@ def api_add_business():
     # Canonical path: POST /api/listing/create-listing
     body, code = legacy_add_business_gone()
     return jsonify(body), code
+
+def _secrets_match(left, right):
+    if not left or not right or len(left) != len(right):
+        return False
+    return hmac.compare_digest(left, right)
+
+
+def _internal_job_authorized():
+    """Shared bearer check for Saturday payout and commission retry crons."""
+    expected = (os.getenv("SATURDAY_PAYOUT_SECRET") or "").strip()
+    if not expected:
+        return False
+    jwt_secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
+    app_secret = (os.getenv("SECRET_KEY") or "").strip()
+    if _secrets_match(expected, jwt_secret) or _secrets_match(expected, app_secret):
+        logger.error("SATURDAY_PAYOUT_SECRET must be distinct from app/JWT secrets")
+        return False
+    auth = (request.headers.get("Authorization") or "").strip()
+    prefix = "Bearer "
+    if not auth.startswith(prefix):
+        return False
+    provided = auth[len(prefix):].strip()
+    if not _secrets_match(provided, expected):
+        return False
+    return True
+
 
 @app.route("/api/wallet/overview")
 @jwt_required()
@@ -456,11 +475,26 @@ def wallet_overview():
 
 @app.route('/internal/saturday-payout', methods=['POST'])
 def saturday_payout():
-    token = request.headers.get('Authorization')
-    if token != f"Bearer {os.getenv('SATURDAY_PAYOUT_SECRET')}":
+    if not _internal_job_authorized():
         return jsonify({"error": "Unauthorized"}), 403
     released = _execute_payout()
-    return jsonify({"released": released}), 200
+    sponsorship = {"cleared": 0}
+    try:
+        from services.sponsorship import cleanup_expired_sponsorships
+        sponsorship = cleanup_expired_sponsorships()
+    except Exception:
+        logger.exception("sponsorship expiry cleanup failed; payout already completed")
+    return jsonify({"released": released, "sponsorship_cleared": sponsorship.get("cleared", 0)}), 200
+
+
+@app.route('/internal/referral-commission-retry', methods=['POST'])
+def referral_commission_retry():
+    """Drain pending referral_commission_jobs. Idempotent; SKIP LOCKED."""
+    if not _internal_job_authorized():
+        return jsonify({"error": "Unauthorized"}), 403
+    from services.referral_commission import process_pending_referral_commission_jobs
+    result = process_pending_referral_commission_jobs(razorpay_payment_id=None, limit=100)
+    return jsonify(result or {"processed": [], "failed": []}), 200
 
 @app.route('/api/payment/webhook', methods=['POST'])
 def razorpay_webhook_dummy():

@@ -1,38 +1,17 @@
-import random
-import requests
+# auth/otp_service.py
+"""LEGACY / DISABLED. Live OTP is routes.auth_routes + services.sms_service."""
+import logging
 
-otp_storage = {}  # TEMP (use Redis/DB in production)
+logger = logging.getLogger(__name__)
 
-API_KEY = "YOUR_FAST2SMS_API_KEY"
+otp_storage = {}
+
 
 def send_otp(phone):
-    otp = str(random.randint(100000, 999999))
-
-    url = "https://www.fast2sms.com/dev/bulkV2"
-
-    headers = {
-        'authorization': API_KEY,
-        'Content-Type': "application/x-www-form-urlencoded"
-    }
-
-    data = {
-        'variables_values': otp,
-        'route': 'otp',
-        'numbers': phone,
-    }
-
-    requests.post(url, data=data, headers=headers)
-
-    # store OTP
-    otp_storage[phone] = otp
-
-    return True
+    logger.error("LEGACY DISABLED: auth.otp_service.send_otp must not send SMS")
+    return False
 
 
 def verify_otp(phone, user_otp):
-    real_otp = otp_storage.get(phone)
-
-    if real_otp and real_otp == user_otp:
-        del otp_storage[phone]  # delete after success
-        return True
+    logger.error("LEGACY DISABLED: auth.otp_service.verify_otp is not the live OTP path")
     return False

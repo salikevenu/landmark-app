@@ -1,16 +1,23 @@
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from utils.geo_utils import calculate_distance
+from services.sponsorship import public_is_sponsored_sql
 
 GRID_SIZE = 0.1
 
 def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, radius):
+    try:
+        radius = float(radius)
+    except (TypeError, ValueError):
+        radius = 30
+    radius = max(1.0, min(radius, 50.0))
     lat_grid = int(user_lat / GRID_SIZE)
     lng_grid = int(user_lng / GRID_SIZE)
-    grid_range = int(radius / 11) + 1
+    grid_range = min(int(radius / 11) + 1, 8)
 
     conn = get_db_connection()
-    query = text("""
+    live = public_is_sponsored_sql("")
+    query = text(f"""
         SELECT id,
                business_name,
                listing_type,
@@ -19,16 +26,17 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
                state,
                latitude,
                longitude,
-               phone,
+               user_phone AS phone,
                whatsapp,
                description,
                rating,
                total_reviews,
                is_verified,
                is_premium,
-               is_sponsored
+               CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
         FROM listings
         WHERE is_active = 1
+          AND status = 'approved'
           AND lat_grid BETWEEN :lat_min AND :lat_max
           AND lng_grid BETWEEN :lng_min AND :lng_max
     """)
@@ -69,6 +77,7 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
             "verified": bool(row._mapping["is_verified"]),
             "premium": bool(row._mapping["is_premium"]),
             "sponsored": bool(row._mapping["is_sponsored"]),
+            "is_sponsored": bool(row._mapping["is_sponsored"]),
             "distance_km": round(distance, 2)
         })
 

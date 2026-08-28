@@ -6,6 +6,8 @@ from datetime import datetime
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.subscription_access import is_subscription_active
+from services.authz import db_user_is_admin  # noqa: F401 — re-export
+
 
 def requires_active_plan(*allowed_roles):
     def decorator(f):
