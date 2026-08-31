@@ -61,6 +61,7 @@ class PlanMappingTests(unittest.TestCase):
         display, spec = get_plan_spec("business_premium")
         self.assertEqual(display, "Business Premium")
         self.assertEqual(spec["role"], "business_premium")
+        self.assertEqual(spec["amount_paise"], 149900)
 
     def test_unknown_plan(self):
         display, spec = get_plan_spec("gold")

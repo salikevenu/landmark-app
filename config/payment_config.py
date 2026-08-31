@@ -27,7 +27,7 @@ PLANS = {
     "Business Premium": {
         "plan": "business_premium",
         "role": "business_premium",
-        "amount_paise": 199900,
+        "amount_paise": 149900,
         "duration_days": 30,
         "business_limit": 3,
     },
