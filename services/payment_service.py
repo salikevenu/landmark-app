@@ -57,9 +57,10 @@ def _expiry_date(duration_days):
     return (datetime.utcnow() + timedelta(days=duration_days)).strftime("%Y-%m-%d")
 
 
-def ensure_payments_plan_column():
+def ensure_payments_plan_column(conn=None):
     """Smallest schema add: payments.plan (display or internal key)."""
-    conn = get_db_connection()
+    if conn is None:
+        conn = get_db_connection()
     try:
         conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan TEXT"))
         conn.execute(text("ALTER TABLE payments ADD COLUMN IF NOT EXISTS order_id TEXT"))
@@ -70,10 +71,11 @@ def ensure_payments_plan_column():
         except Exception:
             pass
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def success_payload(message, spec, expiry, extra=None):
@@ -445,13 +447,8 @@ def _fetch_captured_payment(client, razorpay_order_id, razorpay_payment_id):
         return None, error_payload("Payment does not belong to this order")
     return payment, None
 
-
 def verify_payment_service(data, user_id):
-    """Canonical verifier used by POST /api/payment/verify-payment.
-
-    Trusts: Razorpay signature, Razorpay payment/order fetch, server-side payments row.
-    Does not trust frontend plan, amount, role, expiry, user_id, or payment status.
-    """
+    """Canonical verifier used by POST /api/payment/verify-payment."""
     uid = _as_int_user_id(user_id)
     if uid is None:
         return error_payload("Authentication required", 401)

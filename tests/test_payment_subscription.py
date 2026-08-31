@@ -558,6 +558,12 @@ class CrossUserVerifyPaymentTests(unittest.TestCase):
             "amount": 99900,
             "notes": {"plan": "business_basic", "user_id": str(notes_user_id)},
         }
+        client.payment.fetch.return_value = {
+            "status": "captured",
+            "order_id": "order_a",
+            "amount": 99900,
+            "notes": {"plan": "business_basic", "user_id": str(notes_user_id)},
+        }
         client.order.create.side_effect = AssertionError("must not create a Razorpay order")
         return client
 
@@ -567,7 +573,8 @@ class CrossUserVerifyPaymentTests(unittest.TestCase):
              patch("services.payment_service.ensure_payments_plan_column"), \
              patch("services.payment_service.get_db_connection", side_effect=store.connect), \
              patch.object(payment_routes_mod, "get_db_connection", side_effect=store.connect), \
-             patch.object(payment_routes_mod, "process_referral_commission") as credit:
+             patch("services.referral_commission.get_db_connection", side_effect=store.connect), \
+             patch.object(payment_routes_mod, "after_payment_finalized") as credit:
             res = self.client.post(
                 "/api/payment/verify-payment",
                 json={
@@ -876,3 +883,4 @@ class CreateListingFlowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

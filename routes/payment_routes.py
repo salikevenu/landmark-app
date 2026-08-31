@@ -256,6 +256,7 @@ def wallet_balance():
     return jsonify({"wallet_balance": balance})
 
 
+
 @payment_bp.route("/wallet-transactions", methods=["GET"])
 @jwt_required()
 def wallet_transactions():
@@ -278,14 +279,18 @@ def verify_payment():
         return jsonify({"success": False, "error": "Authentication required."}), 401
     data = request.get_json(silent=True) or {}
     result = verify_payment_service(data, user_id)
+    
     amount_paise = _payment_amount_paise(
         user_id,
         data.get("razorpay_order_id"),
         data.get("razorpay_payment_id"),
     )
-    _credit_referral_after_payment(result, user_id, amount_paise)
+    
+    # ✅ ONLY call this if the payment was successful
+    if result.get("success"):
+        _credit_referral_after_payment(result, user_id, amount_paise)
+    
     return _json_from_result(result)
-
 
 @payment_bp.route("/razorpay/webhook", methods=["POST"])
 def razorpay_webhook():
