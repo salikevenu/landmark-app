@@ -510,7 +510,7 @@
             </a>
             <a href="/my-listings" title="{{ _('my_listings') }}">💼 {{ _('my_listings') }}</a>
             <a href="/analytics" title="{{ _('analytics') }}">📊 {{ _('analytics') }}</a>
-            <a href="/api/user/invite" title="{{ _('referrals') }}">👥 {{ _('referrals') }}</a>
+            <a href="{{ url_for('user.invite') }}" title="{{ _('referrals') }}">👥 {{ _('referrals') }}</a>
             <a href="/api/user/rank" title="Rank">🎖️ Rank</a>
             <a href="/reviews" title="{{ _('reviews') }}">⭐ {{ _('reviews') }}</a>
             <a href="/api/user/profile" title="{{ _('profile') }}">👤 {{ _('profile') }}</a>

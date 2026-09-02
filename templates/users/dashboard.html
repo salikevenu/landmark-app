@@ -153,6 +153,7 @@
     border-left: 4px solid var(--gold-primary);
     font-weight: 600;
     color: var(--text-dark);
+    text-decoration: none;
     transition: 0.2s;
   }
   .earn-card:hover {
@@ -262,7 +263,7 @@
       <span style="font-size:28px;">📊</span>
       <div>Analytics</div>
     </a>
-    <a href="/api/user/invite" class="action-card">
+    <a href="{{ url_for('user.invite') }}" class="action-card">
       <img src="{{ url_for('static', filename='images/icons/invite.png') }}" class="action-icon-img">
       <div>Referrals</div>
     </a>
@@ -288,7 +289,7 @@
   <div class="section">
     <div class="section-title">💸 Earn with LANDMARK</div>
     <div class="grid-earn">
-      <div class="earn-card">👥 Invite & Earn</div>
+      <a href="{{ url_for('user.invite') }}" class="earn-card">👥 Invite & Earn</a>
       <div class="earn-card">🚀 Boost Business</div>
       <div class="earn-card">🏆 Premium Listing</div>
       <div class="earn-card">📣 Ads Promotion</div>

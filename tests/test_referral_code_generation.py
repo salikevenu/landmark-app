@@ -368,6 +368,89 @@ class ReferralCardFrontendTests(unittest.TestCase):
         self.assertIn('id="cardPreviewWrap"', self.src)
 
 
+class DashboardReferralNavigationTests(unittest.TestCase):
+    """The canonical HTML referral page (GET /api/user/invite, endpoint
+    'user.invite') vs. the JSON API (GET /api/user/api/invite, endpoint
+    'user.api_invite') must stay distinct, and every dashboard entry point
+    (sidebar, dashboard shortcut, Earn-with-LANDMARK card) must resolve to
+    the HTML page via url_for — never a hardcoded string, never the API."""
+
+    def test_invite_page_route_renders_the_referral_page_without_a_server_side_gate(self):
+        # Matches the established pattern for every other page route in this
+        # blueprint (/profile, /dashboard, /pricing, ...): the page shell
+        # always renders; login is enforced one layer down, when the page's
+        # own JS calls the @jwt_required() JSON API and gets redirected on 401.
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        res = client.get("/api/user/invite")
+        self.assertEqual(res.status_code, 200)
+        body = res.get_data(as_text=True)
+        self.assertIn('id="shareQrBtn"', body)
+        self.assertIn('id="qrImage"', body)
+
+    def test_invite_page_enforces_login_via_the_protected_json_api(self):
+        src = (ROOT / "templates" / "users" / "invite.html").read_text(encoding="utf-8")
+        self.assertIn('LandmarkSession.authFetch("/api/user/api/invite")', src)
+        api_src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
+        api_fn = api_src.split('@user_bp.route("/api/invite")')[1].split("\n@user_bp.route")[0]
+        self.assertIn("@jwt_required()", api_fn)
+
+    def test_json_invite_api_still_requires_jwt_independently(self):
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        res = client.get("/api/user/api/invite")
+        self.assertEqual(res.status_code, 401)
+
+    def test_dashboard_invite_and_earn_is_a_link_to_the_canonical_route(self):
+        src = (ROOT / "templates" / "users" / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn(
+            '<a href="{{ url_for(\'user.invite\') }}" class="earn-card">👥 Invite & Earn</a>',
+            src,
+        )
+        # Was previously a bare <div> with no href/onclick — must not regress.
+        self.assertNotIn('<div class="earn-card">👥 Invite & Earn</div>', src)
+
+    def test_dashboard_shortcut_referrals_uses_url_for_canonical_route(self):
+        src = (ROOT / "templates" / "users" / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("href=\"{{ url_for('user.invite') }}\" class=\"action-card\"", src)
+        self.assertNotIn('href="/api/user/invite" class="action-card"', src)
+
+    def test_sidebar_referrals_uses_url_for_canonical_route(self):
+        src = (ROOT / "templates" / "layouts" / "layout_app.html").read_text(encoding="utf-8")
+        self.assertIn("href=\"{{ url_for('user.invite') }}\" title=\"{{ _('referrals') }}\"", src)
+        self.assertNotIn('href="/api/user/invite" title="{{ _(\'referrals\') }}"', src)
+
+    def test_no_duplicate_referral_html_routes_exist(self):
+        # Exactly one route renders the referral page (user.invite), exactly
+        # one is the JSON API (user.api_invite). app.py's top-level /invite
+        # is a pure redirect into user.invite (a convenience alias, not a
+        # second page) and must stay that way — never render its own content.
+        from app import app as flask_app
+        invite_rules = {
+            rule.endpoint: rule.rule
+            for rule in flask_app.url_map.iter_rules()
+            if "invite" in rule.rule
+        }
+        self.assertEqual(
+            invite_rules,
+            {"user.invite": "/api/user/invite", "user.api_invite": "/api/user/api/invite", "redirect_invite": "/invite"},
+        )
+        app_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        redirect_fn = app_src.split("def redirect_invite")[1].split("\n@app.route")[0]
+        self.assertIn("redirect(", redirect_fn)
+        self.assertNotIn("render_template", redirect_fn)
+
+    def test_admin_referrals_page_is_unrelated_and_untouched(self):
+        # /admin/referrals is a separate admin analytics page, not the
+        # user-facing referral share page — confirm the two never collide.
+        from app import app as flask_app
+        with flask_app.test_request_context("/admin/referrals"):
+            from flask import request
+            self.assertNotEqual(request.endpoint, "user.invite")
+
+
 class QrCodeEndpointTests(unittest.TestCase):
     """Requirement 12/13: QR encodes the referral URL and never touches the DB
     or attributes a referral — viewing/scanning a QR must not credit anything."""
