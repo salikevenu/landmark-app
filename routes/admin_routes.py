@@ -1,7 +1,14 @@
 import io
 import os
 from flask import Blueprint, jsonify, render_template, request, send_file, redirect, make_response, url_for
-from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity, create_access_token, set_access_cookies
+from flask_jwt_extended import (
+    jwt_required,
+    get_jwt,
+    get_jwt_identity,
+    create_access_token,
+    set_access_cookies,
+    verify_jwt_in_request,
+)
 from database.init_db import get_db_connection
 from functools import wraps
 from datetime import timedelta, datetime
@@ -40,6 +47,28 @@ def admin_required(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+def _current_request_is_admin():
+    """True only if THIS request already carries a currently-valid admin
+    access-token cookie, re-confirmed live against the DB — the exact same
+    two checks admin_required uses (JWT role claim + db_user_is_admin), so
+    this can never treat a non-admin as an admin.
+
+    Uses verify_jwt_in_request(optional=True), which only swallows a
+    genuinely MISSING token (returns False below, unauthenticated case). An
+    expired or otherwise invalid token is deliberately NOT caught here: that
+    exception propagates to the app's existing global JWT error handlers
+    (app.py's expired/invalid loaders), the same silent-refresh path every
+    other protected admin page already relies on — so a stale access token
+    with a still-valid refresh cookie transparently refreshes instead of
+    this helper misreporting "not logged in".
+    """
+    if verify_jwt_in_request(optional=True) is None:
+        return False
+    claims = get_jwt()
+    if claims.get("role") != "admin":
+        return False
+    return db_user_is_admin(get_jwt_identity())
+
 def get_admin_info():
     """Helper to get current admin id and phone from JWT (id or phone identity)."""
     identity = get_jwt_identity()
@@ -70,6 +99,13 @@ def get_admin_info():
 
 @admin_bp.route("/admin/login")
 def admin_login_page():
+    """An already-authenticated admin must never be shown a fresh OTP
+    form here — otherwise Chrome's back button (or a bookmark/autocomplete
+    hit on this exact URL) always looks like a lost session even when the
+    cookies are still perfectly valid. Anyone else (no session, an expired
+    one, or a non-admin's valid one) sees the normal login form."""
+    if _current_request_is_admin():
+        return redirect("/admin/dashboard")
     return render_template("admin/admin_login.html")
 
 @admin_bp.route("/admin")

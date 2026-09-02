@@ -90,7 +90,7 @@ async function verifyOTP() {
 
     // ✅ Handle success (even if the backend returns a different format)
     if (res.ok && (data.success === true || data.message === "Login successful")) {
-      window.location.href = "/admin/dashboard";
+      window.location.replace("/admin/dashboard");
     } else {
       // Show the exact error from the backend
       statusEl.innerText = data.message || data.error || "Incorrect OTP. Please try again.";

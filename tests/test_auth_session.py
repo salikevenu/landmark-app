@@ -164,6 +164,105 @@ class CookieSessionTests(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
 
 
+def _authz_conn(role):
+    """Fakes services.authz.get_db_connection's single fetchone() query,
+    same minimal shape as tests/test_ranger_security.py's _conn helper."""
+    class Conn:
+        def execute(self, query, params=None):
+            res = MagicMock()
+            res.fetchone.return_value = SimpleNamespace(_mapping={"role": role}) if role is not None else None
+            return res
+
+        def close(self):
+            return None
+
+    return Conn()
+
+
+class AdminLoginSessionRedirectTests(unittest.TestCase):
+    """/admin/login must not show a fresh OTP form to an already-authenticated
+    admin — that's what made Android Chrome's back button (and revisiting a
+    bookmarked/autocompleted /admin/login URL) look like a lost session even
+    when the cookies were still perfectly valid."""
+
+    def setUp(self):
+        from routes.admin_routes import admin_bp
+        self.app = Flask(__name__, template_folder=str(ROOT / "templates"))
+        self.app.config.update(
+            SECRET_KEY="test-secret",
+            JWT_SECRET_KEY="test-jwt-secret-key-32bytes-long",
+            JWT_TOKEN_LOCATION=["cookies", "headers"],
+            JWT_COOKIE_SECURE=False,
+            JWT_COOKIE_CSRF_PROTECT=False,
+            JWT_ACCESS_COOKIE_NAME="access_token",
+        )
+        JWTManager(self.app)
+        self.app.register_blueprint(admin_bp)
+        self.client = self.app.test_client()
+
+    def _token(self, uid, role="free"):
+        with self.app.app_context():
+            return create_access_token(identity=str(uid), additional_claims={"role": role})
+
+    def test_unauthenticated_admin_login_still_renders_otp_form(self):
+        res = self.client.get("/admin/login")
+        self.assertEqual(res.status_code, 200)
+
+    def test_authenticated_admin_is_redirected_to_dashboard(self):
+        self.client.set_cookie("access_token", self._token(1, role="admin"))
+        with patch("services.authz.get_db_connection", return_value=_authz_conn("admin")):
+            res = self.client.get("/admin/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/admin/dashboard", res.headers.get("Location", ""))
+
+    def test_authenticated_non_admin_cannot_reach_admin_dashboard_this_way(self):
+        """A normal authenticated user's valid session must never be treated
+        as an admin session, regardless of what the JWT role claim says."""
+        self.client.set_cookie("access_token", self._token(2, role="free"))
+        with patch("services.authz.get_db_connection", return_value=_authz_conn("free")):
+            res = self.client.get("/admin/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 200)
+
+    def test_forged_admin_role_claim_without_db_confirmation_still_sees_login_form(self):
+        """Same double-check admin_required already relies on: the JWT role
+        claim alone is not enough, db_user_is_admin must also agree."""
+        self.client.set_cookie("access_token", self._token(3, role="admin"))
+        with patch("services.authz.get_db_connection", return_value=_authz_conn("free")):
+            res = self.client.get("/admin/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 200)
+
+    def test_expired_admin_token_does_not_crash_admin_login(self):
+        """Must not weaken or bypass the existing expired-token handling —
+        just must not blow up with an unhandled error either."""
+        with self.app.app_context():
+            token = create_access_token(
+                identity="1", additional_claims={"role": "admin"}, expires_delta=timedelta(seconds=-5)
+            )
+        self.client.set_cookie("access_token", token)
+        res = self.client.get("/admin/login")
+        self.assertIn(res.status_code, (200, 302, 401, 422))
+
+    def test_current_request_is_admin_does_not_swallow_expired_or_invalid_tokens(self):
+        """Only a genuinely MISSING token may be treated as 'not logged in'
+        here. An expired/invalid token must keep propagating to the app's
+        existing global JWT error handlers (the silent-refresh path every
+        other protected admin page already relies on) instead of being
+        caught and misreported as 'no session' by this helper."""
+        src = (ROOT / "routes" / "admin_routes.py").read_text(encoding="utf-8")
+        fn_src = src.split("def _current_request_is_admin")[1].split("\ndef ")[0]
+        self.assertIn("verify_jwt_in_request(optional=True)", fn_src)
+        self.assertNotIn("except ", fn_src)
+        self.assertNotIn("except:", fn_src)
+
+    def test_admin_login_success_uses_location_replace_not_href(self):
+        """location.replace (not .href =) drops /admin/login from browser
+        history, so Android Chrome's back button from the dashboard can no
+        longer land back on a stale login form."""
+        html = (ROOT / "templates" / "admin" / "admin_login.html").read_text(encoding="utf-8")
+        self.assertIn('window.location.replace("/admin/dashboard")', html)
+        self.assertNotIn('window.location.href = "/admin/dashboard"', html)
+
+
 class FrontendAuthGateTests(unittest.TestCase):
     def test_create_listing_does_not_stop_on_empty_localstorage(self):
         html = (ROOT / "templates" / "users" / "create_listing.html").read_text(encoding="utf-8")
