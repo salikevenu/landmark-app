@@ -297,6 +297,18 @@ def index():
     t = get_translations(lang)
     return render_template("public/index.html", t=t)
 
+@app.route("/join")
+def join():
+    """Referral entry point: /join?ref=CODE. Same capture-and-redirect
+    pattern as '/' and '/download-app' — canonical signup URL stays
+    /register?ref=CODE, this is just a friendlier shareable alias."""
+    ref = (request.args.get("ref") or "").strip()
+    if ref:
+        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
+        cache_landing_referral_code(ref)
+        return redirect(register_url_with_ref(ref))
+    return redirect("/register")
+
 @app.route("/dashboard")
 def redirect_dashboard():
     return redirect("/api/user/dashboard")

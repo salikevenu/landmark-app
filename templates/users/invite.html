@@ -144,6 +144,64 @@
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
+  .qr-wrap {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1.1rem;
+  }
+  .qr-wrap img {
+    width: 176px;
+    height: 176px;
+    border-radius: 1rem;
+    background: #fff;
+    padding: 10px;
+    border: 1px solid rgba(0, 255, 255, 0.28);
+  }
+  .ref-code {
+    font-size: 1.4rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #0ff;
+    margin-bottom: 0.9rem;
+  }
+  .referral-count {
+    margin-top: 1.1rem;
+    color: #9bb;
+    font-size: 0.9rem;
+  }
+  .referral-count strong {
+    color: #e0f2fe;
+    font-size: 1.1rem;
+  }
+  .card-status {
+    margin-top: 0.6rem;
+    color: #ffd166;
+    font-size: 0.82rem;
+  }
+  .card-preview-card {
+    text-align: center;
+  }
+  .card-preview-card h2 {
+    font-size: 1.1rem;
+    color: #e0f2fe;
+    margin-bottom: 0.25rem;
+  }
+  .card-preview-card .lead {
+    margin-bottom: 1rem;
+  }
+  #cardPreview {
+    width: 100%;
+    max-width: 340px;
+    height: auto;
+    border-radius: 1rem;
+    box-shadow: 0 20px 35px -15px rgba(0,0,0,0.5);
+    display: block;
+    margin: 0 auto;
+  }
+  @media (max-width: 420px) {
+    .qr-wrap img { width: 148px; height: 148px; }
+    .invite-actions button, .invite-actions a.btn { flex: 1 1 auto; justify-content: center; }
+  }
 </style>
 {% endblock %}
 
@@ -163,15 +221,30 @@
       <h1>Invite <span class="gradient">Friends</span></h1>
       <p class="lead">Share your referral link and earn when they subscribe.</p>
 
+      <div class="qr-wrap">
+        <img id="qrImage" src="" alt="QR code for your LANDMARK referral link" width="176" height="176" hidden>
+      </div>
+      <div class="ref-code" id="refCode" aria-live="polite"></div>
+
       <div class="ref-link-box">
-        <input type="text" id="referralLink" readonly>
-        <button type="button" id="copyBtn">📋 Copy</button>
+        <input type="text" id="referralLink" readonly aria-label="Your referral link">
+        <button type="button" id="copyBtn" aria-label="Copy referral link">📋 Copy</button>
       </div>
 
       <div class="invite-actions">
-        <button type="button" class="share-btn" id="shareBtn">📤 Share</button>
+        <button type="button" class="share-btn" id="shareBtn" aria-label="Share referral link">📤 Share Link</button>
         <a class="btn whatsapp-btn" id="whatsappBtn" href="https://wa.me/" target="_blank" rel="noopener">💬 WhatsApp</a>
+        <button type="button" class="share-btn" id="shareQrBtn" aria-label="Share LANDMARK referral card" hidden>🔳 Share QR</button>
       </div>
+
+      <p class="referral-count" id="referralCount" aria-live="polite">Referrals: <strong>&hellip;</strong></p>
+      <p class="card-status" id="cardStatus" aria-live="polite" hidden></p>
+    </div>
+
+    <div class="card-preview-card" id="cardPreviewWrap" hidden>
+      <h2>Your Referral Card</h2>
+      <p class="lead">This is exactly what gets shared when you tap "Share QR".</p>
+      <img id="cardPreview" alt="Preview of your LANDMARK referral card, ready to share">
     </div>
   </div>
 </div>
@@ -181,15 +254,30 @@
 {% block extra_scripts %}
 <script>
 (function () {
+  const LOGO_URL = "{{ url_for('static', filename='images/landmark-logo.png') }}";
+
   const linkInput = document.getElementById("referralLink");
   const copyBtn = document.getElementById("copyBtn");
   const shareBtn = document.getElementById("shareBtn");
+  const shareQrBtn = document.getElementById("shareQrBtn");
   const whatsappBtn = document.getElementById("whatsappBtn");
   const toast = document.getElementById("copyToast");
+  const qrImage = document.getElementById("qrImage");
+  const refCode = document.getElementById("refCode");
+  const referralCount = document.getElementById("referralCount");
+  const cardStatus = document.getElementById("cardStatus");
+  const cardPreviewWrap = document.getElementById("cardPreviewWrap");
+  const cardPreview = document.getElementById("cardPreview");
   let toastTimer = null;
+  let currentCode = "";
+  let currentLinkValue = "";
+  let currentCount = 0;
+  let cardBlob = null;
+  let cardBuildPromise = null;
+  let cardObjectUrl = null;
 
   function shareText(link) {
-    return "Join me on LANDMARK! Earn local business rewards. Use my referral link: " + link;
+    return "Join me on LANDMARK and discover local businesses near you. Use my referral link: " + link;
   }
 
   function currentLink() {
@@ -217,12 +305,26 @@
       const res = await LandmarkSession.authFetch("/api/user/api/invite");
       const data = await res.json();
       if (data.referral_code) {
-        linkInput.value = window.location.origin + "/register?ref=" + data.referral_code;
+        currentCode = data.referral_code;
+        // Use the backend-computed referral_link exactly as returned — never
+        // reconstruct it client-side, so the QR (also server-generated from
+        // this same code) and the shared link can never drift apart.
+        currentLinkValue = data.referral_link || "";
+        linkInput.value = currentLinkValue || (window.location.origin + "/register?ref=" + data.referral_code);
+        refCode.textContent = data.referral_code;
+        qrImage.src = "/qr/" + encodeURIComponent(data.referral_code);
+        qrImage.hidden = false;
+        shareQrBtn.hidden = false;
+        currentCount = Number.isFinite(data.referral_count) ? data.referral_count : 0;
+        referralCount.innerHTML = "Referrals: <strong>" + currentCount + "</strong>";
+        buildReferralCard(); // pre-generate so the preview + share are instant
       } else {
         linkInput.value = "No referral code available";
+        referralCount.innerHTML = "Referrals: <strong>0</strong>";
       }
     } catch (err) {
       linkInput.value = "Error loading referral code";
+      referralCount.textContent = "Referrals: unavailable";
     }
     updateWhatsApp();
   }
@@ -264,8 +366,267 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Branded referral card: rendered client-side onto a <canvas> from the
+  // server-generated QR (/qr/<code>, unchanged) + the app's real logo
+  // (static/images/landmark-logo.png, same file used in the header) +
+  // the referral_code/referral_link/referral_count already loaded above.
+  // No new image assets are invented; nothing here touches the backend.
+  // ---------------------------------------------------------------------
+
+  function loadImage(src) {
+    return new Promise(function (resolve, reject) {
+      const img = new Image();
+      img.crossOrigin = "anonymous"; // harmless for same-origin; future-proofs a CDN move
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error("Failed to load " + src)); };
+      img.src = src;
+    });
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /** Draws centered, word-wrapped text and returns the y cursor after it. */
+  function wrapCenteredText(ctx, text, cx, y, maxWidth, lineHeight) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    let line = "";
+    for (let i = 0; i < words.length; i++) {
+      const test = line ? line + " " + words[i] : words[i];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        ctx.fillText(line, cx, y);
+        line = words[i];
+        y += lineHeight;
+      } else {
+        line = test;
+      }
+    }
+    if (line) {
+      ctx.fillText(line, cx, y);
+      y += lineHeight;
+    }
+    return y;
+  }
+
+  /** Builds the full branded referral card as a PNG Blob. Cached in cardBlob;
+   * safe to call repeatedly (in-flight build is de-duplicated). */
+  function buildReferralCard() {
+    if (cardBlob) return Promise.resolve(cardBlob);
+    if (cardBuildPromise) return cardBuildPromise;
+    if (!currentCode) return Promise.resolve(null);
+
+    cardBuildPromise = (async function () {
+      cardStatus.hidden = false;
+      cardStatus.textContent = "Preparing your referral card…";
+      try {
+        const [logoImg, qrImg] = await Promise.all([
+          loadImage(LOGO_URL),
+          loadImage("/qr/" + encodeURIComponent(currentCode))
+        ]);
+
+        const W = 1080, H = 1650;
+        const canvas = document.createElement("canvas");
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext("2d");
+
+        // Background
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+
+        let y = 100;
+
+        // Logo
+        const logoSize = 140;
+        ctx.drawImage(logoImg, W / 2 - logoSize / 2, y, logoSize, logoSize);
+        y += logoSize + 40;
+
+        // Wordmark
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "800 54px Poppins, Inter, sans-serif";
+        ctx.fillText("LANDMARK", W / 2, y);
+        y += 44;
+
+        // Tagline
+        ctx.fillStyle = "#0ea5e9";
+        ctx.font = "600 28px Inter, sans-serif";
+        ctx.fillText("Discover Local. Grow Global.", W / 2, y);
+        y += 50;
+
+        // Divider
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(W / 2 - 220, y);
+        ctx.lineTo(W / 2 + 220, y);
+        ctx.stroke();
+        y += 64;
+
+        // Invitation
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "800 46px Poppins, Inter, sans-serif";
+        ctx.fillText("Join me on LANDMARK!", W / 2, y);
+        y += 48;
+
+        ctx.fillStyle = "#475569";
+        ctx.font = "400 28px Inter, sans-serif";
+        ctx.fillText("Discover amazing local businesses near you.", W / 2, y);
+        y += 64;
+
+        // QR panel — generous quiet zone, no decoration over the code itself
+        const qrSize = 560;
+        const qrPad = 32;
+        const panelSize = qrSize + qrPad * 2;
+        const panelX = W / 2 - panelSize / 2;
+        roundRect(ctx, panelX, y, panelSize, panelSize, 28);
+        ctx.fillStyle = "#f8fafc";
+        ctx.fill();
+        ctx.strokeStyle = "#0ea5e9";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        const smoothingWasEnabled = ctx.imageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = false; // keep QR edges crisp when upscaling
+        ctx.drawImage(qrImg, panelX + qrPad, y + qrPad, qrSize, qrSize);
+        ctx.imageSmoothingEnabled = smoothingWasEnabled;
+        y += panelSize + 56;
+
+        // Scan instruction
+        ctx.fillStyle = "#0ea5e9";
+        ctx.font = "800 32px Poppins, Inter, sans-serif";
+        ctx.fillText("SCAN TO JOIN LANDMARK", W / 2, y);
+        y += 70;
+
+        // Referral code
+        ctx.fillStyle = "#64748b";
+        ctx.font = "600 22px Inter, sans-serif";
+        ctx.fillText("MY REFERRAL CODE", W / 2, y);
+        y += 54;
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "800 46px Poppins, Inter, monospace";
+        ctx.fillText(currentCode, W / 2, y);
+        y += 66;
+
+        // Referral link (the exact backend-provided referral_link — not rebuilt)
+        ctx.fillStyle = "#64748b";
+        ctx.font = "600 22px Inter, sans-serif";
+        ctx.fillText("MY REFERRAL LINK", W / 2, y);
+        y += 38;
+        ctx.fillStyle = "#0ea5e9";
+        ctx.font = "500 26px Inter, sans-serif";
+        y = wrapCenteredText(ctx, currentLinkValue, W / 2, y, W - 180, 34);
+        y += 20;
+
+        // Short explanation
+        ctx.fillStyle = "#475569";
+        ctx.font = "400 24px Inter, sans-serif";
+        y = wrapCenteredText(
+          ctx,
+          "Scan the QR code or use my referral link to join LANDMARK.",
+          W / 2, y, W - 220, 32
+        );
+        y += 24;
+
+        // Referral count
+        ctx.fillStyle = "#0f172a";
+        ctx.font = "700 28px Inter, sans-serif";
+        ctx.fillText("My Referrals: " + currentCount, W / 2, y);
+
+        // Footer
+        ctx.strokeStyle = "#e2e8f0";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(W / 2 - 220, H - 90);
+        ctx.lineTo(W / 2 + 220, H - 90);
+        ctx.stroke();
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "600 24px Inter, sans-serif";
+        ctx.fillText("Discover Local. Grow Global.", W / 2, H - 50);
+
+        const blob = await new Promise(function (resolve) {
+          canvas.toBlob(resolve, "image/png");
+        });
+        cardBlob = blob;
+
+        if (cardObjectUrl) URL.revokeObjectURL(cardObjectUrl);
+        cardObjectUrl = URL.createObjectURL(blob);
+        cardPreview.src = cardObjectUrl;
+        cardPreviewWrap.hidden = false;
+        cardStatus.hidden = true;
+        return blob;
+      } catch (err) {
+        cardStatus.hidden = false;
+        cardStatus.textContent = "Couldn't prepare the referral card — you can still share the link or QR image below.";
+        return null;
+      } finally {
+        cardBuildPromise = null;
+      }
+    })();
+    return cardBuildPromise;
+  }
+
+  function downloadCard(blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "landmark-referral-card.png";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  }
+
+  async function shareQr() {
+    if (!currentCode) return;
+    shareQrBtn.disabled = true;
+    try {
+      const blob = await buildReferralCard();
+      if (!blob) {
+        // Card generation failed — fall back to the raw QR image, same as before.
+        window.open("/qr/" + encodeURIComponent(currentCode), "_blank", "noopener");
+        return;
+      }
+      const file = new File([blob], "landmark-referral-card.png", { type: "image/png" });
+      const shareMessage =
+        "Join me on LANDMARK!\n\n" +
+        "Discover amazing local businesses near you.\n\n" +
+        "Scan the QR code or use my referral link:\n" + currentLinkValue + "\n\n" +
+        "Referral Code: " + currentCode;
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ title: "Join LANDMARK", text: shareMessage, files: [file] });
+          return;
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          // fall through to the download fallback below
+        }
+      }
+      // No native file-sharing support on this browser/platform: save the
+      // card locally (no filesystem path is ever shown to the user — this
+      // is a blob: URL the browser resolves into its own downloads flow),
+      // and offer a text share if that alone is supported.
+      downloadCard(blob);
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: "Join LANDMARK", text: shareMessage, url: currentLinkValue });
+        } catch (err) { /* user cancelled or unsupported combination — download already happened */ }
+      }
+    } finally {
+      shareQrBtn.disabled = false;
+    }
+  }
+
   copyBtn.addEventListener("click", copyLink);
   shareBtn.addEventListener("click", nativeShare);
+  shareQrBtn.addEventListener("click", shareQr);
   loadReferral();
 })();
 </script>

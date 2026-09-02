@@ -428,6 +428,38 @@ class LandingRouteTests(unittest.TestCase):
             self.assertEqual(down.status_code, 302)
             self.assertIn("/register?ref=REFCODE1", down.headers.get("Location", ""))
 
+    def test_join_route_redirects_with_ref(self):
+        store = ReferralStore()
+        store.add_user("9998887777", "REFCODE1")
+        engine = FakeEngine(store)
+        with patch.object(auth_routes, "engine", engine):
+            from app import app as flask_app
+            flask_app.config["TESTING"] = True
+            client = flask_app.test_client()
+            join = client.get("/join?ref=REFCODE1")
+            self.assertEqual(join.status_code, 302)
+            self.assertIn("/register?ref=REFCODE1", join.headers.get("Location", ""))
+
+    def test_join_route_without_ref_goes_to_register(self):
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        join = client.get("/join")
+        self.assertEqual(join.status_code, 302)
+        self.assertIn("/register", join.headers.get("Location", ""))
+        self.assertNotIn("ref=", join.headers.get("Location", ""))
+
+    def test_join_route_with_invalid_ref_does_not_attribute_but_still_redirects(self):
+        store = ReferralStore()
+        engine = FakeEngine(store)
+        with patch.object(auth_routes, "engine", engine):
+            from app import app as flask_app
+            flask_app.config["TESTING"] = True
+            client = flask_app.test_client()
+            join = client.get("/join?ref=NOSUCHCODE")
+            self.assertEqual(join.status_code, 302)
+            self.assertIn("/register?ref=NOSUCHCODE", join.headers.get("Location", ""))
+
     def test_qr_encodes_register_url(self):
         from routes.auth_routes import register_url_with_ref
         self.assertTrue(register_url_with_ref("REFCODE1").startswith("/register?ref="))

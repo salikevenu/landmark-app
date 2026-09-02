@@ -475,9 +475,14 @@ def api_invite():
         else:
             logger.error("Could not assign a unique referral_code to user id=%s", user_id)
             return jsonify({"error": "Could not generate referral code. Please try again."}), 503
+    referral_count = conn.execute(
+        text("SELECT COUNT(*) AS cnt FROM users WHERE referred_by = :uid"),
+        {"uid": user_id}
+    ).fetchone()._mapping["cnt"]
     return jsonify({
         "referral_code": referral_code,
         "referral_link": referral_link_for(referral_code),
+        "referral_count": referral_count,
     })
 
 # ------------------------------------------------------------

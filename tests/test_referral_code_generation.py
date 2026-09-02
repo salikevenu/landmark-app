@@ -104,8 +104,8 @@ class UsersStore:
     def __init__(self):
         self.users = {}
 
-    def add(self, uid, referral_code=None):
-        self.users[uid] = {"id": uid, "referral_code": referral_code}
+    def add(self, uid, referral_code=None, referred_by=None):
+        self.users[uid] = {"id": uid, "referral_code": referral_code, "referred_by": referred_by}
 
 
 class FakeConn:
@@ -125,6 +125,11 @@ class FakeConn:
         if q.startswith("select referral_code from users where id"):
             u = self.store.users.get(int(params.get("uid")))
             return FakeResult(FakeRow({"referral_code": u["referral_code"]}) if u else None)
+
+        if q.startswith("select count(*) as cnt from users where referred_by"):
+            uid = int(params.get("uid"))
+            cnt = sum(1 for u in self.store.users.values() if u.get("referred_by") == uid)
+            return FakeResult(FakeRow({"cnt": cnt}))
 
         if q.startswith("update users set referral_code"):
             code = params["code"]
@@ -279,6 +284,124 @@ class ApiInviteTests(unittest.TestCase):
         invite_src = src.split("def api_invite")[1].split("\n@user_bp.route")[0]
         self.assertNotIn("token_urlsafe", invite_src)
         self.assertIn("generate_referral_code", invite_src)
+
+    def test_invite_returns_referral_count(self):
+        self.store.add(4, referral_code="REFERRER")
+        self.store.add(5, referral_code="AAAAAAAA", referred_by=4)
+        self.store.add(6, referral_code="BBBBBBBB", referred_by=4)
+        conn = FakeConn(self.store)
+        with patch("routes.user_routes.get_db_connection", return_value=conn):
+            res = self.client.get("/api/user/api/invite", headers=self._headers(4))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["referral_count"], 2)
+
+    def test_invite_referral_count_zero_for_new_user(self):
+        with patch("routes.user_routes.get_db_connection", return_value=self.conn):
+            res = self.client.get("/api/user/api/invite", headers=self._headers(2))
+        self.assertEqual(res.get_json()["referral_count"], 0)
+
+
+class ReferralCardFrontendTests(unittest.TestCase):
+    """The invite page's branded 'Share QR' card: reuses the real logo and
+    the backend-provided referral_link, never a reconstructed URL or any
+    private user field. Source-text checks, matching this file's existing
+    style for JS behavior that has no Python-side test harness."""
+
+    def setUp(self):
+        self.src = (ROOT / "templates" / "users" / "invite.html").read_text(encoding="utf-8")
+
+    def test_share_qr_button_and_card_builder_present(self):
+        self.assertIn('id="shareQrBtn"', self.src)
+        self.assertIn("function buildReferralCard", self.src)
+        self.assertIn("function shareQr", self.src)
+        self.assertIn("getContext(\"2d\")", self.src)
+
+    def test_existing_share_link_and_whatsapp_buttons_still_present(self):
+        self.assertIn('id="shareBtn"', self.src)
+        self.assertIn('id="whatsappBtn"', self.src)
+        self.assertIn('id="copyBtn"', self.src)
+        self.assertIn("function nativeShare", self.src)
+        self.assertIn("wa.me", self.src)
+
+    def test_card_uses_backend_referral_link_not_a_rebuilt_url(self):
+        load_fn = self.src.split("async function loadReferral")[1].split("\n  async function")[0]
+        self.assertIn("currentLinkValue = data.referral_link", load_fn)
+        card_fn = self.src.split("function buildReferralCard")[1].split("\n  function downloadCard")[0]
+        self.assertIn("currentLinkValue", card_fn)
+        # The card drawing code must not synthesize its own /register?ref= URL —
+        # only the pre-fetch fallback (outside buildReferralCard) may do that.
+        self.assertNotIn("register?ref=", card_fn)
+
+    def test_card_uses_the_real_landmark_logo_asset(self):
+        self.assertIn("images/landmark-logo.png", self.src)
+        self.assertIn("LOGO_URL", self.src)
+        self.assertNotIn("data:image", self.src)  # no invented/inline placeholder logo
+
+    def test_card_qr_source_is_the_existing_dynamic_endpoint(self):
+        card_fn = self.src.split("function buildReferralCard")[1].split("\n  function downloadCard")[0]
+        self.assertIn('"/qr/" + encodeURIComponent(currentCode)', card_fn)
+
+    def test_card_never_draws_private_user_data(self):
+        card_fn = self.src.split("function buildReferralCard")[1].split("\n  function downloadCard")[0]
+        for forbidden in ("phone", "email", "wallet_balance", "user_id", "token", "password"):
+            self.assertNotIn(forbidden, card_fn.lower())
+
+    def test_share_qr_feature_detects_web_share_api(self):
+        share_fn = self.src.split("async function shareQr")[1].split("\n  copyBtn.addEventListener")[0]
+        self.assertIn("navigator.canShare", share_fn)
+        self.assertIn("navigator.share", share_fn)
+        # Must not assume support unconditionally.
+        self.assertNotIn("navigator.share(", share_fn.split("if (navigator.canShare")[0])
+
+    def test_share_qr_has_a_non_native_fallback(self):
+        share_fn = self.src.split("async function shareQr")[1].split("\n  copyBtn.addEventListener")[0]
+        self.assertIn("downloadCard(blob)", share_fn)
+
+    def test_shared_message_includes_link_and_code(self):
+        share_fn = self.src.split("async function shareQr")[1].split("\n  copyBtn.addEventListener")[0]
+        self.assertIn("Join me on LANDMARK!", share_fn)
+        self.assertIn("currentLinkValue", share_fn)
+        self.assertIn("Referral Code: \" + currentCode", share_fn)
+
+    def test_card_preview_element_present(self):
+        self.assertIn('id="cardPreview"', self.src)
+        self.assertIn('id="cardPreviewWrap"', self.src)
+
+
+class QrCodeEndpointTests(unittest.TestCase):
+    """Requirement 12/13: QR encodes the referral URL and never touches the DB
+    or attributes a referral — viewing/scanning a QR must not credit anything."""
+
+    def test_qr_endpoint_returns_png_without_any_db_access(self):
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+
+        def _boom(*a, **k):
+            raise AssertionError("QR generation must not touch the database")
+
+        with patch("database.init_db.get_db_connection", side_effect=_boom), \
+             patch("database.init_db.engine.connect", side_effect=_boom):
+            res = client.get("/qr/SOMECODE123")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.mimetype, "image/png")
+
+    def test_qr_content_encodes_the_referral_url(self):
+        import io
+        try:
+            from pyzbar.pyzbar import decode as _decode  # optional; skip if unavailable
+        except Exception:
+            self.skipTest("pyzbar not installed; covered instead by test_qr_encodes_register_url")
+        from PIL import Image
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        res = client.get("/qr/SOMECODE123", headers={"Host": "landmarkvts.in"})
+        img = Image.open(io.BytesIO(res.data))
+        decoded = _decode(img)
+        self.assertTrue(decoded)
+        payload = decoded[0].data.decode("utf-8")
+        self.assertIn("/register?ref=SOMECODE123", payload)
 
 
 class ReferralInfoServiceTests(unittest.TestCase):
