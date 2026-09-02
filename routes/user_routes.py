@@ -424,6 +424,10 @@ def api_browse():
 def invite():
     return render_template("users/invite.html")
 
+@user_bp.route("/rank")
+def rank_page():
+    return render_template("users/rank.html")
+
 REFERRAL_CODE_ASSIGN_ATTEMPTS = 8
 
 

@@ -14,6 +14,8 @@ from .reviews_routes import reviews_api_bp
 from .transaction_routes import transaction_bp, transactions_api_bp
 from .wallet_routes import wallet_bp
 from .withdraw_routes import withdraw_bp
+from .rank_routes import rank_bp
+from .admin_ranger_routes import admin_ranger_bp
 
 def register_routes(app):
     # Public pages (no /api prefix)
@@ -37,6 +39,8 @@ def register_routes(app):
     app.register_blueprint(transactions_api_bp)
     app.register_blueprint(wallet_bp)
     app.register_blueprint(withdraw_bp)
+    app.register_blueprint(rank_bp)
+    app.register_blueprint(admin_ranger_bp)
 
     # Visible in Render logs so a missing analytics mount cannot stay silent
     print(

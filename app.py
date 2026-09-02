@@ -579,6 +579,18 @@ def referral_commission_retry():
     result = process_pending_referral_commission_jobs(razorpay_payment_id=None, limit=100)
     return jsonify(result or {"processed": [], "failed": []}), 200
 
+@app.route('/internal/recompute-ranks', methods=['POST'])
+def recompute_ranks_internal():
+    """Nightly Rank system batch recompute + this period's Leader/Ranger
+    monthly growth reward evaluation. Both idempotent; same functions the
+    admin 'recompute now' button calls (services.rank_service)."""
+    if not _internal_job_authorized():
+        return jsonify({"error": "Unauthorized"}), 403
+    from services.rank_service import recompute_all_ranks, evaluate_monthly_rewards
+    rank_result = recompute_all_ranks()
+    reward_result = evaluate_monthly_rewards()
+    return jsonify({"rank": rank_result, "monthly_rewards": reward_result}), 200
+
 @app.route('/api/payment/webhook', methods=['POST'])
 def razorpay_webhook_dummy():
     """Unsigned path. Must not activate subscriptions or record payments."""

@@ -68,3 +68,21 @@ services:
         value: https://landmarkvts.in
       - key: SATURDAY_PAYOUT_SECRET
         sync: false
+
+  - type: cron
+    name: landmark-recompute-ranks
+    runtime: python
+    # Nightly 01:00 UTC == 06:30 IST — after the day's activity, well before
+    # any admin checks the Ranger Network dashboard in the morning. Also
+    # evaluates this month's Leader/Ranger Growth Reward eligibility
+    # (idempotent — safe to run every night within the same month).
+    schedule: "0 1 * * *"
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python3 scripts/run_internal_job.py /internal/recompute-ranks
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BASE_URL
+        value: https://landmarkvts.in
+      - key: SATURDAY_PAYOUT_SECRET
+        sync: false

@@ -536,6 +536,83 @@ def init_db():
         "ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)"
     ))
 
+    # =====================================================
+    # RANK SYSTEM (additive; reads users.referred_by, never writes it)
+    # =====================================================
+    # Index supporting downline traversal (recursive CTE joins on referred_by).
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by)"))
+
+    # Cached/materialized rank + qualification counts, rebuilt by the
+    # rank_service batch recompute. One row per user; 1:1 with users.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_rank_stats (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            rank TEXT NOT NULL DEFAULT 'unranked',
+            verified_users_count INTEGER NOT NULL DEFAULT 0,
+            active_subscribers_count INTEGER NOT NULL DEFAULT 0,
+            qualified_members_count INTEGER NOT NULL DEFAULT 0,
+            qualified_guides_count INTEGER NOT NULL DEFAULT 0,
+            qualified_leaders_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_rank_stats_rank ON user_rank_stats(rank)"))
+
+    # Append-only achievement history. Never updated or deleted so a user's
+    # past rank-ups survive even if their current rank later changes.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS rank_achievements (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            previous_rank TEXT NOT NULL,
+            new_rank TEXT NOT NULL,
+            milestone_key TEXT,
+            achieved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_achievements_user ON rank_achievements(user_id)"))
+
+    # Reward ledger. Separate from wallet_transactions and
+    # referral_transactions on purpose (Ranger/Leader rewards must never be
+    # mixed with referral commissions). Originally a one-time
+    # milestone_key-keyed ledger; the business model is now MONTHLY GROWTH
+    # REWARDS (see services/rank_service.py), identified by
+    # (user_id, reward_type, reward_period) e.g. ('leader_monthly','2026-09').
+    # reward_type/reward_period are additive columns (see the ALTER below
+    # for pre-existing deployments) — milestone_key is kept NOT NULL and
+    # still populated (with a synthetic value) for new rows so no existing
+    # constraint has to change.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS rank_rewards (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            milestone_key TEXT NOT NULL,
+            reward_type TEXT,
+            reward_period TEXT,
+            rank TEXT NOT NULL,
+            amount_inr NUMERIC(12,2) NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            approved_by INTEGER REFERENCES users(id),
+            approved_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_rank_rewards_user_milestone UNIQUE (user_id, milestone_key),
+            CONSTRAINT chk_rank_rewards_status CHECK (status IN ('pending','approved','paid','rejected'))
+        )
+    """))
+    # Additive for deployments that already created rank_rewards before
+    # the monthly-reward model existed.
+    conn.execute(text("ALTER TABLE rank_rewards ADD COLUMN IF NOT EXISTS reward_type TEXT"))
+    conn.execute(text("ALTER TABLE rank_rewards ADD COLUMN IF NOT EXISTS reward_period TEXT"))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_rank_rewards_user_type_period
+        ON rank_rewards (user_id, reward_type, reward_period)
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_rewards_user ON rank_rewards(user_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_rewards_status ON rank_rewards(status)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_rewards_period ON rank_rewards(reward_period)"))
+
     conn.commit()
     conn.close()
 

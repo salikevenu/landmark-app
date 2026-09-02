@@ -1,0 +1,364 @@
+{% extends "admin_layout.html" %}
+{% block extra_head %}
+<script src="{{ url_for('static', filename='js/session.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+{% block admin_content %}
+
+<h2>🎖️ Ranger Network</h2>
+<p style="color:#666;">Complete referral hierarchy, rank qualification, milestones, and rewards. Admin-only.</p>
+
+<div style="display:flex; gap:10px; margin:15px 0; flex-wrap:wrap;">
+  <button class="tab-btn active" data-tab="overview" onclick="showTab('overview')">Overview</button>
+  <button class="tab-btn" data-tab="network" onclick="showTab('network')">Hierarchy / Network</button>
+  <button class="tab-btn" data-tab="rewards" onclick="showTab('rewards')">Rewards</button>
+  <button class="tab-btn" data-tab="achievements" onclick="showTab('achievements')">Achievements</button>
+</div>
+
+<!-- ================= OVERVIEW ================= -->
+<div id="tab-overview" class="tab-panel">
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <p><strong>Total Users:</strong> <span id="ovTotalUsers">0</span> &nbsp;|&nbsp;
+         <strong>Rank stats last updated:</strong> <span id="ovLastUpdated">-</span></p>
+      <button onclick="recomputeNow()">🔄 Recompute Now</button>
+    </div>
+  </div>
+
+  <div class="stats-grid" id="rankDistribution"></div>
+
+  <div class="card">
+    <h3>Rank Distribution</h3>
+    <canvas id="rankChart" height="80"></canvas>
+  </div>
+
+  <div class="card">
+    <h3>Reward Totals</h3>
+    <table border="1" width="100%" cellpadding="8" style="border-collapse:collapse;">
+      <thead style="background:#f2f2f2;"><tr><th>Status</th><th>Count</th><th>Amount (₹)</th></tr></thead>
+      <tbody id="rewardTotalsBody"><tr><td colspan="3">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Leader Reward Pool — This Period</h3>
+    <p style="color:#666; font-size:0.85rem;">Financial safety cap on total Leader Growth Reward allocation for the current period. Leaders whose reward would exceed the cap receive no reward row at all (never partial) — they're counted as budget-exhausted below.</p>
+    <div id="leaderPoolPanel">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h3>Monthly Growth Reward Policy</h3>
+    <p style="color:#666; font-size:0.85rem;">Current configuration from config/rank_config.py. Rewards are evaluated monthly against CURRENT qualification, never a one-time payout, and always require admin approval — nothing here pays out automatically.</p>
+    <div id="rewardPolicyPanel">Loading...</div>
+  </div>
+</div>
+
+<!-- ================= NETWORK ================= -->
+<div id="tab-network" class="tab-panel" style="display:none;">
+  <div class="card">
+    <div style="display:flex; gap:10px; margin-bottom:15px; flex-wrap:wrap;">
+      <input type="text" id="netSearch" placeholder="Search by name, phone, or referral code" style="padding:8px; flex:1; min-width:200px;">
+      <select id="netRank" style="padding:8px;">
+        <option value="">All Ranks</option>
+        <option value="unranked">Unranked</option>
+        <option value="member">Member</option>
+        <option value="guide">Guide</option>
+        <option value="leader">Leader</option>
+        <option value="ranger">Ranger</option>
+      </select>
+      <select id="netStatus" style="padding:8px;">
+        <option value="">Active/Inactive</option>
+        <option value="active">Active</option>
+        <option value="inactive">Inactive</option>
+      </select>
+      <select id="netSubscription" style="padding:8px;">
+        <option value="">Any Subscription</option>
+        <option value="active">Subscribed</option>
+        <option value="inactive">Not Subscribed</option>
+      </select>
+      <button onclick="loadNetwork(1)">Filter</button>
+      <a href="/api/admin/ranger/export.csv"><button type="button">📥 Export CSV</button></a>
+    </div>
+
+    <p><strong>Total:</strong> <span id="netTotal">0</span></p>
+
+    <div style="overflow-x:auto;">
+      <table border="1" width="100%" cellpadding="8" style="border-collapse:collapse;">
+        <thead style="background:#f2f2f2;">
+          <tr><th>ID</th><th>Name</th><th>Phone</th><th>Rank</th><th>Verified</th><th>Active Subs</th>
+              <th>Members</th><th>Guides</th><th>Leaders</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="netTable"><tr><td colspan="11">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div id="netPagination" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<!-- ================= REWARDS ================= -->
+<div id="tab-rewards" class="tab-panel" style="display:none;">
+  <div class="card">
+    <p style="color:#666;">Milestone rewards ledger — separate from referral commissions. Approve/reject pending rewards, mark approved ones paid once actually transferred outside LANDMARK.</p>
+    <p>Pull a user's individual reward history from the Network tab → View.</p>
+  </div>
+</div>
+
+<!-- ================= ACHIEVEMENTS ================= -->
+<div id="tab-achievements" class="tab-panel" style="display:none;">
+  <div class="card">
+    <p style="color:#666;">Achievement history is per-user and append-only. Open a user from the Network tab → View to see their full achievement timeline.</p>
+  </div>
+</div>
+
+<!-- ================= USER DETAIL MODAL ================= -->
+<div id="userModal" style="display:none; position:fixed; top:5%; left:50%; transform:translateX(-50%); background:white; padding:20px; border-radius:8px; box-shadow:0 0 15px rgba(0,0,0,0.3); z-index:1000; width:520px; max-height:88vh; overflow-y:auto;">
+  <h3>Network Detail</h3>
+  <div id="userModalContent">Loading...</div>
+  <button onclick="closeUserModal()">Close</button>
+</div>
+
+<script>
+let netPage = 1;
+
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(function (el) { el.style.display = 'none'; });
+  document.querySelectorAll('.tab-btn').forEach(function (el) { el.classList.remove('active'); });
+  document.getElementById('tab-' + name).style.display = 'block';
+  document.querySelector('.tab-btn[data-tab="' + name + '"]').classList.add('active');
+  if (name === 'network' && !netLoadedOnce) loadNetwork(1);
+}
+
+let netLoadedOnce = false;
+
+async function loadOverview() {
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/overview');
+    if (!res.ok) { if (res.status === 401) return; throw new Error('Failed'); }
+    const data = await res.json();
+
+    document.getElementById('ovTotalUsers').textContent = data.total_users || 0;
+    document.getElementById('ovLastUpdated').textContent = data.stats_last_updated || 'never (run Recompute Now)';
+
+    const labels = { unranked: 'Unranked', member: 'Member', guide: 'Guide', leader: 'Leader', ranger: 'Ranger' };
+    const dist = data.rank_distribution || {};
+    const distEl = document.getElementById('rankDistribution');
+    distEl.innerHTML = Object.keys(labels).map(function (k) {
+      return '<div class="stat-card"><div class="number">' + (dist[k] || 0) + '</div><div class="label">' + labels[k] + '</div></div>';
+    }).join('');
+
+    const ctx = document.getElementById('rankChart').getContext('2d');
+    if (window._rankChart) window._rankChart.destroy();
+    window._rankChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: Object.keys(labels).map(function (k) { return labels[k]; }),
+        datasets: [{ label: 'Users', data: Object.keys(labels).map(function (k) { return dist[k] || 0; }), backgroundColor: '#3b82f6' }]
+      },
+      options: { responsive: true, plugins: { legend: { display: false } } }
+    });
+
+    const rewards = data.rewards_by_status || {};
+    const rbody = document.getElementById('rewardTotalsBody');
+    const statuses = ['pending', 'approved', 'paid', 'rejected'];
+    rbody.innerHTML = statuses.map(function (s) {
+      const r = rewards[s] || { count: 0, amount_inr: 0 };
+      return '<tr><td>' + s + '</td><td>' + r.count + '</td><td>₹' + r.amount_inr + '</td></tr>';
+    }).join('');
+
+    const lp = data.leader_pool || {};
+    const lpEl = document.getElementById('leaderPoolPanel');
+    if (!lp.leader_pool_cap_inr) {
+      lpEl.innerHTML = '<p><span style="color:#f5c451;">No cap configured (unlimited)</span> — every qualifying Leader receives the reward. Period: ' + (lp.period || '-') + '.</p>' +
+        '<p>Eligible: ' + (lp.eligible_leader_count || 0) + ' &nbsp;|&nbsp; Rewarded: ' + (lp.rewarded_leader_count || 0) +
+        ' &nbsp;|&nbsp; Allocated: ₹' + (lp.leader_pool_allocated_inr || 0) + '</p>';
+    } else {
+      lpEl.innerHTML =
+        '<p>Cap: ₹' + lp.leader_pool_cap_inr + ' &nbsp;|&nbsp; Allocated: ₹' + lp.leader_pool_allocated_inr +
+        ' &nbsp;|&nbsp; Remaining: ₹' + lp.leader_pool_remaining_inr + ' &nbsp;|&nbsp; Period: ' + lp.period + '</p>' +
+        '<p>Eligible Leaders: ' + lp.eligible_leader_count + ' &nbsp;|&nbsp; Rewarded: ' + lp.rewarded_leader_count +
+        ' &nbsp;|&nbsp; <span style="color:' + (lp.budget_exhausted_leader_count > 0 ? '#f77' : '#10B981') + ';">Budget-exhausted: ' +
+        lp.budget_exhausted_leader_count + '</span></p>';
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function loadRewardPolicy() {
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/config');
+    if (!res.ok) return;
+    const data = await res.json();
+    const p = data.reward_policy || {};
+    const rangerActive = (p.ranger_reward_pool_percentage > 0) && (p.ranger_monthly_cap_inr > 0);
+    const leaderCapText = p.leader_monthly_reward_pool_cap_inr
+      ? ('capped at ₹' + p.leader_monthly_reward_pool_cap_inr + ' total per period')
+      : 'no global cap configured (unlimited)';
+    document.getElementById('rewardPolicyPanel').innerHTML =
+      '<p><strong>Leader Growth Reward:</strong> ₹' + p.leader_monthly_reward_min_inr +
+      ' – ₹' + p.leader_monthly_reward_max_inr + ' per qualified month (currently grants the minimum by default), ' +
+      leaderCapText + '.</p>' +
+      '<p><strong>Ranger Growth Reward:</strong> ' + p.ranger_reward_pool_percentage + '% of period revenue, ' +
+      'split across qualifying Rangers, capped at ₹' + p.ranger_monthly_cap_inr + ' per person. ' +
+      (rangerActive
+        ? '<span style="color:#10B981;">Active.</span>'
+        : '<span style="color:#f5c451;">Not active — pool % and/or cap are 0 (placeholder). Set real values in config/rank_config.py to enable.</span>') +
+      '</p>';
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function recomputeNow() {
+  if (!confirm('Recompute ranks and evaluate this month\'s Growth Rewards now?')) return;
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/recompute', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Recompute failed'); return; }
+    const r = data.rank || {};
+    const mr = data.monthly_rewards || {};
+    alert('Recomputed: ' + r.users_processed + ' users processed, ' + r.promotions + ' rank promotions.\n' +
+      'Growth Rewards (' + mr.period + '): ' + mr.rewards_created + ' new reward(s) created ' +
+      '(' + mr.leaders_evaluated + ' Leaders, ' + mr.rangers_evaluated + ' Rangers evaluated).');
+    loadOverview();
+  } catch (err) {
+    alert('Network error');
+  }
+}
+
+async function loadNetwork(page) {
+  netLoadedOnce = true;
+  netPage = page || 1;
+  const params = new URLSearchParams();
+  params.set('page', netPage);
+  params.set('limit', 50);
+  const search = document.getElementById('netSearch').value.trim();
+  const rank = document.getElementById('netRank').value;
+  const status = document.getElementById('netStatus').value;
+  const sub = document.getElementById('netSubscription').value;
+  if (search) params.set('search', search);
+  if (rank) params.set('rank', rank);
+  if (status) params.set('status', status);
+  if (sub) params.set('subscription', sub);
+
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/network?' + params.toString());
+    if (!res.ok) { if (res.status === 401) return; throw new Error('Failed'); }
+    const data = await res.json();
+    document.getElementById('netTotal').textContent = data.total || 0;
+
+    const tbody = document.getElementById('netTable');
+    if (!data.users || !data.users.length) {
+      tbody.innerHTML = '<tr><td colspan="11">No users found</td></tr>';
+    } else {
+      tbody.innerHTML = data.users.map(function (u) {
+        const statusLabel = (u.is_blocked || !u.is_active) ? 'Inactive' : 'Active';
+        return '<tr><td>' + u.id + '</td><td>' + (u.name || '') + '</td><td>' + u.phone + '</td>' +
+          '<td>' + u.rank + '</td><td>' + u.verified_users_count + '</td><td>' + u.active_subscribers_count + '</td>' +
+          '<td>' + u.qualified_members_count + '</td><td>' + u.qualified_guides_count + '</td><td>' + u.qualified_leaders_count + '</td>' +
+          '<td>' + statusLabel + '</td>' +
+          '<td><button onclick="viewUserDetail(' + u.id + ')">View</button></td></tr>';
+      }).join('');
+    }
+
+    const pages = data.pages || 1;
+    const pag = document.getElementById('netPagination');
+    let html = '';
+    for (let p = 1; p <= pages; p++) {
+      html += '<button ' + (p === netPage ? 'disabled' : '') + ' onclick="loadNetwork(' + p + ')" style="margin-right:4px;">' + p + '</button>';
+      if (p > 20) { html += '...'; break; }
+    }
+    pag.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    document.getElementById('netTable').innerHTML = '<tr><td colspan="11">Error loading network.</td></tr>';
+  }
+}
+
+async function viewUserDetail(userId) {
+  const modal = document.getElementById('userModal');
+  const content = document.getElementById('userModalContent');
+  content.innerHTML = 'Loading...';
+  modal.style.display = 'block';
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/users/' + userId);
+    if (!res.ok) { content.innerHTML = 'Failed to load.'; return; }
+    const d = await res.json();
+    const u = d.user;
+
+    let html = '<p><strong>' + (u.name || u.phone) + '</strong> — Rank: <strong>' + u.rank + '</strong></p>';
+    html += '<p>Verified: ' + u.verified_users_count + ' | Active Subs: ' + u.active_subscribers_count +
+      ' | Members: ' + u.qualified_members_count + ' | Guides: ' + u.qualified_guides_count + ' | Leaders: ' + u.qualified_leaders_count + '</p>';
+
+    html += '<p><strong>Referrer (upline):</strong> ';
+    html += d.parent ? ('<a href="javascript:void(0)" onclick="viewUserDetail(' + d.parent.id + ')">' + (d.parent.name || d.parent.phone) + ' (' + d.parent.rank + ')</a>') : '<em>None (root)</em>';
+    html += '</p>';
+
+    html += '<p><strong>Direct downline (' + d.children_count + '):</strong></p><ul>';
+    (d.children || []).forEach(function (c) {
+      html += '<li><a href="javascript:void(0)" onclick="viewUserDetail(' + c.id + ')">' + (c.name || c.phone) + '</a> — ' + c.rank + '</li>';
+    });
+    if (!d.children || !d.children.length) html += '<li><em>No direct referrals</em></li>';
+    html += '</ul>';
+
+    html += '<p><strong>Achievements:</strong></p><ul>';
+    (d.achievements || []).forEach(function (a) {
+      html += '<li>' + a.previous_rank + ' → ' + a.new_rank + ' (' + (a.achieved_at || '') + ')</li>';
+    });
+    if (!d.achievements || !d.achievements.length) html += '<li><em>None yet</em></li>';
+    html += '</ul>';
+
+    const rewardTypeLabels = { leader_monthly: 'Leader Growth Reward', ranger_monthly: 'Ranger Growth Reward' };
+    html += '<p><strong>Monthly Growth Rewards</strong> <span style="color:#666; font-size:0.8rem;">(why: current rank + qualifying metrics above, evaluated per period)</span>:</p><ul>';
+    (d.rewards || []).forEach(function (r) {
+      const label = rewardTypeLabels[r.reward_type] || r.reward_type || 'Reward';
+      html += '<li>' + label + (r.reward_period ? ' — ' + r.reward_period : '') + ': ₹' + r.amount_inr + ' — ' + r.status +
+        (r.status === 'pending' ? ' <button onclick="rewardAction(' + r.id + ',\'approve\')">Approve</button> <button onclick="rewardAction(' + r.id + ',\'reject\')">Reject</button>' : '') +
+        (r.status === 'approved' ? ' <button onclick="rewardAction(' + r.id + ',\'paid\')">Mark Paid</button>' : '') +
+        '</li>';
+    });
+    if (!d.rewards || !d.rewards.length) html += '<li><em>None yet</em></li>';
+    html += '</ul>';
+
+    content.innerHTML = html;
+  } catch (err) {
+    content.innerHTML = 'Error loading user detail.';
+  }
+}
+
+async function rewardAction(rewardId, action) {
+  try {
+    const res = await LandmarkSession.authFetch('/api/admin/ranger/rewards/' + rewardId + '/' + action, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || 'Action failed'); return; }
+    alert('Reward ' + action + 'd.');
+    document.getElementById('userModal').style.display = 'none';
+  } catch (err) {
+    alert('Network error');
+  }
+}
+
+function closeUserModal() {
+  document.getElementById('userModal').style.display = 'none';
+}
+
+document.getElementById('netSearch').addEventListener('keyup', function (e) {
+  if (e.key === 'Enter') loadNetwork(1);
+});
+
+loadOverview();
+loadRewardPolicy();
+</script>
+
+<style>
+  table th { text-align: left; }
+  button { padding: 6px 10px; margin-right: 5px; cursor: pointer; }
+  .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-top: 20px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 20px; }
+  .stat-card { background: white; padding: 16px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; }
+  .stat-card .number { font-size: 1.8rem; font-weight: 700; color: #3b82f6; }
+  .stat-card .label { color: #666; font-size: 0.85rem; margin-top: 4px; }
+  .tab-btn { padding: 8px 16px; border: 1px solid #ccc; background: #f2f2f2; cursor: pointer; border-radius: 6px; }
+  .tab-btn.active { background: #3b82f6; color: white; border-color: #3b82f6; }
+</style>
+{% endblock %}

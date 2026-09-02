@@ -1,0 +1,232 @@
+{% extends "layouts/layout_app.html" %}
+
+{% block title %}Rank | LANDMARK{% endblock %}
+
+{% block extra_head %}
+<style>
+    .rank-container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+
+    .rank-hero {
+        background: rgba(20, 28, 45, 0.7);
+        border: 1px solid #2a3a5a;
+        border-radius: 16px;
+        padding: 30px;
+        text-align: center;
+        backdrop-filter: blur(8px);
+        margin-bottom: 24px;
+    }
+    .rank-hero .badge { font-size: 3.5rem; line-height: 1; }
+    .rank-hero .label { font-size: 1.8rem; font-weight: 800; color: #fff; margin-top: 8px; }
+    .rank-hero .sub { color: #aac; margin-top: 4px; }
+    .rank-hero .stale-note { color: #f5c451; font-size: 0.8rem; margin-top: 10px; }
+
+    .progress-wrap { margin-top: 22px; text-align: left; }
+    .progress-wrap .progress-labels { display: flex; justify-content: space-between; color: #aac; font-size: 0.85rem; margin-bottom: 6px; }
+    .progress-track { background: #0f1522; border-radius: 999px; height: 14px; overflow: hidden; border: 1px solid #2a3a5a; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #0ff, #6a5acd); border-radius: 999px; transition: width 0.4s ease; }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 18px; margin: 24px 0; }
+    .stat-card { background: rgba(20, 28, 45, 0.7); border-radius: 16px; padding: 20px; text-align: center; border: 1px solid #2a3a5a; }
+    .stat-card .number { font-size: 2rem; font-weight: 700; color: #0ff; }
+    .stat-card .label { color: #aac; font-size: 0.85rem; margin-top: 4px; }
+
+    .section-card { background: rgba(20, 28, 45, 0.7); border-radius: 16px; padding: 24px; border: 1px solid #2a3a5a; margin-bottom: 24px; }
+    .section-card h3 { color: #fff; margin-bottom: 14px; }
+
+    .requirements-list { list-style: none; padding: 0; margin: 0; }
+    .requirements-list li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a2a3a; color: #d7e6ff; }
+    .requirements-list li:last-child { border-bottom: none; }
+    .requirements-list .met { color: #10B981; font-weight: 700; }
+    .requirements-list .not-met { color: #f5c451; font-weight: 700; }
+
+    .rank-table { width: 100%; border-collapse: collapse; }
+    .rank-table th, .rank-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #1a2a3a; }
+    .rank-table th { color: #aac; font-weight: 600; font-size: 0.85rem; }
+    .rank-table td { color: #d7e6ff; font-size: 0.9rem; }
+
+    .reward-status { padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 700; text-transform: capitalize; }
+    .reward-status.pending { background: rgba(245, 196, 81, 0.15); color: #f5c451; }
+    .reward-status.approved { background: rgba(0, 255, 255, 0.15); color: #0ff; }
+    .reward-status.paid { background: rgba(16, 185, 129, 0.15); color: #10B981; }
+    .reward-status.rejected { background: rgba(255, 100, 100, 0.15); color: #f77; }
+
+    .empty-note { color: #aac; text-align: center; padding: 20px; }
+    .max-rank-note { color: #10B981; font-weight: 700; margin-top: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="rank-container">
+    <h2 style="color: #fff; border-left: 4px solid #0ff; padding-left: 15px;">🎖️ Your Rank</h2>
+    <p style="color: var(--text-muted);">Your community growth, progress, and achievements on LANDMARK.</p>
+
+    <div class="rank-hero">
+        <div class="badge" id="rankBadge">🥉</div>
+        <div class="label" id="rankLabel">Loading...</div>
+        <div class="sub" id="rankUpdatedNote"></div>
+
+        <div class="progress-wrap" id="progressWrap" style="display:none;">
+            <div class="progress-labels">
+                <span>Progress to <strong id="nextRankLabel"></strong></span>
+                <span id="progressPercentLabel">0%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="progressFill" style="width:0%;"></div>
+            </div>
+        </div>
+        <div class="max-rank-note" id="maxRankNote" style="display:none;">🏆 You've reached the highest rank — Ranger!</div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card"><div class="number" id="statVerified">0</div><div class="label">Verified Signups</div></div>
+        <div class="stat-card"><div class="number" id="statActiveSubs">0</div><div class="label">Active Subscribers</div></div>
+        <div class="stat-card"><div class="number" id="statMembers">0</div><div class="label">Qualified Members</div></div>
+        <div class="stat-card"><div class="number" id="statGuides">0</div><div class="label">Qualified Guides</div></div>
+        <div class="stat-card"><div class="number" id="statLeaders">0</div><div class="label">Qualified Leaders</div></div>
+    </div>
+
+    <div class="section-card">
+        <h3>📋 Requirements for Next Rank</h3>
+        <ul class="requirements-list" id="requirementsList">
+            <li class="empty-note">Loading...</li>
+        </ul>
+    </div>
+
+    <div class="section-card">
+        <h3>💰 Monthly Growth Rewards</h3>
+        <p style="color:#aac; font-size:0.85rem; margin-bottom:12px;">Leaders and Rangers who stay qualified may earn a Monthly Growth Reward. Each reward starts as pending and requires admin approval.</p>
+        <table class="rank-table">
+            <thead><tr><th>Reward</th><th>Amount (₹)</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody id="rewardsBody"><tr><td colspan="4" class="empty-note">Loading...</td></tr></tbody>
+        </table>
+    </div>
+
+    <div class="section-card">
+        <h3>🏅 Achievement History</h3>
+        <table class="rank-table">
+            <thead><tr><th>Achievement</th><th>Date</th></tr></thead>
+            <tbody id="achievementsBody"><tr><td colspan="2" class="empty-note">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+(async function () {
+    const REQUIREMENT_LABELS = {
+        verified_users: "Verified Signups",
+        active_subscribers: "Active Subscribers",
+        qualified_members: "Qualified Members",
+        qualified_guides: "Qualified Guides",
+        qualified_leaders: "Qualified Leaders",
+    };
+
+    function fmtDate(s) {
+        if (!s) return "-";
+        try { return new Date(s).toLocaleDateString(); } catch (e) { return s; }
+    }
+
+    async function loadRank() {
+        try {
+            const res = await LandmarkSession.authFetch('/api/rank/me');
+            const body = await res.json();
+            if (!res.ok || !body.success) throw new Error("Failed to load rank");
+            const d = body.data;
+
+            document.getElementById('rankBadge').textContent = d.rank_badge || '🥉';
+            document.getElementById('rankLabel').textContent = d.rank_label || 'Unranked';
+            document.getElementById('statVerified').textContent = d.metrics.verified_users || 0;
+            document.getElementById('statActiveSubs').textContent = d.metrics.active_subscribers || 0;
+            document.getElementById('statMembers').textContent = d.metrics.qualified_members || 0;
+            document.getElementById('statGuides').textContent = d.metrics.qualified_guides || 0;
+            document.getElementById('statLeaders').textContent = d.metrics.qualified_leaders || 0;
+
+            const note = document.getElementById('rankUpdatedNote');
+            if (!d.stats_calculated) {
+                note.textContent = "Your rank will be calculated soon — check back after your first day of activity.";
+                note.classList.add('stale-note');
+            } else if (d.stats_updated_at) {
+                note.textContent = "As of " + fmtDate(d.stats_updated_at);
+            }
+
+            const reqList = document.getElementById('requirementsList');
+            if (d.next_rank) {
+                document.getElementById('progressWrap').style.display = 'block';
+                document.getElementById('nextRankLabel').textContent = d.next_rank_label || d.next_rank;
+                document.getElementById('progressPercentLabel').textContent = (d.progress_percent || 0) + '%';
+                document.getElementById('progressFill').style.width = (d.progress_percent || 0) + '%';
+
+                const remaining = d.remaining_for_next_rank || {};
+                const keys = Object.keys(remaining);
+                if (keys.length) {
+                    reqList.innerHTML = keys.map(function (k) {
+                        const left = remaining[k];
+                        const met = left <= 0;
+                        return '<li><span>' + (REQUIREMENT_LABELS[k] || k) + '</span>' +
+                            '<span class="' + (met ? 'met' : 'not-met') + '">' +
+                            (met ? '✓ Met' : left + ' more needed') + '</span></li>';
+                    }).join('');
+                } else {
+                    reqList.innerHTML = '<li class="empty-note">No further requirements found.</li>';
+                }
+            } else {
+                document.getElementById('maxRankNote').style.display = 'block';
+                reqList.innerHTML = '<li class="empty-note">You have reached the highest available rank.</li>';
+            }
+        } catch (err) {
+            console.error('Rank load error:', err);
+            document.getElementById('rankLabel').textContent = 'Unable to load rank';
+        }
+    }
+
+    const REWARD_TYPE_LABELS = {
+        leader_monthly: 'Leader Growth Reward',
+        ranger_monthly: 'Ranger Growth Reward',
+    };
+
+    async function loadRewards() {
+        try {
+            const res = await LandmarkSession.authFetch('/api/rank/rewards');
+            const body = await res.json();
+            const items = (body && body.data) || [];
+            const tbody = document.getElementById('rewardsBody');
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="4" class="empty-note">No Monthly Growth Rewards yet — reach Leader or Ranger and stay active to become eligible.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = items.map(function (r) {
+                const label = REWARD_TYPE_LABELS[r.reward_type] || r.reward_type || 'Monthly Growth Reward';
+                return '<tr><td>' + label + (r.reward_period ? ' (' + r.reward_period + ')' : '') + '</td>' +
+                    '<td>₹' + r.amount_inr + '</td>' +
+                    '<td><span class="reward-status ' + r.status + '">' + r.status + '</span></td>' +
+                    '<td>' + fmtDate(r.created_at) + '</td></tr>';
+            }).join('');
+        } catch (err) {
+            console.error('Rewards load error:', err);
+        }
+    }
+
+    async function loadAchievements() {
+        try {
+            const res = await LandmarkSession.authFetch('/api/rank/achievements');
+            const body = await res.json();
+            const items = (body && body.data) || [];
+            const tbody = document.getElementById('achievementsBody');
+            if (!items.length) {
+                tbody.innerHTML = '<tr><td colspan="2" class="empty-note">No achievements yet — your first milestone is on the way.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = items.map(function (a) {
+                return '<tr><td>Reached ' + (a.new_rank_label || a.new_rank) + '</td>' +
+                    '<td>' + fmtDate(a.achieved_at) + '</td></tr>';
+            }).join('');
+        } catch (err) {
+            console.error('Achievements load error:', err);
+        }
+    }
+
+    loadRank();
+    loadRewards();
+    loadAchievements();
+})();
+</script>
+{% endblock %}
