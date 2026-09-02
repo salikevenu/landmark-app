@@ -29,9 +29,11 @@ def get_referral_info(user_id):
     if not row:
         return None
 
+    code = row._mapping["referral_code"]
     return {
-        "referral_code": row._mapping["referral_code"],
-        "wallet_balance": row._mapping["wallet_balance"]
+        "referral_code": code,
+        "wallet_balance": row._mapping["wallet_balance"],
+        "referral_link": f"{BASE_URL.rstrip('/')}/register?ref={code}" if code else ""
     }
 
 

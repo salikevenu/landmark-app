@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
 
 from database.init_db import get_db_connection
+from config.payment_config import BASE_URL
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
@@ -96,6 +97,15 @@ def register_url_with_ref(ref_code):
     if not code:
         return "/register"
     return "/register?ref=" + quote(code, safe="")
+
+
+def referral_link_for(ref_code):
+    """Absolute, shareable referral URL. Reuses the existing BASE_URL config
+    (config/payment_config.py) rather than hardcoding a domain."""
+    code = str(ref_code or "").strip()
+    if not code:
+        return ""
+    return BASE_URL.rstrip("/") + register_url_with_ref(code)
 
 
 def fetch_referrer_by_code(ref_code):
@@ -595,6 +605,7 @@ def verify_otp():
                 "data": {
                     "status": status,
                     "user": user_data,
+                    "referral_link": referral_link_for(user_data.get("referral_code")),
                 },
             })
 

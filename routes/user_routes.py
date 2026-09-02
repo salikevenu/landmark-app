@@ -3,7 +3,9 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_tok
 from services.jwt_session import revoke_tokens_from_request
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from database.init_db import get_db_connection
+from routes.auth_routes import generate_referral_code, referral_link_for
 from time import time
 import razorpay
 import os
@@ -422,26 +424,57 @@ def api_browse():
 def invite():
     return render_template("users/invite.html")
 
+REFERRAL_CODE_ASSIGN_ATTEMPTS = 8
+
+
 @user_bp.route("/api/invite")
 @jwt_required()
 def api_invite():
+    """Return the caller's referral code, lazily assigning one (using the
+    same canonical generator as registration) for any pre-existing user who
+    somehow still lacks one. Defensive fallback only — normal registration
+    and the backfill migration already cover this."""
     user_id = get_jwt_identity()
     conn = get_db_connection()
     user = conn.execute(
         text("SELECT referral_code FROM users WHERE id = :uid"),
         {"uid": user_id}
     ).fetchone()
-    if not user or not user._mapping["referral_code"]:
-        code = secrets.token_urlsafe(8)
-        conn.execute(
-            text("UPDATE users SET referral_code = :code WHERE id = :uid"),
-            {"code": code, "uid": user_id}
-        )
-        conn.commit()
-        referral_code = code
-    else:
-        referral_code = user._mapping["referral_code"]
-    return jsonify({"referral_code": referral_code})
+    referral_code = user._mapping["referral_code"] if user else None
+    if not referral_code:
+        for _ in range(REFERRAL_CODE_ASSIGN_ATTEMPTS):
+            code = generate_referral_code()
+            try:
+                result = conn.execute(
+                    text("""
+                        UPDATE users SET referral_code = :code
+                        WHERE id = :uid AND referral_code IS NULL
+                        RETURNING referral_code
+                    """),
+                    {"code": code, "uid": user_id}
+                )
+                row = result.fetchone()
+                conn.commit()
+                if row:
+                    referral_code = row._mapping["referral_code"]
+                else:
+                    # Another request already assigned one concurrently — use it.
+                    existing = conn.execute(
+                        text("SELECT referral_code FROM users WHERE id = :uid"),
+                        {"uid": user_id}
+                    ).fetchone()
+                    referral_code = existing._mapping["referral_code"] if existing else None
+                break
+            except IntegrityError:
+                conn.rollback()
+                continue
+        else:
+            logger.error("Could not assign a unique referral_code to user id=%s", user_id)
+            return jsonify({"error": "Could not generate referral code. Please try again."}), 503
+    return jsonify({
+        "referral_code": referral_code,
+        "referral_link": referral_link_for(referral_code),
+    })
 
 # ------------------------------------------------------------
 # Track, recommend, subscription status, pricing

@@ -65,6 +65,12 @@ def init_db():
         )
     """))
 
+    # Defensive: covers any deployment whose users table predates these columns.
+    # Safe/idempotent — CREATE TABLE above already includes both for fresh DBs.
+    # Must run before the indexes below, which reference referral_code.
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT"))
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by INTEGER REFERENCES users(id)"))
+
     # Indexes for users table
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)"))
     conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_code ON users(referral_code)"))
