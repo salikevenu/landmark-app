@@ -47,6 +47,18 @@
   </div>
 
   <div class="card">
+    <h3>Member Reward Pool — This Period</h3>
+    <p style="color:#666; font-size:0.85rem;">Revenue-backed pool, split evenly across qualifying Members and capped per person — the same model as Ranger. If the pool % or cap is 0 (placeholder), nobody is rewarded that period.</p>
+    <div id="memberPoolPanel">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h3>Guide Reward Pool — This Period</h3>
+    <p style="color:#666; font-size:0.85rem;">Revenue-backed pool, split evenly across qualifying Guides and capped per person — the same model as Ranger. If the pool % or cap is 0 (placeholder), nobody is rewarded that period.</p>
+    <div id="guidePoolPanel">Loading...</div>
+  </div>
+
+  <div class="card">
     <h3>Monthly Growth Reward Policy</h3>
     <p style="color:#666; font-size:0.85rem;">Current configuration from config/rank_config.py. Rewards are evaluated monthly against CURRENT qualification, never a one-time payout, and always require admin approval — nothing here pays out automatically.</p>
     <div id="rewardPolicyPanel">Loading...</div>
@@ -179,9 +191,28 @@ async function loadOverview() {
         ' &nbsp;|&nbsp; <span style="color:' + (lp.budget_exhausted_leader_count > 0 ? '#f77' : '#10B981') + ';">Budget-exhausted: ' +
         lp.budget_exhausted_leader_count + '</span></p>';
     }
+
+    renderRevenuePoolPanel('memberPoolPanel', data.member_pool || {}, 'Member');
+    renderRevenuePoolPanel('guidePoolPanel', data.guide_pool || {}, 'Guide');
   } catch (err) {
     console.error(err);
   }
+}
+
+function renderRevenuePoolPanel(elId, pool, rankLabel) {
+  const el = document.getElementById(elId);
+  if (!pool.monthly_cap_inr) {
+    el.innerHTML = '<p><span style="color:#f5c451;">Not active — pool % and/or cap are 0 (placeholder). Set real values in config/rank_config.py to enable.</span> Period: ' + (pool.period || '-') + '.</p>' +
+      '<p>Eligible ' + rankLabel + 's: ' + (pool.eligible_count || 0) + '</p>';
+    return;
+  }
+  el.innerHTML =
+    '<p>Pool %: ' + pool.pool_percentage + '% of period revenue (₹' + (pool.period_revenue_inr || 0) + ') = ₹' + pool.pool_amount_inr +
+    ' &nbsp;|&nbsp; Per-person cap: ₹' + pool.monthly_cap_inr + ' &nbsp;|&nbsp; Period: ' + pool.period + '</p>' +
+    '<p>Allocated: ₹' + pool.pool_allocated_inr + ' &nbsp;|&nbsp; Remaining: ₹' + pool.pool_remaining_inr + '</p>' +
+    '<p>Eligible ' + rankLabel + 's: ' + pool.eligible_count + ' &nbsp;|&nbsp; Rewarded: ' + pool.rewarded_count +
+    ' &nbsp;|&nbsp; <span style="color:' + (pool.budget_exhausted_count > 0 ? '#f77' : '#10B981') + ';">Budget-exhausted: ' +
+    pool.budget_exhausted_count + '</span></p>';
 }
 
 async function loadRewardPolicy() {
@@ -191,19 +222,26 @@ async function loadRewardPolicy() {
     const data = await res.json();
     const p = data.reward_policy || {};
     const rangerActive = (p.ranger_reward_pool_percentage > 0) && (p.ranger_monthly_cap_inr > 0);
+    const memberActive = (p.member_reward_pool_percentage > 0) && (p.member_monthly_cap_inr > 0);
+    const guideActive = (p.guide_reward_pool_percentage > 0) && (p.guide_monthly_cap_inr > 0);
     const leaderCapText = p.leader_monthly_reward_pool_cap_inr
       ? ('capped at ₹' + p.leader_monthly_reward_pool_cap_inr + ' total per period')
       : 'no global cap configured (unlimited)';
+    const activeBadge = function (active) {
+      return active
+        ? '<span style="color:#10B981;">Active.</span>'
+        : '<span style="color:#f5c451;">Not active — pool % and/or cap are 0 (placeholder). Set real values in config/rank_config.py to enable.</span>';
+    };
     document.getElementById('rewardPolicyPanel').innerHTML =
+      '<p><strong>Member Growth Reward:</strong> ' + p.member_reward_pool_percentage + '% of period revenue, ' +
+      'split across qualifying Members, capped at ₹' + p.member_monthly_cap_inr + ' per person. ' + activeBadge(memberActive) + '</p>' +
+      '<p><strong>Guide Growth Reward:</strong> ' + p.guide_reward_pool_percentage + '% of period revenue, ' +
+      'split across qualifying Guides, capped at ₹' + p.guide_monthly_cap_inr + ' per person. ' + activeBadge(guideActive) + '</p>' +
       '<p><strong>Leader Growth Reward:</strong> ₹' + p.leader_monthly_reward_min_inr +
       ' – ₹' + p.leader_monthly_reward_max_inr + ' per qualified month (currently grants the minimum by default), ' +
       leaderCapText + '.</p>' +
       '<p><strong>Ranger Growth Reward:</strong> ' + p.ranger_reward_pool_percentage + '% of period revenue, ' +
-      'split across qualifying Rangers, capped at ₹' + p.ranger_monthly_cap_inr + ' per person. ' +
-      (rangerActive
-        ? '<span style="color:#10B981;">Active.</span>'
-        : '<span style="color:#f5c451;">Not active — pool % and/or cap are 0 (placeholder). Set real values in config/rank_config.py to enable.</span>') +
-      '</p>';
+      'split across qualifying Rangers, capped at ₹' + p.ranger_monthly_cap_inr + ' per person. ' + activeBadge(rangerActive) + '</p>';
   } catch (err) {
     console.error(err);
   }

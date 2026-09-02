@@ -39,12 +39,20 @@ from config.rank_config import (
     RANK_REQUIREMENTS,
     MAX_DOWNLINE_DEPTH,
     MONTHLY_REWARD_RANKS,
+    MEMBER,
+    GUIDE,
     LEADER,
     RANGER,
     LEADER_MONTHLY_REWARD_MIN_INR,
     LEADER_MONTHLY_REWARD_POOL_CAP_INR,
+    MEMBER_REWARD_POOL_PERCENTAGE,
+    MEMBER_MONTHLY_CAP_INR,
+    GUIDE_REWARD_POOL_PERCENTAGE,
+    GUIDE_MONTHLY_CAP_INR,
     RANGER_REWARD_POOL_PERCENTAGE,
     RANGER_MONTHLY_CAP_INR,
+    REWARD_TYPE_MEMBER_MONTHLY,
+    REWARD_TYPE_GUIDE_MONTHLY,
     REWARD_TYPE_LEADER_MONTHLY,
     REWARD_TYPE_RANGER_MONTHLY,
     UNRANKED,
@@ -326,6 +334,120 @@ def get_leader_pool_status(period=None):
             pass
 
 
+def _eligible_rank_user_ids(conn, rank):
+    """User ids currently at `rank`, re-verified against LIVE account
+    status (not just the cached user_rank_stats row) as a defensive
+    anti-abuse safeguard: a banned/deactivated account can never draw a
+    Growth Reward even if the rank cache is briefly stale between a
+    recompute and this evaluation. Reuses the existing is_active/is_blocked
+    columns already used everywhere else in this module — no new field,
+    no change to rank qualification semantics."""
+    rows = conn.execute(text("""
+        SELECT urs.user_id FROM user_rank_stats urs
+        JOIN users u ON u.id = urs.user_id
+        WHERE urs.rank = :r AND u.is_active = 1 AND u.is_blocked = 0
+        ORDER BY urs.user_id
+    """), {"r": rank}).fetchall()
+    return [r._mapping["user_id"] for r in rows]
+
+
+def _revenue_pool_report(conn, period, reward_type, pool_percentage, cap_inr, eligible_ids):
+    """Read-after-write snapshot of a revenue-backed pool's (Member/Guide)
+    status for a period, in the same shape as _leader_pool_report so the
+    admin UI can render all pool cards uniformly. The even-split model is
+    all-or-nothing per period: if the computed per-user amount is 0, every
+    eligible user is 'budget exhausted' (0 rewarded); otherwise everyone
+    eligible gets a row, so budget_exhausted_count is 0."""
+    row = conn.execute(text("""
+        SELECT COUNT(*) AS c, COALESCE(SUM(amount_inr), 0) AS total
+        FROM rank_rewards WHERE reward_type = :t AND reward_period = :p
+    """), {"t": reward_type, "p": period}).fetchone()
+    m = row._mapping
+    rewarded_count = m["c"]
+    allocated = float(m["total"] or 0)
+    eligible_count = len(eligible_ids)
+    pool_active = pool_percentage > 0 and cap_inr > 0
+    period_revenue = _period_revenue_inr(conn, period) if pool_active else 0.0
+    pool_amount = round(period_revenue * (pool_percentage / 100.0), 2) if pool_active else 0.0
+    remaining = max(0.0, pool_amount - allocated) if pool_active else None
+    exhausted_count = max(0, eligible_count - rewarded_count) if pool_active else 0
+    return {
+        "pool_percentage": pool_percentage,
+        "monthly_cap_inr": cap_inr if pool_active else None,
+        "period_revenue_inr": period_revenue if pool_active else None,
+        "pool_amount_inr": pool_amount,
+        "pool_allocated_inr": allocated,
+        "pool_remaining_inr": remaining,
+        "eligible_count": eligible_count,
+        "rewarded_count": rewarded_count,
+        "budget_exhausted_count": exhausted_count,
+    }
+
+
+def get_member_pool_status(period=None):
+    """Admin-only read: current Member Growth Reward pool status for a
+    period, without triggering any evaluation/writes."""
+    period = period or current_reward_period()
+    conn = get_db_connection()
+    try:
+        eligible_ids = _eligible_rank_user_ids(conn, MEMBER)
+        report = _revenue_pool_report(
+            conn, period, REWARD_TYPE_MEMBER_MONTHLY,
+            MEMBER_REWARD_POOL_PERCENTAGE, MEMBER_MONTHLY_CAP_INR, eligible_ids,
+        )
+        report["period"] = period
+        return report
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_guide_pool_status(period=None):
+    """Admin-only read: current Guide Growth Reward pool status for a
+    period, without triggering any evaluation/writes."""
+    period = period or current_reward_period()
+    conn = get_db_connection()
+    try:
+        eligible_ids = _eligible_rank_user_ids(conn, GUIDE)
+        report = _revenue_pool_report(
+            conn, period, REWARD_TYPE_GUIDE_MONTHLY,
+            GUIDE_REWARD_POOL_PERCENTAGE, GUIDE_MONTHLY_CAP_INR, eligible_ids,
+        )
+        report["period"] = period
+        return report
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _create_revenue_backed_pool_rewards(conn, period, reward_type, rank, pool_percentage, cap_inr, eligible_ids):
+    """Ranger-style even-split model, reused for Member and Guide:
+    per-user reward = min(pool / eligible_users, configured_cap), where
+    pool = period_revenue * (pool_percentage / 100). No partial rewards —
+    either every eligible user gets the same per-user amount, or (if that
+    amount rounds to 0) nobody gets a row at all for the period. Ranger's
+    own block in evaluate_monthly_rewards() is intentionally left as
+    separate inline code rather than refactored to call this, so the
+    already-approved Ranger reward logic is never touched by this change.
+    Returns the count of newly-created reward rows."""
+    if not eligible_ids or pool_percentage <= 0 or cap_inr <= 0:
+        return 0
+    period_revenue = _period_revenue_inr(conn, period)
+    pool = period_revenue * (pool_percentage / 100.0)
+    per_user = round(min(pool / len(eligible_ids), cap_inr), 2)
+    if per_user <= 0:
+        return 0
+    created = 0
+    for uid in eligible_ids:
+        if _insert_monthly_reward(conn, uid, reward_type, period, rank, per_user):
+            created += 1
+    return created
+
+
 def evaluate_monthly_rewards(period=None):
     """Create this period's pending Leader/Ranger Growth Reward for every
     CURRENTLY qualifying user. Reads the cached user_rank_stats — callers
@@ -358,6 +480,15 @@ def evaluate_monthly_rewards(period=None):
     RANGER_MONTHLY_CAP_INR. With the placeholder pool%/cap (0), the computed
     amount is always 0 and NO reward row is created at all — LANDMARK is
     never left with an unconditional obligation to pay a fixed amount.
+
+    Member and Guide Growth Reward: same REVENUE-BACKED even-split model as
+    Ranger, each with its own independent pool (MEMBER_REWARD_POOL_PERCENTAGE/
+    MEMBER_MONTHLY_CAP_INR and GUIDE_REWARD_POOL_PERCENTAGE/GUIDE_MONTHLY_CAP_INR)
+    — see _create_revenue_backed_pool_rewards(). Eligibility is the user's
+    CURRENT qualifying rank for this period (user_rank_stats), re-verified
+    against live is_active/is_blocked status as a defensive anti-abuse
+    safeguard. Recipients are not required to hold their own paid
+    subscription. Both pools default to placeholder/off (0).
     """
     period = period or current_reward_period()
     conn = get_db_connection()
@@ -407,15 +538,39 @@ def evaluate_monthly_rewards(period=None):
                     if _insert_monthly_reward(conn, uid, REWARD_TYPE_RANGER_MONTHLY, period, RANGER, per_ranger):
                         created += 1
 
+        member_ids = _eligible_rank_user_ids(conn, MEMBER)
+        created += _create_revenue_backed_pool_rewards(
+            conn, period, REWARD_TYPE_MEMBER_MONTHLY, MEMBER,
+            MEMBER_REWARD_POOL_PERCENTAGE, MEMBER_MONTHLY_CAP_INR, member_ids,
+        )
+
+        guide_ids = _eligible_rank_user_ids(conn, GUIDE)
+        created += _create_revenue_backed_pool_rewards(
+            conn, period, REWARD_TYPE_GUIDE_MONTHLY, GUIDE,
+            GUIDE_REWARD_POOL_PERCENTAGE, GUIDE_MONTHLY_CAP_INR, guide_ids,
+        )
+
         leader_pool = _leader_pool_report(conn, period, leader_ids)
+        member_pool = _revenue_pool_report(
+            conn, period, REWARD_TYPE_MEMBER_MONTHLY,
+            MEMBER_REWARD_POOL_PERCENTAGE, MEMBER_MONTHLY_CAP_INR, member_ids,
+        )
+        guide_pool = _revenue_pool_report(
+            conn, period, REWARD_TYPE_GUIDE_MONTHLY,
+            GUIDE_REWARD_POOL_PERCENTAGE, GUIDE_MONTHLY_CAP_INR, guide_ids,
+        )
 
         conn.commit()
         return {
             "period": period,
+            "members_evaluated": len(member_ids),
+            "guides_evaluated": len(guide_ids),
             "leaders_evaluated": len(leader_ids),
             "rangers_evaluated": len(ranger_ids),
             "rewards_created": created,
             "leader_pool": leader_pool,
+            "member_pool": member_pool,
+            "guide_pool": guide_pool,
         }
     except Exception:
         try:
@@ -554,12 +709,27 @@ def get_ranger_overview():
         last_updated = conn.execute(text("SELECT MAX(updated_at) FROM user_rank_stats")).scalar()
         total_users = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
 
+        period = current_reward_period()
         leader_ids = [
             r._mapping["user_id"] for r in
             conn.execute(text("SELECT user_id FROM user_rank_stats WHERE rank = :r"), {"r": LEADER}).fetchall()
         ]
-        leader_pool = _leader_pool_report(conn, current_reward_period(), leader_ids)
-        leader_pool["period"] = current_reward_period()
+        leader_pool = _leader_pool_report(conn, period, leader_ids)
+        leader_pool["period"] = period
+
+        member_ids = _eligible_rank_user_ids(conn, MEMBER)
+        member_pool = _revenue_pool_report(
+            conn, period, REWARD_TYPE_MEMBER_MONTHLY,
+            MEMBER_REWARD_POOL_PERCENTAGE, MEMBER_MONTHLY_CAP_INR, member_ids,
+        )
+        member_pool["period"] = period
+
+        guide_ids = _eligible_rank_user_ids(conn, GUIDE)
+        guide_pool = _revenue_pool_report(
+            conn, period, REWARD_TYPE_GUIDE_MONTHLY,
+            GUIDE_REWARD_POOL_PERCENTAGE, GUIDE_MONTHLY_CAP_INR, guide_ids,
+        )
+        guide_pool["period"] = period
 
         return {
             "rank_distribution": distribution,
@@ -567,6 +737,8 @@ def get_ranger_overview():
             "total_users": total_users,
             "stats_last_updated": last_updated,
             "leader_pool": leader_pool,
+            "member_pool": member_pool,
+            "guide_pool": guide_pool,
         }
     finally:
         try:

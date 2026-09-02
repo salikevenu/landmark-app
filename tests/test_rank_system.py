@@ -40,9 +40,13 @@ import config.rank_config as rank_config
 from config.rank_config import (
     RANK_REQUIREMENTS,
     highest_qualifying_rank,
+    MEMBER,
+    GUIDE,
     LEADER,
     RANGER,
     LEADER_MONTHLY_REWARD_MIN_INR,
+    REWARD_TYPE_MEMBER_MONTHLY,
+    REWARD_TYPE_GUIDE_MONTHLY,
     REWARD_TYPE_LEADER_MONTHLY,
     REWARD_TYPE_RANGER_MONTHLY,
 )
@@ -273,11 +277,49 @@ class ThresholdUnitTests(unittest.TestCase):
                    "qualified_guides": 29, "qualified_leaders": 10}
         self.assertNotEqual(highest_qualifying_rank(metrics), "ranger")
 
-    def test_member_and_guide_thresholds_are_marked_provisional_in_source(self):
-        """Member/Guide numbers must not read as finalized business policy."""
+    def test_member_thresholds_are_the_finalized_business_numbers(self):
+        self.assertEqual(RANK_REQUIREMENTS[MEMBER], {"verified_users": 10, "active_subscribers": 2})
+
+    def test_guide_thresholds_are_the_finalized_business_numbers(self):
+        self.assertEqual(RANK_REQUIREMENTS[GUIDE], {
+            "verified_users": 50, "active_subscribers": 10, "qualified_members": 5,
+        })
+
+    def test_member_qualifies_at_exactly_10_2(self):
+        metrics = {"verified_users": 10, "active_subscribers": 2}
+        self.assertEqual(highest_qualifying_rank(metrics), "member")
+
+    def test_member_fails_if_verified_users_short_by_one(self):
+        metrics = {"verified_users": 9, "active_subscribers": 2}
+        self.assertNotEqual(highest_qualifying_rank(metrics), "member")
+
+    def test_member_fails_if_active_subscribers_short_by_one(self):
+        metrics = {"verified_users": 10, "active_subscribers": 1}
+        self.assertNotEqual(highest_qualifying_rank(metrics), "member")
+
+    def test_guide_qualifies_at_exactly_50_10_5(self):
+        metrics = {"verified_users": 50, "active_subscribers": 10, "qualified_members": 5}
+        self.assertEqual(highest_qualifying_rank(metrics), "guide")
+
+    def test_guide_falls_back_to_member_if_qualified_members_short_by_one(self):
+        metrics = {"verified_users": 50, "active_subscribers": 10, "qualified_members": 4}
+        self.assertEqual(highest_qualifying_rank(metrics), "member")
+
+    def test_guide_fails_if_verified_users_short(self):
+        metrics = {"verified_users": 49, "active_subscribers": 10, "qualified_members": 5}
+        self.assertNotEqual(highest_qualifying_rank(metrics), "guide")
+
+    def test_guide_fails_if_active_subscribers_short(self):
+        metrics = {"verified_users": 50, "active_subscribers": 9, "qualified_members": 5}
+        self.assertNotEqual(highest_qualifying_rank(metrics), "guide")
+
+    def test_member_and_guide_thresholds_are_marked_finalized_in_source(self):
+        """Member/Guide numbers are now finalized business policy, same as
+        Leader/Ranger — the old PROVISIONAL marker must be gone."""
         src = (ROOT / "config" / "rank_config.py").read_text(encoding="utf-8")
-        self.assertIn("PROVISIONAL", src)
-        self.assertIn("not yet finalized business policy", src)
+        self.assertNotIn("PROVISIONAL", src)
+        self.assertIn("MEMBER: {  # FINALIZED", src)
+        self.assertIn("GUIDE: {  # FINALIZED", src)
 
 
 class RankQualificationDbTests(unittest.TestCase):
@@ -468,9 +510,13 @@ class MonthlyGrowthRewardTests(unittest.TestCase):
         self.assertEqual(rewards[0]["status"], "pending", "reward must remain pending until admin approval")
         self.assertEqual(float(rewards[0]["amount_inr"]), float(LEADER_MONTHLY_REWARD_MIN_INR))
 
-    def test_member_and_guide_never_get_a_monthly_reward(self):
+    def test_member_and_guide_reward_disabled_by_default_placeholder_policy(self):
+        """Default config (pool%=0, cap=0 for both) must never create an
+        obligation — same placeholder-off default as Ranger. See
+        MemberGuideRewardPoolTests below for the configured-active behavior."""
         _set_rank_directly(self.engine, 1, "member")
         _set_rank_directly(self.engine, 2, "guide")
+        _seed_payment(self.engine, 99, 100000, status="verified")
         rank_service.evaluate_monthly_rewards(period="2026-09")
         self.assertEqual(self._rewards_for(1), [])
         self.assertEqual(self._rewards_for(2), [])
@@ -831,6 +877,296 @@ class LeaderRewardPoolCapTests(unittest.TestCase):
                 """), {"t": REWARD_TYPE_RANGER_MONTHLY}).scalar()
         expected_pool = 37000 * 0.15
         self.assertLessEqual(float(total), expected_pool + 0.1)  # +epsilon for per-user rounding (<=0.005/ranger)
+
+
+class MemberGuideRewardPoolTests(unittest.TestCase):
+    """Member/Guide monthly Growth Reward: same revenue-backed, even-split
+    model as Ranger (services.rank_service._create_revenue_backed_pool_rewards),
+    each with its own independent pool. Both disabled by default. Patches
+    both config.rank_config and services.rank_service's bound copies of
+    each constant, same pattern used for Ranger/Leader above."""
+
+    def setUp(self):
+        self.engine = _make_engine()
+        self.patcher = patch.object(rank_service, "get_db_connection", side_effect=self.engine.connect)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def _rewards_for(self, uid, period=None):
+        with self.engine.connect() as conn:
+            q = "SELECT reward_type, reward_period, amount_inr, status FROM rank_rewards WHERE user_id=:uid"
+            params = {"uid": uid}
+            if period:
+                q += " AND reward_period=:p"
+                params["p"] = period
+            rows = conn.execute(text(q), params).fetchall()
+        return [dict(r._mapping) for r in rows]
+
+    def _apply_policy(self, member_pct=None, member_cap=None, guide_pct=None, guide_cap=None):
+        pairs = [
+            ("MEMBER_REWARD_POOL_PERCENTAGE", member_pct),
+            ("MEMBER_MONTHLY_CAP_INR", member_cap),
+            ("GUIDE_REWARD_POOL_PERCENTAGE", guide_pct),
+            ("GUIDE_MONTHLY_CAP_INR", guide_cap),
+        ]
+        patchers = []
+        for name, value in pairs:
+            if value is not None:
+                patchers.append(patch.object(rank_config, name, value))
+                patchers.append(patch.object(rank_service, name, value))
+        for p in patchers:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patchers])
+
+    # --- Disabled by default ---
+    def test_member_reward_disabled_by_default(self):
+        _set_rank_directly(self.engine, 1, "member")
+        _seed_payment(self.engine, 99, 100000, status="verified")
+        rank_service.evaluate_monthly_rewards(period="2026-09")
+        self.assertEqual(self._rewards_for(1), [])
+
+    def test_guide_reward_disabled_by_default(self):
+        _set_rank_directly(self.engine, 1, "guide")
+        _seed_payment(self.engine, 99, 100000, status="verified")
+        rank_service.evaluate_monthly_rewards(period="2026-09")
+        self.assertEqual(self._rewards_for(1), [])
+
+    # --- Reward creation when the pool is configured ---
+    def test_member_gets_pending_reward_when_pool_configured(self):
+        _set_rank_directly(self.engine, 1, "member")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        self._apply_policy(member_pct=10, member_cap=100000)
+        rank_service.evaluate_monthly_rewards(period=today)
+        rewards = self._rewards_for(1)
+        self.assertEqual(len(rewards), 1)
+        self.assertEqual(rewards[0]["reward_type"], REWARD_TYPE_MEMBER_MONTHLY)
+        self.assertEqual(rewards[0]["status"], "pending", "reward must remain pending until admin approval")
+        self.assertGreater(float(rewards[0]["amount_inr"]), 0)
+
+    def test_guide_gets_pending_reward_when_pool_configured(self):
+        _set_rank_directly(self.engine, 1, "guide")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        self._apply_policy(guide_pct=10, guide_cap=100000)
+        rank_service.evaluate_monthly_rewards(period=today)
+        rewards = self._rewards_for(1)
+        self.assertEqual(len(rewards), 1)
+        self.assertEqual(rewards[0]["reward_type"], REWARD_TYPE_GUIDE_MONTHLY)
+        self.assertEqual(rewards[0]["status"], "pending")
+        self.assertGreater(float(rewards[0]["amount_inr"]), 0)
+
+    # --- Per-person cap enforced ---
+    def test_member_reward_capped_even_with_large_pool(self):
+        _set_rank_directly(self.engine, 1, "member")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 10_000_000, status="verified", created_at=today + "-05")
+        self._apply_policy(member_pct=50, member_cap=200)
+        rank_service.evaluate_monthly_rewards(period=today)
+        rewards = self._rewards_for(1)
+        self.assertEqual(len(rewards), 1)
+        self.assertLessEqual(float(rewards[0]["amount_inr"]), 200.0,
+                              "per-Member amount must never exceed the configured cap")
+
+    # --- Many eligible users: even split ---
+    def test_guide_pool_split_evenly_across_many_qualifying_guides(self):
+        ids = list(range(1, 8))
+        for uid in ids:
+            _set_rank_directly(self.engine, uid, "guide")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 70000, status="verified", created_at=today + "-10")
+        self._apply_policy(guide_pct=10, guide_cap=1_000_000)
+        rank_service.evaluate_monthly_rewards(period=today)
+        amounts = {uid: float(self._rewards_for(uid)[0]["amount_inr"]) for uid in ids}
+        self.assertEqual(len(set(amounts.values())), 1,
+                          "an even split must give every qualifying Guide the same amount")
+
+    # --- No partial rewards / zero-reward population ---
+    def test_tiny_pool_split_across_many_users_rounds_to_zero_creates_no_rows(self):
+        ids = list(range(1, 51))
+        for uid in ids:
+            _set_rank_directly(self.engine, uid, "member")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 9999, 1, status="verified", created_at=today + "-05")
+        self._apply_policy(member_pct=1, member_cap=100000)
+        result = rank_service.evaluate_monthly_rewards(period=today)
+        for uid in ids:
+            self.assertEqual(self._rewards_for(uid), [],
+                              "a per-user amount rounding to 0 must create no reward rows at all, never a partial/₹0 row")
+        self.assertEqual(result["member_pool"]["pool_allocated_inr"], 0)
+
+    # --- Idempotency ---
+    def test_member_reward_idempotent_across_repeated_evaluation(self):
+        _set_rank_directly(self.engine, 1, "member")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        self._apply_policy(member_pct=10, member_cap=100000)
+        for _ in range(4):
+            rank_service.evaluate_monthly_rewards(period=today)
+        self.assertEqual(len(self._rewards_for(1, today)), 1)
+
+    # --- Separate months get separate rows ---
+    def test_member_reward_separate_rows_across_different_periods(self):
+        _set_rank_directly(self.engine, 1, "member")
+        self._apply_policy(member_pct=10, member_cap=100000)
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at="2026-08-10")
+        rank_service.evaluate_monthly_rewards(period="2026-08")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at="2026-09-10")
+        rank_service.evaluate_monthly_rewards(period="2026-09")
+        periods = sorted(r["reward_period"] for r in self._rewards_for(1))
+        self.assertEqual(periods, ["2026-08", "2026-09"])
+
+    # --- Demotion / loss of eligibility ---
+    def test_guide_losing_rank_prevents_new_period_reward(self):
+        _set_rank_directly(self.engine, 1, "guide")
+        self._apply_policy(guide_pct=10, guide_cap=100000)
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at="2026-08-10")
+        rank_service.evaluate_monthly_rewards(period="2026-08")
+        with self.engine.begin() as conn:
+            conn.execute(text("UPDATE user_rank_stats SET rank='member' WHERE user_id=1"))
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at="2026-09-10")
+        rank_service.evaluate_monthly_rewards(period="2026-09")
+        periods = [r["reward_period"] for r in self._rewards_for(1) if r["reward_type"] == REWARD_TYPE_GUIDE_MONTHLY]
+        self.assertEqual(periods, ["2026-08"], "no longer qualifying must not create a reward for the new period")
+
+    # --- Anti-abuse: live account-status re-check, not just the cached rank ---
+    def test_banned_account_excluded_from_reward_even_if_rank_cache_is_stale(self):
+        _set_rank_directly(self.engine, 1, "member")
+        with self.engine.begin() as conn:
+            conn.execute(text("UPDATE users SET is_blocked=1 WHERE id=1"))
+        self._apply_policy(member_pct=10, member_cap=100000)
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        rank_service.evaluate_monthly_rewards(period=today)
+        self.assertEqual(self._rewards_for(1), [],
+                          "a banned account must never receive a reward even with a stale 'member' rank cache row")
+
+    # --- Explicit business rule: no gate on the recipient's own subscription ---
+    def test_member_reward_does_not_require_recipients_own_active_subscription(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO users (id, is_active, is_blocked, plan, subscription_expiry, phone)
+                VALUES (1, 1, 0, 'free', NULL, '9000000001')
+            """))
+            conn.execute(text("""
+                INSERT INTO user_rank_stats (user_id, rank, verified_users_count, active_subscribers_count,
+                    qualified_members_count, qualified_guides_count, qualified_leaders_count)
+                VALUES (1, 'member', 10, 2, 0, 0, 0)
+            """))
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        self._apply_policy(member_pct=10, member_cap=100000)
+        rank_service.evaluate_monthly_rewards(period=today)
+        rewards = self._rewards_for(1)
+        self.assertEqual(len(rewards), 1,
+                          "a Member with no active subscription of their own must still receive the reward")
+
+    # --- Admin pool reporting ---
+    def test_get_member_pool_status_reports_correctly_without_writing(self):
+        for uid in (1, 2):
+            _set_rank_directly(self.engine, uid, "member")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+        self._apply_policy(member_pct=10, member_cap=100000)
+
+        status_before = rank_service.get_member_pool_status(period=today)
+        self.assertEqual(status_before["eligible_count"], 2)
+        self.assertEqual(status_before["rewarded_count"], 0)
+        self.assertEqual(self._rewards_for(1), [], "a status read must never allocate the pool")
+
+        rank_service.evaluate_monthly_rewards(period=today)
+        status_after = rank_service.get_member_pool_status(period=today)
+        self.assertEqual(status_after["rewarded_count"], 2)
+        self.assertEqual(status_after["budget_exhausted_count"], 0)
+        self.assertGreater(status_after["pool_allocated_inr"], 0)
+
+    def test_get_guide_pool_status_reflects_disabled_policy(self):
+        _set_rank_directly(self.engine, 1, "guide")
+        status = rank_service.get_guide_pool_status(period="2026-09")
+        self.assertEqual(status["eligible_count"], 1)
+        self.assertEqual(status["rewarded_count"], 0)
+        self.assertIsNone(status["monthly_cap_inr"])
+
+    # --- Protected systems: no wallet/payment writes ---
+    def test_evaluate_monthly_rewards_with_member_and_guide_active_never_writes_wallet_or_payment_tables(self):
+        _set_rank_directly(self.engine, 1, "member")
+        _set_rank_directly(self.engine, 2, "guide")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 500000, status="verified", created_at=today + "-10")
+        with self.engine.connect() as conn:
+            payments_before = conn.execute(text("SELECT COUNT(*) AS c FROM payments")).fetchone()._mapping["c"]
+        self._apply_policy(member_pct=10, member_cap=100000, guide_pct=10, guide_cap=100000)
+        rank_service.evaluate_monthly_rewards(period=today)
+        with self.engine.connect() as conn:
+            wt = conn.execute(text("SELECT COUNT(*) AS c FROM wallet_transactions")).fetchone()
+            wb = conn.execute(text("SELECT COUNT(*) AS c FROM wallet_balance")).fetchone()
+            payments_after = conn.execute(text("SELECT COUNT(*) AS c FROM payments")).fetchone()._mapping["c"]
+        self.assertEqual(wt._mapping["c"], 0)
+        self.assertEqual(wb._mapping["c"], 0)
+        self.assertEqual(payments_after, payments_before, "reward evaluation must never write to payments")
+
+    # --- Financial invariant: total never exceeds the revenue-backed pool ---
+    def test_financial_invariant_member_total_never_exceeds_revenue_pool(self):
+        for pct, cap, n_users in [(5, 1_000_000, 37), (50, 100, 10), (2, 500, 250)]:
+            with self.subTest(pct=pct, cap=cap, n_users=n_users):
+                engine = _make_engine()
+                with patch.object(rank_service, "get_db_connection", side_effect=engine.connect):
+                    for uid in range(1, n_users + 1):
+                        _set_rank_directly(engine, uid, "member")
+                    today = date.today().strftime("%Y-%m")
+                    _seed_payment(engine, 999999, 50000, status="verified", created_at=today + "-10")
+                    patchers = [
+                        patch.object(rank_config, "MEMBER_REWARD_POOL_PERCENTAGE", pct),
+                        patch.object(rank_config, "MEMBER_MONTHLY_CAP_INR", cap),
+                        patch.object(rank_service, "MEMBER_REWARD_POOL_PERCENTAGE", pct),
+                        patch.object(rank_service, "MEMBER_MONTHLY_CAP_INR", cap),
+                    ]
+                    for p in patchers:
+                        p.start()
+                    try:
+                        rank_service.evaluate_monthly_rewards(period=today)
+                    finally:
+                        for p in patchers:
+                            p.stop()
+                    with engine.connect() as conn:
+                        total = conn.execute(text("""
+                            SELECT COALESCE(SUM(amount_inr), 0) FROM rank_rewards WHERE reward_type=:t
+                        """), {"t": REWARD_TYPE_MEMBER_MONTHLY}).scalar()
+                expected_pool = 50000 * (pct / 100.0)
+                self.assertLessEqual(float(total), expected_pool + 0.1,
+                                      f"total Member rewards ({total}) exceeded revenue pool ({expected_pool})")
+
+    def test_financial_invariant_guide_total_never_exceeds_revenue_pool(self):
+        for pct, cap, n_users in [(5, 1_000_000, 41), (50, 100, 12), (2, 500, 199)]:
+            with self.subTest(pct=pct, cap=cap, n_users=n_users):
+                engine = _make_engine()
+                with patch.object(rank_service, "get_db_connection", side_effect=engine.connect):
+                    for uid in range(1, n_users + 1):
+                        _set_rank_directly(engine, uid, "guide")
+                    today = date.today().strftime("%Y-%m")
+                    _seed_payment(engine, 999999, 60000, status="verified", created_at=today + "-10")
+                    patchers = [
+                        patch.object(rank_config, "GUIDE_REWARD_POOL_PERCENTAGE", pct),
+                        patch.object(rank_config, "GUIDE_MONTHLY_CAP_INR", cap),
+                        patch.object(rank_service, "GUIDE_REWARD_POOL_PERCENTAGE", pct),
+                        patch.object(rank_service, "GUIDE_MONTHLY_CAP_INR", cap),
+                    ]
+                    for p in patchers:
+                        p.start()
+                    try:
+                        rank_service.evaluate_monthly_rewards(period=today)
+                    finally:
+                        for p in patchers:
+                            p.stop()
+                    with engine.connect() as conn:
+                        total = conn.execute(text("""
+                            SELECT COALESCE(SUM(amount_inr), 0) FROM rank_rewards WHERE reward_type=:t
+                        """), {"t": REWARD_TYPE_GUIDE_MONTHLY}).scalar()
+                expected_pool = 60000 * (pct / 100.0)
+                self.assertLessEqual(float(total), expected_pool + 0.1,
+                                      f"total Guide rewards ({total}) exceeded revenue pool ({expected_pool})")
 
 
 if __name__ == "__main__":

@@ -140,6 +140,27 @@ class RankUserApiSecurityTests(unittest.TestCase):
         for forbidden in ("leader_pool", "eligible_leader_count", "budget_exhausted", "pool_cap", "pool_remaining"):
             self.assertNotIn(forbidden, flat_text, f"leaked global pool field: {forbidden}")
 
+    def test_rank_apis_never_contain_member_or_guide_global_pool_fields(self):
+        """Same isolation guarantee (10.4-style) extended to the new
+        Member/Guide revenue-backed pools: global pool status must only be
+        reachable via the admin-only /api/admin/ranger/{member,guide}-pool
+        endpoints, never through a normal user's own rank/reward views."""
+        row = {
+            "rank": "member", "verified_users_count": 10, "active_subscribers_count": 2,
+            "qualified_members_count": 0, "qualified_guides_count": 0, "qualified_leaders_count": 0,
+            "updated_at": "2026-01-01",
+        }
+        with patch("services.rank_service.get_db_connection", return_value=_conn(row)):
+            me_res = self.client.get("/api/rank/me", headers={"Authorization": f"Bearer {self._token(1)}"})
+        with patch("services.rank_service.get_db_connection", return_value=_conn(None)):
+            rewards_res = self.client.get("/api/rank/rewards", headers={"Authorization": f"Bearer {self._token(1)}"})
+        flat_text = (str(me_res.get_json()) + str(rewards_res.get_json())).lower()
+        for forbidden in (
+            "member_pool", "guide_pool", "eligible_count", "rewarded_count",
+            "pool_amount", "pool_allocated", "pool_remaining", "budget_exhausted_count",
+        ):
+            self.assertNotIn(forbidden, flat_text, f"leaked global pool field: {forbidden}")
+
 
 class RangerAdminAccessTests(unittest.TestCase):
     """Requirement: only admin_required (JWT claim + DB re-check) may pass."""
@@ -159,6 +180,8 @@ class RangerAdminAccessTests(unittest.TestCase):
         "/api/admin/ranger/export.csv",
         "/api/admin/ranger/config",
         "/api/admin/ranger/leader-pool",
+        "/api/admin/ranger/member-pool",
+        "/api/admin/ranger/guide-pool",
     ]
     ADMIN_POST_ENDPOINTS = [
         "/api/admin/ranger/recompute",

@@ -12,15 +12,16 @@ toward "qualified_members" AND "qualified_guides", etc.
 
 REWARD MODEL (finalized business decision):
 Rewards are NOT a one-time rank-achievement payout. They are MONTHLY
-GROWTH REWARDS — a Leader or Ranger must be CURRENTLY qualified during a
-given calendar-month evaluation period to become eligible for that
-period's reward. Losing qualification stops future months; it never
-retroactively removes a reward already created for a past period. See
-services.rank_service.evaluate_monthly_rewards().
+GROWTH REWARDS — a Member, Guide, Leader, or Ranger must be CURRENTLY
+qualified during a given calendar-month evaluation period to become
+eligible for that period's reward. Losing qualification stops future
+months; it never retroactively removes a reward already created for a
+past period. See services.rank_service.evaluate_monthly_rewards().
 
-Use "Monthly Growth Reward" / "Leader Growth Reward" / "Ranger Growth
-Reward" in any user-facing text. Never "salary" or "employment" — these
-are growth incentives, not compensation for work performed.
+Use "Monthly Growth Reward" / "Member Growth Reward" / "Guide Growth
+Reward" / "Leader Growth Reward" / "Ranger Growth Reward" in any
+user-facing text. Never "salary" or "employment" — these are growth
+incentives, not compensation for work performed.
 """
 
 UNRANKED = "unranked"
@@ -29,8 +30,8 @@ GUIDE = "guide"
 LEADER = "leader"
 RANGER = "ranger"
 
-# Ranks eligible for a monthly growth reward. Member/Guide are not.
-MONTHLY_REWARD_RANKS = (LEADER, RANGER)
+# Ranks eligible for a monthly growth reward.
+MONTHLY_REWARD_RANKS = (MEMBER, GUIDE, LEADER, RANGER)
 
 # Order matters: index position = tier. UNRANKED is not a qualifying rank.
 RANK_ORDER = [UNRANKED, MEMBER, GUIDE, LEADER, RANGER]
@@ -57,20 +58,17 @@ RANK_BADGES = {
 # ---------------------------------------------------------------------
 # QUALIFICATION THRESHOLDS
 # ---------------------------------------------------------------------
-# Leader and Ranger values below are FINALIZED business policy.
-# Member and Guide values are still PROVISIONAL PLACEHOLDERS — they are
-# NOT finalized business policy. Do not treat them as approved numbers;
-# they exist only so the qualification system has a complete, working
-# configuration. Update only this dict when real Member/Guide numbers are
-# approved — nothing else in the codebase hardcodes a threshold.
+# All four ranks below are FINALIZED business policy. Update only this
+# dict when a threshold changes — nothing else in the codebase hardcodes
+# a threshold number.
 RANK_REQUIREMENTS = {
-    MEMBER: {  # PROVISIONAL — not yet finalized business policy.
-        "verified_users": 1,
-        "active_subscribers": 1,
+    MEMBER: {  # FINALIZED
+        "verified_users": 10,
+        "active_subscribers": 2,
     },
-    GUIDE: {  # PROVISIONAL — not yet finalized business policy.
-        "verified_users": 1,
-        "active_subscribers": 1,
+    GUIDE: {  # FINALIZED
+        "verified_users": 50,
+        "active_subscribers": 10,
         "qualified_members": 5,
     },
     LEADER: {  # FINALIZED
@@ -91,15 +89,21 @@ RANK_REQUIREMENTS = {
 # ---------------------------------------------------------------------
 # MONTHLY GROWTH REWARD POLICY
 # ---------------------------------------------------------------------
+REWARD_TYPE_MEMBER_MONTHLY = "member_monthly"
+REWARD_TYPE_GUIDE_MONTHLY = "guide_monthly"
 REWARD_TYPE_LEADER_MONTHLY = "leader_monthly"
 REWARD_TYPE_RANGER_MONTHLY = "ranger_monthly"
 
 REWARD_TYPE_LABELS = {
+    REWARD_TYPE_MEMBER_MONTHLY: "Member Growth Reward",
+    REWARD_TYPE_GUIDE_MONTHLY: "Guide Growth Reward",
     REWARD_TYPE_LEADER_MONTHLY: "Leader Growth Reward",
     REWARD_TYPE_RANGER_MONTHLY: "Ranger Growth Reward",
 }
 
 REWARD_TYPE_FOR_RANK = {
+    MEMBER: REWARD_TYPE_MEMBER_MONTHLY,
+    GUIDE: REWARD_TYPE_GUIDE_MONTHLY,
     LEADER: REWARD_TYPE_LEADER_MONTHLY,
     RANGER: REWARD_TYPE_RANGER_MONTHLY,
 }
@@ -137,6 +141,20 @@ LEADER_MONTHLY_REWARD_POOL_CAP_INR = None
 # monthly rewards become active.
 RANGER_REWARD_POOL_PERCENTAGE = 0      # e.g. 2 would mean 2% of period revenue
 RANGER_MONTHLY_CAP_INR = 0             # per-Ranger hard ceiling once a pool % is set
+
+# Member and Guide Growth Rewards: same REVENUE-BACKED, even-split model as
+# Ranger (see services.rank_service.evaluate_monthly_rewards), each with its
+# own independent pool — a Member reward is never funded from the Guide
+# pool or vice versa.
+#
+# Both pools default to PLACEHOLDER / OFF (0) — a deliberate safe default,
+# not a business decision. At 0% / ₹0 cap, the computed per-user amount is
+# always 0 and NO reward row is created at all. Finance/Admin must set real
+# values here before Member/Guide monthly rewards become active.
+MEMBER_REWARD_POOL_PERCENTAGE = 0      # e.g. 1 would mean 1% of period revenue
+MEMBER_MONTHLY_CAP_INR = 0             # per-Member hard ceiling once a pool % is set
+GUIDE_REWARD_POOL_PERCENTAGE = 0       # e.g. 1 would mean 1% of period revenue
+GUIDE_MONTHLY_CAP_INR = 0              # per-Guide hard ceiling once a pool % is set
 
 REWARD_STATUSES = ("pending", "approved", "paid", "rejected")
 

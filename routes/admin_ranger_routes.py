@@ -21,6 +21,8 @@ from services.rank_service import (
     recompute_all_ranks,
     evaluate_monthly_rewards,
     get_leader_pool_status,
+    get_member_pool_status,
+    get_guide_pool_status,
     approve_reward,
     reject_reward,
     mark_reward_paid,
@@ -33,6 +35,10 @@ from config.rank_config import (
     LEADER_MONTHLY_REWARD_MIN_INR,
     LEADER_MONTHLY_REWARD_MAX_INR,
     LEADER_MONTHLY_REWARD_POOL_CAP_INR,
+    MEMBER_REWARD_POOL_PERCENTAGE,
+    MEMBER_MONTHLY_CAP_INR,
+    GUIDE_REWARD_POOL_PERCENTAGE,
+    GUIDE_MONTHLY_CAP_INR,
     RANGER_REWARD_POOL_PERCENTAGE,
     RANGER_MONTHLY_CAP_INR,
 )
@@ -60,6 +66,10 @@ def api_ranger_config():
             "leader_monthly_reward_min_inr": LEADER_MONTHLY_REWARD_MIN_INR,
             "leader_monthly_reward_max_inr": LEADER_MONTHLY_REWARD_MAX_INR,
             "leader_monthly_reward_pool_cap_inr": LEADER_MONTHLY_REWARD_POOL_CAP_INR,
+            "member_reward_pool_percentage": MEMBER_REWARD_POOL_PERCENTAGE,
+            "member_monthly_cap_inr": MEMBER_MONTHLY_CAP_INR,
+            "guide_reward_pool_percentage": GUIDE_REWARD_POOL_PERCENTAGE,
+            "guide_monthly_cap_inr": GUIDE_MONTHLY_CAP_INR,
             "ranger_reward_pool_percentage": RANGER_REWARD_POOL_PERCENTAGE,
             "ranger_monthly_cap_inr": RANGER_MONTHLY_CAP_INR,
         },
@@ -74,6 +84,24 @@ def api_ranger_leader_pool():
     never exposed through a normal user route."""
     period = request.args.get("period")
     return jsonify(get_leader_pool_status(period))
+
+
+@admin_ranger_bp.route("/api/admin/ranger/member-pool", methods=["GET"])
+@admin_required
+def api_ranger_member_pool():
+    """Current period's Member Growth Reward pool status. Admin-only —
+    never exposed through a normal user route."""
+    period = request.args.get("period")
+    return jsonify(get_member_pool_status(period))
+
+
+@admin_ranger_bp.route("/api/admin/ranger/guide-pool", methods=["GET"])
+@admin_required
+def api_ranger_guide_pool():
+    """Current period's Guide Growth Reward pool status. Admin-only —
+    never exposed through a normal user route."""
+    period = request.args.get("period")
+    return jsonify(get_guide_pool_status(period))
 
 
 @admin_ranger_bp.route("/api/admin/ranger/overview", methods=["GET"])
