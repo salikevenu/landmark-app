@@ -183,6 +183,38 @@ class FrontendAuthGateTests(unittest.TestCase):
         self.assertIn("credentials: 'include'", login)
         self.assertIn("/api/auth/verify-otp", login)
 
+    def test_admin_payments_uses_authfetch_not_hardcoded_redirect(self):
+        """Regression: admin_payments.html used to fetch() /api/admin/payments raw
+        and jump straight to /admin/login on a 401 with no refresh attempt —
+        logging an admin out just because the 2h access token had expired."""
+        html = (ROOT / "templates" / "admin" / "admin_payments.html").read_text(encoding="utf-8")
+        self.assertIn("LandmarkSession.authFetch", html)
+        self.assertIn('"/api/admin/payments"', html)
+        self.assertNotIn('window.location.href = "/admin/login"', html)
+
+    def test_no_admin_page_bypasses_authfetch_for_admin_api_calls(self):
+        """Every admin page that calls /api/admin/* must route it through
+        LandmarkSession.authFetch (silent refresh + retry) somewhere in the
+        file, and must not hardcode a straight-to-login redirect off a bare
+        fetch()'s 401 — that combination is what let an expired access token
+        log an admin out instead of silently refreshing."""
+        import re
+        admin_dir = ROOT / "templates" / "admin"
+        hardcoded_redirect_on_401 = re.compile(
+            r'status\s*===\s*401[^}]*window\.location\.href\s*=\s*[\'"]/admin/login[\'"]',
+            re.DOTALL,
+        )
+        offenders = []
+        for path in sorted(admin_dir.glob("*.html")):
+            content = path.read_text(encoding="utf-8")
+            if "/api/admin" not in content:
+                continue
+            uses_authfetch = "LandmarkSession.authFetch" in content
+            hardcoded_redirect = hardcoded_redirect_on_401.search(content)
+            if not uses_authfetch or hardcoded_redirect:
+                offenders.append(path.name)
+        self.assertEqual(offenders, [])
+
 
 class AppJwtConfigTests(unittest.TestCase):
     def test_refresh_cookie_path_matches_refresh_route(self):

@@ -18,39 +18,39 @@
 </table>
 
 <script>
-fetch("/api/admin/payments", { credentials: "include" })
-.then(res => {
-  if (!res.ok) {
-    if (res.status === 401) {
-      window.location.href = "/admin/login";
-      throw new Error("Unauthorized");
+(async function () {
+  try {
+    // Cookie JWT expiry must not bounce an admin straight to login: authFetch
+    // silently refreshes via the refresh-token cookie and retries once first.
+    const res = window.LandmarkSession
+      ? await LandmarkSession.authFetch("/api/admin/payments")
+      : await fetch("/api/admin/payments", { credentials: "include" });
+
+    if (res.status === 401) return; // authFetch already redirected after a real refresh failure.
+    if (!res.ok) {
+      if (res.status === 403) throw new Error("Admin access required");
+      throw new Error("Failed to load");
     }
-    if (res.status === 403) {
-      throw new Error("Admin access required");
-    }
-    throw new Error("Failed to load");
+
+    const data = await res.json();
+    let html = "";
+    data.forEach(p => {
+      html += `
+        <tr>
+          <td>${p.id}</td>
+          <td>${p.user_phone}</td>
+          <td>₹${p.amount}</td>
+          <td>${p.status}</td>
+          <td>${p.created_at}</td>
+        </tr>
+      `;
+    });
+    document.getElementById("paymentsTable").innerHTML = html || "<tr><td colspan='5'>No payments found.</td></tr>";
+  } catch (err) {
+    console.error(err);
+    document.getElementById("paymentsTable").innerHTML = "<tr><td colspan='5'>Error loading payments.</td></tr>";
   }
-  return res.json();
-})
-.then(data => {
-  let html = "";
-  data.forEach(p => {
-    html += `
-      <tr>
-        <td>${p.id}</td>
-        <td>${p.user_phone}</td>
-        <td>₹${p.amount}</td>
-        <td>${p.status}</td>
-        <td>${p.created_at}</td>
-      </tr>
-    `;
-  });
-  document.getElementById("paymentsTable").innerHTML = html || "<tr><td colspan='5'>No payments found.</td></tr>";
-})
-.catch(err => {
-  console.error(err);
-  document.getElementById("paymentsTable").innerHTML = "<tr><td colspan='5'>Error loading payments.</td></tr>";
-});
+})();
 </script>
 
 {% endblock %}

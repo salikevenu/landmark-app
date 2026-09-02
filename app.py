@@ -17,6 +17,7 @@ import random
 import traceback
 
 from datetime import timedelta, datetime
+from urllib.parse import quote as urlquote
 from dotenv import load_dotenv
 from flask import Flask, g, request, redirect, render_template, session, jsonify, send_from_directory, send_file, make_response
 from flask_limiter import Limiter
@@ -26,11 +27,12 @@ from functools import lru_cache
 from redis_client import get_redis_client
 from flask_cors import CORS
 from flask_jwt_extended import (
-    JWTManager, 
-    create_access_token, 
+    JWTManager,
+    create_access_token,
     create_refresh_token,
-    get_jwt_identity, 
-    jwt_required, 
+    get_jwt,
+    get_jwt_identity,
+    jwt_required,
     verify_jwt_in_request,
     set_access_cookies,
     set_refresh_cookies,
@@ -159,22 +161,44 @@ def _wants_html_login_redirect():
     accept = request.headers.get("Accept") or ""
     return request.method == "GET" and "text/html" in accept
 
+def _safe_relative_path(path):
+    """Reject absolute/protocol-relative targets to avoid open redirects."""
+    if not path or not path.startswith("/") or path.startswith("//") or path.startswith("/\\"):
+        return "/"
+    return path
+
+def _current_path_with_query():
+    path = request.path
+    qs = request.query_string.decode("utf-8", "ignore")
+    return f"{path}?{qs}" if qs else path
+
+def _silent_refresh_redirect():
+    """A page navigation hit a missing/expired/invalid access token.
+
+    Cookies (incl. the refresh token) survive browser/app/device restarts,
+    so before dropping the user to the login screen, bounce through a
+    silent refresh that reuses the still-valid refresh cookie. Only a
+    genuinely dead/revoked credential should ever force a fresh login.
+    """
+    next_url = urlquote(_safe_relative_path(_current_path_with_query()), safe="")
+    return redirect(f"/api/refresh/silent?next={next_url}")
+
 @jwt.unauthorized_loader
 def _jwt_missing(reason):
     if _wants_html_login_redirect():
-        return redirect("/api/auth/public/login")
+        return _silent_refresh_redirect()
     return jsonify({"success": False, "error": "Authentication required"}), 401
 
 @jwt.expired_token_loader
 def _jwt_expired(jwt_header, jwt_payload):
     if _wants_html_login_redirect():
-        return redirect("/api/auth/public/login")
+        return _silent_refresh_redirect()
     return jsonify({"success": False, "error": "Session expired"}), 401
 
 @jwt.invalid_token_loader
 def _jwt_invalid(reason):
     if _wants_html_login_redirect():
-        return redirect("/api/auth/public/login")
+        return _silent_refresh_redirect()
     return jsonify({"success": False, "error": "Invalid session"}), 401
 
 from services.jwt_session import register_jwt_security, revoke_tokens_from_request
@@ -363,43 +387,102 @@ def readiness():
     except Exception:
         return {"status": "not ready"}, 503
 
-@app.route("/api/refresh", methods=["POST"])
-@limiter.limit("30 per minute")
-@jwt_required(refresh=True)
-def refresh():
-    from flask_jwt_extended import get_jwt
-    current_user_id = get_jwt_identity()
-    try:
-        uid = int(current_user_id)
-    except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "Invalid session"}), 401
+def _mint_access_token_for_refresh():
+    """Assumes a refresh JWT has already been verified on this request.
+
+    Returns (access_token, access_expires) on success.
+    Returns (None, None) if the identity no longer maps to an active,
+    unblocked user — a genuine auth failure, caller should force login.
+    Raises ValueError for a malformed identity (also a hard auth failure).
+    Raises any other exception on a transient lookup failure (e.g. DB
+    unreachable) — caller should treat that as "service unavailable", never
+    as a reason to log the user out.
+    """
+    uid = int(get_jwt_identity())
     remember_me = bool(get_jwt().get("remember_me"))
-    try:
-        from database.init_db import get_db_connection
-        with get_db_connection() as conn:
-            row = conn.execute(
-                text("SELECT role, phone, is_blocked, is_active FROM users WHERE id = :uid"),
-                {"uid": uid},
-            ).fetchone()
-    except Exception:
-        logger.exception("refresh user lookup failed")
-        return jsonify({"success": False, "error": "Service unavailable"}), 503
+    from database.init_db import get_db_connection
+    with get_db_connection() as conn:
+        row = conn.execute(
+            text("SELECT role, phone, is_blocked, is_active FROM users WHERE id = :uid"),
+            {"uid": uid},
+        ).fetchone()
     if not row:
-        return jsonify({"success": False, "error": "Invalid session"}), 401
+        return None, None
     mapping = row._mapping
     if mapping.get("is_blocked") or mapping.get("is_active") == 0:
-        return jsonify({"success": False, "error": "Invalid session"}), 401
+        return None, None
     role = mapping.get("role") or "free"
     phone = mapping.get("phone") or ""
     access_expires = timedelta(days=30) if remember_me else timedelta(hours=2)
-    new_access_token = create_access_token(
+    access_token = create_access_token(
         identity=str(uid),
         additional_claims={"role": role, "phone": phone, "remember_me": remember_me},
         expires_delta=access_expires,
     )
+    return access_token, access_expires
+
+
+@app.route("/api/refresh", methods=["POST"])
+@limiter.limit("30 per minute")
+@jwt_required(refresh=True)
+def refresh():
+    try:
+        access_token, access_expires = _mint_access_token_for_refresh()
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+    except Exception:
+        logger.exception("refresh user lookup failed")
+        return jsonify({"success": False, "error": "Service unavailable"}), 503
+    if access_token is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
     response = jsonify({"success": True})
-    set_access_cookies(response, new_access_token, max_age=int(access_expires.total_seconds()))
+    set_access_cookies(response, access_token, max_age=int(access_expires.total_seconds()))
     return response
+
+
+@app.route("/api/refresh/silent", methods=["GET"])
+@limiter.limit("60 per minute")
+def refresh_silent():
+    """GET counterpart to /api/refresh, for full-page navigations.
+
+    Protected HTML pages land here (see _silent_refresh_redirect) instead of
+    going straight to the login screen when their access-token cookie is
+    missing/expired/invalid. As long as the refresh-token cookie (scoped to
+    /api/refresh) is still valid, this transparently mints a fresh access
+    token and bounces the user back to the page they wanted — keeping them
+    signed in across app/browser/device restarts without a fresh OTP.
+    Not decorated with @jwt_required: a failed verify here must fall through
+    to the login redirect below, not re-trigger the loaders that sent us
+    here (which would recurse back to this same route).
+    """
+    next_url = _safe_relative_path(request.args.get("next"))
+    login_url = "/api/auth/public/login"
+
+    try:
+        verify_jwt_in_request(refresh=True)
+    except Exception:
+        resp = redirect(login_url)
+        unset_jwt_cookies(resp)
+        return resp
+
+    try:
+        access_token, access_expires = _mint_access_token_for_refresh()
+    except (TypeError, ValueError):
+        resp = redirect(login_url)
+        unset_jwt_cookies(resp)
+        return resp
+    except Exception:
+        logger.exception("silent refresh user lookup failed")
+        return "Service temporarily unavailable. Please try again.", 503
+
+    if access_token is None:
+        resp = redirect(login_url)
+        unset_jwt_cookies(resp)
+        return resp
+
+    resp = redirect(next_url)
+    set_access_cookies(resp, access_token, max_age=int(access_expires.total_seconds()))
+    return resp
 
 @app.route('/download-app')
 def download_app():
