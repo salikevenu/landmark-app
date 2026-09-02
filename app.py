@@ -507,15 +507,57 @@ def download_app():
     return send_from_directory(apk_path, 'landmark.apk', as_attachment=True)
 
 import qrcode
+from qrcode.constants import ERROR_CORRECT_H
 from io import BytesIO
+from PIL import Image
+
+LANDMARK_LOGO_PATH = os.path.join(app.root_path, 'static', 'images', 'landmark-logo.png')
+
+
+def _overlay_logo_center(qr_img, logo_path):
+    """Paste the real LANDMARK logo in the center of a QR image, on a small
+    white backing square for contrast. High error correction (H, ~30%
+    recoverable) plus a logo capped at ~20% of the QR width keeps the code
+    reliably scannable. Any failure here must never break /qr/<code>."""
+    try:
+        with Image.open(logo_path) as logo_src:
+            logo = logo_src.copy()
+        target = max(int(qr_img.size[0] * 0.20), 1)
+        logo.thumbnail((target, target), Image.LANCZOS)
+
+        pad = max(int(target * 0.14), 6)
+        backing_size = (logo.size[0] + pad * 2, logo.size[1] + pad * 2)
+        backing = Image.new("RGB", backing_size, "white")
+        backing_pos = (
+            (qr_img.size[0] - backing_size[0]) // 2,
+            (qr_img.size[1] - backing_size[1]) // 2,
+        )
+        qr_img.paste(backing, backing_pos)
+
+        logo_pos = (
+            (qr_img.size[0] - logo.size[0]) // 2,
+            (qr_img.size[1] - logo.size[1]) // 2,
+        )
+        mask = logo.split()[3] if logo.mode == "RGBA" else None
+        qr_img.paste(logo, logo_pos, mask)
+    except Exception:
+        logger.exception("QR logo overlay failed; serving plain QR")
+    return qr_img
+
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
     from routes.auth_routes import register_url_with_ref
     signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
-    qr = qrcode.make(signup_url)
+
+    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
+    qr.add_data(signup_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    img = _overlay_logo_center(img, LANDMARK_LOGO_PATH)
+
     img_io = BytesIO()
-    qr.save(img_io, 'PNG')
+    img.save(img_io, 'PNG')
     img_io.seek(0)
     return send_file(img_io, mimetype='image/png')
 

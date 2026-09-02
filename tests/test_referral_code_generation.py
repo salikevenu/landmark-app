@@ -486,6 +486,83 @@ class QrCodeEndpointTests(unittest.TestCase):
         payload = decoded[0].data.decode("utf-8")
         self.assertIn("/register?ref=SOMECODE123", payload)
 
+    def test_qr_center_has_the_landmark_logo_without_disturbing_finder_patterns(self):
+        """No pyzbar needed: build a plain (no-logo) reference QR with the
+        exact same data/params the pre-logo implementation used, and prove
+        (a) the three-corner finder patterns are byte-identical — untouched —
+        and (b) the center region, where the logo+backing are pasted, differs
+        substantially from the plain QR — proving the overlay actually ran."""
+        import io
+        import qrcode
+        from qrcode.constants import ERROR_CORRECT_H
+        from PIL import Image
+        from app import app as flask_app
+        from routes.auth_routes import register_url_with_ref
+
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        res = client.get("/qr/SOMECODE123")
+        self.assertEqual(res.status_code, 200)
+        actual = Image.open(io.BytesIO(res.data)).convert("RGB")
+
+        plain_url = "http://localhost" + register_url_with_ref("SOMECODE123")
+        qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
+        qr.add_data(plain_url)
+        qr.make(fit=True)
+        plain = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+        self.assertEqual(actual.size, plain.size)
+
+        box_size, border = 10, 4
+        finder_px = 7 * box_size
+        offset = border * box_size
+        finder_box = (offset, offset, offset + finder_px, offset + finder_px)
+        self.assertEqual(
+            list(actual.crop(finder_box).getdata()),
+            list(plain.crop(finder_box).getdata()),
+            "Top-left finder pattern must be untouched by the logo overlay",
+        )
+
+        w, h = actual.size
+        patch = int(w * 0.20)
+        center_box = ((w - patch) // 2, (h - patch) // 2, (w + patch) // 2, (h + patch) // 2)
+        center_actual = list(actual.crop(center_box).getdata())
+        center_plain = list(plain.crop(center_box).getdata())
+        differing = sum(1 for a, b in zip(center_actual, center_plain) if a != b)
+        self.assertGreater(
+            differing, len(center_actual) // 4,
+            "Center region should differ substantially from a plain QR once the logo is overlaid",
+        )
+
+    def test_qr_uses_high_error_correction(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        qr_fn = src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("ERROR_CORRECT_H", qr_fn)
+
+    def test_qr_logo_overlay_uses_the_real_landmark_logo_asset(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("images', 'landmark-logo.png'", src)
+        self.assertNotIn("data:image", src)
+        overlay_fn = src.split("def _overlay_logo_center")[1].split("\n@app.route")[0]
+        self.assertNotIn("http://", overlay_fn)
+        self.assertNotIn("https://", overlay_fn)
+
+    def test_qr_logo_size_within_recommended_bounds(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        overlay_fn = src.split("def _overlay_logo_center")[1].split("\n@app.route")[0]
+        self.assertIn("0.20", overlay_fn)
+
+    def test_qr_endpoint_survives_a_missing_or_broken_logo_file(self):
+        """A production filesystem hiccup on the logo asset must degrade to a
+        plain scannable QR, never break the referral flow entirely."""
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        client = flask_app.test_client()
+        with patch("app.Image.open", side_effect=OSError("logo missing")):
+            res = client.get("/qr/SOMECODE123")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.mimetype, "image/png")
+
 
 class ReferralInfoServiceTests(unittest.TestCase):
     """services/referral_service.get_referral_info now also returns referral_link."""
