@@ -23,6 +23,7 @@ from services.rank_service import (
     get_leader_pool_status,
     get_member_pool_status,
     get_guide_pool_status,
+    get_ranger_pool_status,
     approve_reward,
     reject_reward,
     mark_reward_paid,
@@ -102,6 +103,16 @@ def api_ranger_guide_pool():
     never exposed through a normal user route."""
     period = request.args.get("period")
     return jsonify(get_guide_pool_status(period))
+
+
+@admin_ranger_bp.route("/api/admin/ranger/ranger-pool", methods=["GET"])
+@admin_required
+def api_ranger_ranger_pool():
+    """Current period's Ranger Growth Reward pool status (read-only
+    reporting only — does not alter Ranger reward calculation). Admin-only
+    — never exposed through a normal user route."""
+    period = request.args.get("period")
+    return jsonify(get_ranger_pool_status(period))
 
 
 @admin_ranger_bp.route("/api/admin/ranger/overview", methods=["GET"])

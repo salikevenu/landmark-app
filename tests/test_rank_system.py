@@ -834,6 +834,33 @@ class LeaderRewardPoolCapTests(unittest.TestCase):
         count, _ = self._leader_rewards_total("2026-09")
         self.assertEqual(count, 0, "a status read must never allocate the pool")
 
+    def test_get_ranger_pool_status_reports_correctly_without_writing(self):
+        """New read-only reporting surface added for the admin UI's
+        dedicated Ranger pool card — does not alter Ranger reward
+        calculation (evaluate_monthly_rewards' Ranger block is untouched)."""
+        _set_rank_directly(self.engine, 1, "ranger")
+        _set_rank_directly(self.engine, 2, "ranger")
+        today = date.today().strftime("%Y-%m")
+        _seed_payment(self.engine, 99, 100000, status="verified", created_at=today + "-10")
+
+        status_before = rank_service.get_ranger_pool_status(period=today)
+        self.assertEqual(status_before["eligible_count"], 2)
+        self.assertEqual(status_before["rewarded_count"], 0)
+        self.assertIsNone(status_before["monthly_cap_inr"], "placeholder-off Ranger policy must report as inactive")
+        count, _ = self._leader_rewards_total(today)  # unrelated, just confirms no accidental Leader write
+
+        with patch.object(rank_config, "RANGER_REWARD_POOL_PERCENTAGE", 10), \
+             patch.object(rank_config, "RANGER_MONTHLY_CAP_INR", 100000), \
+             patch.object(rank_service, "RANGER_REWARD_POOL_PERCENTAGE", 10), \
+             patch.object(rank_service, "RANGER_MONTHLY_CAP_INR", 100000):
+            status_configured = rank_service.get_ranger_pool_status(period=today)
+            self.assertEqual(status_configured["pool_allocated_inr"], 0, "a status read must never allocate the pool")
+            rank_service.evaluate_monthly_rewards(period=today)
+            status_after = rank_service.get_ranger_pool_status(period=today)
+        self.assertEqual(status_after["rewarded_count"], 2)
+        self.assertEqual(status_after["budget_exhausted_count"], 0)
+        self.assertGreater(status_after["pool_allocated_inr"], 0)
+
     # 10. FINANCIAL INVARIANT — the core proof this fix exists for.
     def test_financial_invariant_leader_total_never_exceeds_configured_cap(self):
         for cap, n_leaders in [(10000, 37), (1000, 50), (999, 10), (1, 5), (100000, 250)]:

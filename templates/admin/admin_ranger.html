@@ -41,12 +41,6 @@
   </div>
 
   <div class="card">
-    <h3>Leader Reward Pool — This Period</h3>
-    <p style="color:#666; font-size:0.85rem;">Financial safety cap on total Leader Growth Reward allocation for the current period. Leaders whose reward would exceed the cap receive no reward row at all (never partial) — they're counted as budget-exhausted below.</p>
-    <div id="leaderPoolPanel">Loading...</div>
-  </div>
-
-  <div class="card">
     <h3>Member Reward Pool — This Period</h3>
     <p style="color:#666; font-size:0.85rem;">Revenue-backed pool, split evenly across qualifying Members and capped per person — the same model as Ranger. If the pool % or cap is 0 (placeholder), nobody is rewarded that period.</p>
     <div id="memberPoolPanel">Loading...</div>
@@ -56,6 +50,18 @@
     <h3>Guide Reward Pool — This Period</h3>
     <p style="color:#666; font-size:0.85rem;">Revenue-backed pool, split evenly across qualifying Guides and capped per person — the same model as Ranger. If the pool % or cap is 0 (placeholder), nobody is rewarded that period.</p>
     <div id="guidePoolPanel">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h3>Leader Reward Pool — This Period</h3>
+    <p style="color:#666; font-size:0.85rem;">Financial safety cap on total Leader Growth Reward allocation for the current period. Leaders whose reward would exceed the cap receive no reward row at all (never partial) — they're counted as budget-exhausted below.</p>
+    <div id="leaderPoolPanel">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h3>Ranger Reward Pool — This Period</h3>
+    <p style="color:#666; font-size:0.85rem;">Revenue-backed pool, split evenly across qualifying Rangers and capped per person. If the pool % or cap is 0 (placeholder), nobody is rewarded that period.</p>
+    <div id="rangerPoolPanel">Loading...</div>
   </div>
 
   <div class="card">
@@ -194,6 +200,7 @@ async function loadOverview() {
 
     renderRevenuePoolPanel('memberPoolPanel', data.member_pool || {}, 'Member');
     renderRevenuePoolPanel('guidePoolPanel', data.guide_pool || {}, 'Guide');
+    renderRevenuePoolPanel('rangerPoolPanel', data.ranger_pool || {}, 'Ranger');
   } catch (err) {
     console.error(err);
   }

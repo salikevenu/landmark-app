@@ -156,7 +156,7 @@ class RankUserApiSecurityTests(unittest.TestCase):
             rewards_res = self.client.get("/api/rank/rewards", headers={"Authorization": f"Bearer {self._token(1)}"})
         flat_text = (str(me_res.get_json()) + str(rewards_res.get_json())).lower()
         for forbidden in (
-            "member_pool", "guide_pool", "eligible_count", "rewarded_count",
+            "member_pool", "guide_pool", "ranger_pool", "eligible_count", "rewarded_count",
             "pool_amount", "pool_allocated", "pool_remaining", "budget_exhausted_count",
         ):
             self.assertNotIn(forbidden, flat_text, f"leaked global pool field: {forbidden}")
@@ -182,6 +182,7 @@ class RangerAdminAccessTests(unittest.TestCase):
         "/api/admin/ranger/leader-pool",
         "/api/admin/ranger/member-pool",
         "/api/admin/ranger/guide-pool",
+        "/api/admin/ranger/ranger-pool",
     ]
     ADMIN_POST_ENDPOINTS = [
         "/api/admin/ranger/recompute",

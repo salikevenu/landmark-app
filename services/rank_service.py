@@ -424,6 +424,33 @@ def get_guide_pool_status(period=None):
             pass
 
 
+def get_ranger_pool_status(period=None):
+    """Admin-only read: current Ranger Growth Reward pool status for a
+    period, without triggering any evaluation/writes. Read-only reporting
+    only — mirrors get_leader_pool_status's eligibility query exactly
+    (plain rank lookup, no extra join) so the reported eligible_count
+    matches what evaluate_monthly_rewards()'s untouched Ranger block
+    actually counts as eligible."""
+    period = period or current_reward_period()
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            text("SELECT user_id FROM user_rank_stats WHERE rank = :r"), {"r": RANGER}
+        ).fetchall()
+        eligible_ids = [r._mapping["user_id"] for r in rows]
+        report = _revenue_pool_report(
+            conn, period, REWARD_TYPE_RANGER_MONTHLY,
+            RANGER_REWARD_POOL_PERCENTAGE, RANGER_MONTHLY_CAP_INR, eligible_ids,
+        )
+        report["period"] = period
+        return report
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _create_revenue_backed_pool_rewards(conn, period, reward_type, rank, pool_percentage, cap_inr, eligible_ids):
     """Ranger-style even-split model, reused for Member and Guide:
     per-user reward = min(pool / eligible_users, configured_cap), where
@@ -731,6 +758,16 @@ def get_ranger_overview():
         )
         guide_pool["period"] = period
 
+        ranger_ids = [
+            r._mapping["user_id"] for r in
+            conn.execute(text("SELECT user_id FROM user_rank_stats WHERE rank = :r"), {"r": RANGER}).fetchall()
+        ]
+        ranger_pool = _revenue_pool_report(
+            conn, period, REWARD_TYPE_RANGER_MONTHLY,
+            RANGER_REWARD_POOL_PERCENTAGE, RANGER_MONTHLY_CAP_INR, ranger_ids,
+        )
+        ranger_pool["period"] = period
+
         return {
             "rank_distribution": distribution,
             "rewards_by_status": rewards_by_status,
@@ -739,6 +776,7 @@ def get_ranger_overview():
             "leader_pool": leader_pool,
             "member_pool": member_pool,
             "guide_pool": guide_pool,
+            "ranger_pool": ranger_pool,
         }
     finally:
         try:
