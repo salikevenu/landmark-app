@@ -613,6 +613,24 @@ def init_db():
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_rewards_status ON rank_rewards(status)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_rank_rewards_period ON rank_rewards(reward_period)"))
 
+    # =====================================================
+    # POS BUSINESSES
+    # =====================================================
+    # LANDMARK POS is a separate product from this marketplace app. A POS
+    # business is its own tenant concept — deliberately not `businesses`
+    # (unused/legacy) or `listings` (marketplace directory entries). See
+    # the LANDMARK POS repo's DECISIONS.md for the tenancy model. No
+    # subscription/plan/limit columns yet — future work.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_businesses (
+            id SERIAL PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL REFERENCES users(id),
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_businesses_owner ON pos_businesses(owner_user_id)"))
+
     conn.commit()
     conn.close()
 
