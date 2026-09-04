@@ -22,6 +22,7 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
     unset_jwt_cookies,
+    verify_jwt_in_request,
 )
 from services.jwt_session import revoke_tokens_from_request
 from services.sms_service import get_sms_service
@@ -628,9 +629,34 @@ def verify_otp():
         logger.exception("verify_otp error")
         return jsonify({"success": False, "message": "Something went wrong. Please try again."}), 500
         
+def _current_request_is_authenticated_user():
+    """True only if THIS request already carries a currently-valid JWT
+    access-token cookie for any user. Mirrors admin_routes.py's
+    _current_request_is_admin: verify_jwt_in_request(optional=True) only
+    swallows a genuinely MISSING token (treated as 'not logged in' below).
+    An expired or otherwise invalid token is deliberately NOT caught here
+    — that exception propagates to the app's existing global JWT error
+    handlers (app.py's expired/invalid loaders), the same silent-refresh
+    path every other protected page already relies on. No JWT claim is
+    inspected or trusted here — only cryptographic/expiry validity of the
+    token itself decides the answer, so there is nothing "arbitrary" to
+    treat as sufficient.
+    """
+    return verify_jwt_in_request(optional=True) is not None
+
+
 @auth_bp.route("/public/login", methods=["GET"])
 def public_login_page():
-    """Public user login page."""
+    """Public user login page.
+
+    An already-authenticated user (admin or regular) must never be shown a
+    fresh OTP form here — otherwise Chrome's back button (or a bookmark/
+    autocomplete hit on this exact URL) always looks like a lost session
+    even when the cookies are still perfectly valid. Anyone else (no
+    session, or an expired one) sees the normal login form.
+    """
+    if _current_request_is_authenticated_user():
+        return redirect("/dashboard")
     return render_template("public/login.html")
 
 @auth_bp.route("/resend-otp", methods=["POST"])

@@ -263,6 +263,93 @@ class AdminLoginSessionRedirectTests(unittest.TestCase):
         self.assertNotIn('window.location.href = "/admin/dashboard"', html)
 
 
+class UserLoginSessionRedirectTests(unittest.TestCase):
+    """/api/auth/public/login must not show a fresh OTP form to an
+    already-authenticated user — the regular-user counterpart to the
+    deployed AdminLoginSessionRedirectTests fix above, addressing the
+    reported "asks for OTP again" symptom (Chrome back button, a
+    bookmark, or autocomplete landing directly on the login URL even
+    though the JWT cookies are still perfectly valid)."""
+
+    def setUp(self):
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        self.app = flask_app
+        self.client = flask_app.test_client()
+
+    def _token(self, uid, role="free"):
+        with self.app.app_context():
+            return create_access_token(identity=str(uid), additional_claims={"role": role})
+
+    # 1. Unauthenticated -> OTP login page, HTTP 200
+    def test_unauthenticated_public_login_still_renders_otp_form(self):
+        res = self.client.get("/api/auth/public/login")
+        self.assertEqual(res.status_code, 200)
+
+    # 2. Authenticated regular user -> HTTP 302 to /dashboard
+    def test_authenticated_regular_user_is_redirected_to_dashboard(self):
+        self.client.set_cookie("access_token", self._token(1, role="free"))
+        res = self.client.get("/api/auth/public/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/dashboard", res.headers.get("Location", ""))
+
+    # 3. Authenticated non-admin still treated as a regular user -> /dashboard
+    def test_authenticated_non_admin_redirected_to_dashboard_not_admin(self):
+        self.client.set_cookie("access_token", self._token(2, role="business_basic"))
+        res = self.client.get("/api/auth/public/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/dashboard", res.headers.get("Location", ""))
+        self.assertNotIn("/admin/dashboard", res.headers.get("Location", ""))
+
+    # 4. Expired/invalid JWT: existing global handling remains intact, no crash
+    def test_expired_token_does_not_crash_public_login(self):
+        with self.app.app_context():
+            token = create_access_token(identity="1", expires_delta=timedelta(seconds=-5))
+        self.client.set_cookie("access_token", token)
+        res = self.client.get("/api/auth/public/login")
+        self.assertIn(res.status_code, (200, 302, 401, 422))
+
+    def test_invalid_token_does_not_crash_public_login(self):
+        self.client.set_cookie("access_token", "not-a-jwt")
+        res = self.client.get("/api/auth/public/login")
+        self.assertIn(res.status_code, (200, 302, 401, 422))
+
+    # 5. Source-level: successful public login navigation uses .replace, not .href
+    def test_login_success_navigation_uses_location_replace(self):
+        html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
+        self.assertIn(
+            "window.location.replace((role === 'admin') ? '/admin/dashboard' : '/dashboard');",
+            html,
+        )
+        self.assertNotIn("window.location.href = (role === 'admin')", html)
+
+    # 6. Source-level: LandmarkSession.redirectToLogin uses .replace, not .href
+    def test_session_js_redirect_to_login_uses_location_replace(self):
+        js = (ROOT / "static" / "js" / "session.js").read_text(encoding="utf-8")
+        self.assertIn("window.location.replace(LOGIN_URL);", js)
+        self.assertNotIn("window.location.href = LOGIN_URL", js)
+
+    # 7. Direct regression for the reported symptom
+    def test_dashboard_then_back_to_login_with_valid_cookies_redirects_not_form(self):
+        token = self._token(3, role="free")
+        self.client.set_cookie("access_token", token)
+        dash = self.client.get("/dashboard", follow_redirects=True)
+        self.assertEqual(dash.status_code, 200)
+        res = self.client.get("/api/auth/public/login", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/dashboard", res.headers.get("Location", ""))
+
+    def test_current_request_is_authenticated_user_does_not_swallow_expired_or_invalid_tokens(self):
+        """Only a genuinely MISSING token may be treated as 'not logged in'
+        here — an expired/invalid token must keep propagating to the app's
+        existing global JWT error handlers (the silent-refresh path)."""
+        src = (ROOT / "routes" / "auth_routes.py").read_text(encoding="utf-8")
+        fn_src = src.split("def _current_request_is_authenticated_user")[1].split("\ndef ")[0]
+        self.assertIn("verify_jwt_in_request(optional=True)", fn_src)
+        self.assertNotIn("except ", fn_src)
+        self.assertNotIn("except:", fn_src)
+
+
 class FrontendAuthGateTests(unittest.TestCase):
     def test_create_listing_does_not_stop_on_empty_localstorage(self):
         html = (ROOT / "templates" / "users" / "create_listing.html").read_text(encoding="utf-8")

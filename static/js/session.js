@@ -26,7 +26,7 @@
 
   function redirectToLogin() {
     if (window.location.pathname.indexOf("/login") !== -1) return;
-    window.location.href = LOGIN_URL;
+    window.location.replace(LOGIN_URL);
   }
 
   function clearLegacyClientTokens() {
