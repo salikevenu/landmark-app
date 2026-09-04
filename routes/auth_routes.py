@@ -436,6 +436,14 @@ def delete_verification(phone):
 # ROUTES
 # =================================
 
+def _wants_json_tokens():
+    """POS/mobile clients opt in via this header to also receive raw JWT
+    strings in the JSON body, alongside the normal Set-Cookie tokens used
+    by browser sessions. Browser clients never send this header, so their
+    response body is byte-for-byte unchanged."""
+    return request.headers.get("X-Client-Type", "").strip().lower() == "pos"
+
+
 @auth_bp.route("/send-otp", methods=["POST"])
 @_limit("5 per minute")
 @_limit("20 per hour")
@@ -610,14 +618,20 @@ def verify_otp():
                 expires_delta=refresh_expires,
             )
 
+            response_data = {
+                "status": status,
+                "user": user_data,
+                "referral_link": referral_link_for(user_data.get("referral_code")),
+            }
+            if _wants_json_tokens():
+                # POS/mobile only — browser clients rely on the cookies below.
+                response_data["access_token"] = access_token
+                response_data["refresh_token"] = refresh_token
+
             response = jsonify({
                 "success": True,
                 "message": "Login successful" if status == "existing" else "Account created successfully",
-                "data": {
-                    "status": status,
-                    "user": user_data,
-                    "referral_link": referral_link_for(user_data.get("referral_code")),
-                },
+                "data": response_data,
             })
 
             set_access_cookies(response, access_token, max_age=int(access_expires.total_seconds()))

@@ -434,6 +434,14 @@ def _mint_access_token_for_refresh():
     return access_token, access_expires
 
 
+def _wants_json_tokens():
+    """POS/mobile clients opt in via this header to also receive the raw
+    access token in the JSON body, alongside the normal Set-Cookie token
+    used by browser sessions. Browser clients never send this header, so
+    their response body is byte-for-byte unchanged."""
+    return request.headers.get("X-Client-Type", "").strip().lower() == "pos"
+
+
 @app.route("/api/refresh", methods=["POST"])
 @limiter.limit("30 per minute")
 @jwt_required(refresh=True)
@@ -447,7 +455,11 @@ def refresh():
         return jsonify({"success": False, "error": "Service unavailable"}), 503
     if access_token is None:
         return jsonify({"success": False, "error": "Invalid session"}), 401
-    response = jsonify({"success": True})
+    payload = {"success": True}
+    if _wants_json_tokens():
+        # POS/mobile only — browser clients rely on the cookie above.
+        payload["access_token"] = access_token
+    response = jsonify(payload)
     set_access_cookies(response, access_token, max_age=int(access_expires.total_seconds()))
     return response
 
