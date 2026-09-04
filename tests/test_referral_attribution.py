@@ -411,6 +411,148 @@ class LandingAndFrontendTests(unittest.TestCase):
         migration = (ROOT / "migrations" / "add_pending_referrals.py").read_text(encoding="utf-8")
         self.assertIn("pending_referrals", migration)
 
+    # 8. apple-touch-icon appears in both required layouts
+    def test_apple_touch_icon_present_in_both_layouts(self):
+        public_layout = (ROOT / "templates" / "layouts" / "layout_public.html").read_text(encoding="utf-8")
+        app_layout = (ROOT / "templates" / "layouts" / "layout_app.html").read_text(encoding="utf-8")
+        self.assertIn('rel="apple-touch-icon"', public_layout)
+        self.assertIn("icon-192.png", public_layout)
+        self.assertIn('rel="apple-touch-icon"', app_layout)
+        self.assertIn("icon-192.png", app_layout)
+
+    def test_manifest_start_url_and_qr_generation_untouched(self):
+        """Regression guard (item 7): the manifest's start_url and the live
+        QR endpoint must be exactly what they were before this change —
+        referral preservation must not touch either."""
+        manifest = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
+        self.assertIn('"start_url": "/"', manifest)
+        qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
+
+
+class RegisterPageReferralCaptureTests(unittest.TestCase):
+    """/register?ref=CODE must durably capture the code into the session on
+    first page load — not just when the phone/OTP form is later submitted.
+    Covers the PWA-install-before-registering gap: manifest start_url is a
+    fixed "/", so a home-screen relaunch carries no ?ref= at all, and only
+    a session cache that survives a real browser/app close (see
+    cache_landing_referral_code's session.permanent=True) can still
+    attribute the referral once the user actually registers."""
+
+    def setUp(self):
+        # send-otp is IP-rate-limited (5/min). @_limit(...) in auth_routes.py
+        # captured its own reference to extensions.limiter at auth_routes'
+        # first import (before app.py's later init_extensions(app) rebinds
+        # the extensions.limiter name to a different object) — reset the
+        # one auth_routes actually holds, so this class's calls can't be
+        # starved by (or starve) unrelated tests that ran first.
+        if getattr(auth_routes, "limiter", None) is not None:
+            auth_routes.limiter.reset()
+        self.store = ReferralStore()
+        self.referrer = self.store.add_user("9998887777", "REFCODE1")
+        self.engine = FakeEngine(self.store)
+        self.engine_patch = patch.object(auth_routes, "engine", self.engine)
+        self.engine_patch.start()
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        self.client = flask_app.test_client()
+
+    def tearDown(self):
+        self.engine_patch.stop()
+
+    def _mock_send_otp(self, verification_id="vid"):
+        sms = MagicMock()
+        sms.send_otp.return_value = (True, {}, verification_id)
+        return patch.object(auth_routes, "get_verification", return_value=None), \
+            patch.object(auth_routes, "store_verification"), \
+            patch.object(auth_routes, "get_sms_service", return_value=sms)
+
+    # 1. GET /register?ref=VALID_CODE preserves referral
+    def test_register_with_valid_ref_returns_200(self):
+        res = self.client.get("/register?ref=REFCODE1")
+        self.assertEqual(res.status_code, 200)
+
+    # 2. Referral is available when registration begins later (no ref in
+    # that later request at all — simulates a PWA install gap in between).
+    def test_referral_survives_to_later_send_otp_with_no_ref_in_request(self):
+        get_res = self.client.get("/register?ref=REFCODE1")
+        self.assertEqual(get_res.status_code, 200)
+        p1, p2, p3 = self._mock_send_otp("vid-later")
+        with p1, p2, p3:
+            res = self.client.post("/api/auth/send-otp", json={"phone": "9876500002"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.store.pending["9876500002"]["referrer_id"], self.referrer["id"])
+
+    # 3. Invalid referral code is not persisted
+    def test_register_with_invalid_ref_does_not_persist(self):
+        res = self.client.get("/register?ref=NOSUCHCODE")
+        self.assertEqual(res.status_code, 200, "an invalid code must not break the page")
+        p1, p2, p3 = self._mock_send_otp("vid-invalid")
+        with p1, p2, p3:
+            self.client.post("/api/auth/send-otp", json={"phone": "9876500001"})
+        self.assertNotIn("9876500001", self.store.pending)
+
+    # 4. Existing referral attribution still works (query/body path, no
+    # prior /register landing involved at all)
+    def test_direct_send_otp_with_ref_still_works_unaffected(self):
+        p1, p2, p3 = self._mock_send_otp("vid-direct")
+        with p1, p2, p3:
+            res = self.client.post(
+                "/api/auth/send-otp?ref=REFCODE1",
+                json={"phone": "9876500005", "ref": "REFCODE1"},
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.store.pending["9876500005"]["referrer_id"], self.referrer["id"])
+
+    # 5. Normal /register without ref still works exactly as before
+    def test_register_without_ref_still_works(self):
+        res = self.client.get("/register")
+        self.assertEqual(res.status_code, 200)
+        p1, p2, p3 = self._mock_send_otp("vid-noref")
+        with p1, p2, p3:
+            self.client.post("/api/auth/send-otp", json={"phone": "9876500006"})
+        self.assertNotIn("9876500006", self.store.pending)
+
+    # 6. Referral cannot be incorrectly replaced by an unrelated later request
+    def test_unrelated_later_request_does_not_replace_existing_session_referral(self):
+        self.client.get("/register?ref=REFCODE1")
+        self.client.get("/register")  # unrelated: no ref, must not clear/replace
+        p1, p2, p3 = self._mock_send_otp("vid-unrelated")
+        with p1, p2, p3:
+            res = self.client.post("/api/auth/send-otp", json={"phone": "9876500003"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.store.pending["9876500003"]["referrer_id"], self.referrer["id"])
+
+    # Full flow: landing -> (simulated install gap) -> send-otp -> verify-otp
+    # -> new account created with referred_by correctly attributed.
+    def test_full_flow_landing_before_registration_then_verify_otp(self):
+        self.client.get("/register?ref=REFCODE1")
+        p1, p2, p3 = self._mock_send_otp("vid-e2e")
+        with p1, p2, p3:
+            send_res = self.client.post("/api/auth/send-otp", json={"phone": "9876500004"})
+        self.assertEqual(send_res.status_code, 200)
+
+        sms = MagicMock()
+        sms.verify_otp.return_value = (True, {})
+        stored = {
+            "verification_id": "vid-e2e",
+            "attempts": 0,
+            "expires_at": datetime.utcnow() + timedelta(minutes=1),
+            "created_at": datetime.utcnow(),
+        }
+        with patch.object(auth_routes, "get_verification", return_value=stored), \
+             patch.object(auth_routes, "delete_verification"), \
+             patch.object(auth_routes, "get_sms_service", return_value=sms):
+            verify_res = self.client.post(
+                "/api/auth/verify-otp",
+                json={"phone": "9876500004", "otp": "123456"},
+            )
+        self.assertEqual(verify_res.status_code, 200, verify_res.get_json())
+        body = verify_res.get_json()
+        self.assertEqual(body["data"]["status"], "new")
+        self.assertEqual(body["data"]["user"]["referred_by"], self.referrer["id"])
+        self.assertNotIn("9876500004", self.store.pending)
+
 
 class LandingRouteTests(unittest.TestCase):
     def test_homepage_and_download_redirect_to_register(self):

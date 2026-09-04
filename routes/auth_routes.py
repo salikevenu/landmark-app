@@ -124,10 +124,20 @@ def fetch_referrer_by_code(ref_code):
 
 
 def cache_landing_referral_code(ref_code):
-    """Session cache for landing pages that have no phone yet. Invalid codes are ignored."""
+    """Session cache for landing pages that have no phone yet. Invalid codes are ignored.
+
+    Marked permanent (uses the existing PERMANENT_SESSION_LIFETIME config in
+    app.py, already set to 10 years) so the code survives a real browser/PWA
+    close and later reopen — not just the current tab. Without this, Flask's
+    default non-permanent session cookie carries no Max-Age and can be
+    dropped the moment the browser/app fully closes, e.g. between scanning a
+    referral QR and installing the PWA before ever submitting a phone
+    number (see resolve_referrer_id_for_signup's session fallback below).
+    """
     referrer = fetch_referrer_by_code(ref_code)
     if not referrer:
         return False
+    session.permanent = True
     session["ref_code"] = referrer.get("referral_code") or str(ref_code).strip()
     return True
 
