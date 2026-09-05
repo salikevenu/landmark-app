@@ -654,6 +654,84 @@ def init_db():
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_products_business ON pos_products(business_id)"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_products_business_active ON pos_products(business_id, is_active)"))
 
+    # =====================================================
+    # POS INVENTORY
+    # =====================================================
+    # One stock row per product — single location, no warehouses/transfers
+    # yet. `business_id` is stored directly (not just derived via a join
+    # through `pos_products`) so authorization/scoping queries never need
+    # a join, matching this backend's existing tenant-scoping pattern.
+    # `quantity` is INTEGER, matching this backend's existing convention
+    # for whole-unit counts. No write endpoint exists yet — rows are
+    # created by a future "receive stock" feature; until then this table
+    # is expected to be empty and the inventory read endpoint reports 0
+    # for every active product via a LEFT JOIN.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_inventory (
+            product_id INTEGER PRIMARY KEY REFERENCES pos_products(id),
+            business_id INTEGER NOT NULL REFERENCES pos_businesses(id),
+            quantity INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_inventory_business ON pos_inventory(business_id)"))
+
+    # =====================================================
+    # POS SALES
+    # =====================================================
+    # A completed sale (header) and its line items. `pos_sale_items`
+    # snapshots `product_name`/`unit_price` at sale time — a historical
+    # financial record must not change if the catalog is edited later.
+    # `line_total`/`total_amount` are computed server-side and stored,
+    # never recomputed from current catalog data. No `business_id` on
+    # `pos_sale_items`: items are always accessed via their parent
+    # `sale_id`, which is itself already business-scoped.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_sales (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES pos_businesses(id),
+            total_amount INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_sales_business ON pos_sales(business_id)"))
+
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_sale_items (
+            id SERIAL PRIMARY KEY,
+            sale_id INTEGER NOT NULL REFERENCES pos_sales(id),
+            product_id INTEGER NOT NULL REFERENCES pos_products(id),
+            product_name TEXT NOT NULL,
+            unit_price INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            line_total INTEGER NOT NULL
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_sale_items_sale ON pos_sale_items(sale_id)"))
+
+    # =====================================================
+    # POS CUSTOMERS
+    # =====================================================
+    # A POS business's own customer roster — deliberately separate from
+    # `users` (the platform login identity, globally unique by phone).
+    # A POS customer may have no LANDMARK account, and the same phone
+    # number may be a customer of multiple businesses independently, so
+    # phone is unique per business, not globally.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_customers (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES pos_businesses(id),
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_customers_business ON pos_customers(business_id)"))
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_pos_customers_business_phone
+        ON pos_customers (business_id, phone)
+    """))
+
     conn.commit()
     conn.close()
 
