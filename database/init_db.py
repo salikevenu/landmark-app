@@ -100,6 +100,13 @@ def _init_db_body(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_location ON users(latitude, longitude)"))
     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
 
+    # Release the ACCESS EXCLUSIVE lock the ALTER TABLE statements above
+    # took on users before the remaining schema init continues — otherwise
+    # it is held until the final commit at the end of this function, which
+    # can block unrelated reads against users (e.g. /register?ref=CODE's
+    # referral lookup) for the entire remaining duration of this sequence.
+    conn.commit()
+
     # =====================================================
     # WALLET_BALANCE TABLE
     # =====================================================
