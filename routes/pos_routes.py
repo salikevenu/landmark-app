@@ -35,6 +35,17 @@ def _business_payload(row):
     }
 
 
+def _product_payload(row):
+    created_at = row["created_at"]
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "price": row["price"],
+        "is_active": bool(row["is_active"]),
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
 @pos_bp.route("/businesses", methods=["GET"])
 @jwt_required()
 def list_businesses():
@@ -95,6 +106,52 @@ def create_business():
         return jsonify({"business": _business_payload(dict(row._mapping))}), 201
     except Exception:
         logger.exception("create pos business failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@pos_bp.route("/businesses/<int:business_id>/products", methods=["GET"])
+@jwt_required()
+def list_products(business_id):
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            # Same response for "doesn't exist" and "not yours" — a 403
+            # here would confirm to a caller that a given business_id
+            # exists at all, even one they don't own.
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        rows = conn.execute(
+            text("""
+                SELECT id, name, price, is_active, created_at
+                FROM pos_products
+                WHERE business_id = :business_id AND is_active = 1
+                ORDER BY id
+            """),
+            {"business_id": business_id},
+        ).fetchall()
+        products = [_product_payload(dict(row._mapping)) for row in rows]
+        return jsonify({"products": products}), 200
+    except Exception:
+        logger.exception("list pos products failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:

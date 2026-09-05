@@ -631,6 +631,29 @@ def init_db():
     """))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_businesses_owner ON pos_businesses(owner_user_id)"))
 
+    # =====================================================
+    # POS PRODUCTS
+    # =====================================================
+    # Catalog items for a POS business. `price` is INTEGER minor units
+    # (paise) — deliberately not REAL like this backend's legacy money
+    # columns (subscriptions.amount, wallet_transactions.amount, ...);
+    # POS money must match the LANDMARK POS Flutter app's integer
+    # minor-unit Money convention. See the LANDMARK POS repo's
+    # DECISIONS.md.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_products (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES pos_businesses(id),
+            name TEXT NOT NULL,
+            price INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_products_business ON pos_products(business_id)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_products_business_active ON pos_products(business_id, is_active)"))
+
     conn.commit()
     conn.close()
 
