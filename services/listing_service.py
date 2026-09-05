@@ -20,12 +20,15 @@ def create_listing(data):
 # ===============================
 def get_user_listings(user_id):
     conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT *
-        FROM listings
-        WHERE user_id = :user_id
-        ORDER BY id DESC
-    """), {"user_id": user_id}).fetchall()
+    try:
+        rows = conn.execute(text("""
+            SELECT *
+            FROM listings
+            WHERE user_id = :user_id
+            ORDER BY id DESC
+        """), {"user_id": user_id}).fetchall()
+    finally:
+        conn.close()
     return rows
 
 
@@ -34,9 +37,12 @@ def get_user_listings(user_id):
 # ===============================
 def get_listing(listing_id):
     conn = get_db_connection()
-    row = conn.execute(
-        text("SELECT * FROM listings WHERE id = :id"), {"id": listing_id}
-    ).fetchone()
+    try:
+        row = conn.execute(
+            text("SELECT * FROM listings WHERE id = :id"), {"id": listing_id}
+        ).fetchone()
+    finally:
+        conn.close()
     return row
 
 
@@ -63,20 +69,23 @@ def delete_listing(listing_id):
 # ===============================
 def get_nearby_listings(lat_grid, lng_grid, category):
     conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT id, business_name, category, city, state, latitude, longitude,
-               user_phone, whatsapp, rating, is_verified, is_premium
-        FROM listings
-        WHERE lat_grid = :lat_grid
-          AND lng_grid = :lng_grid
-          AND category = :category
-          AND is_active = 1
-          AND status = 'approved'
-    """), {
-        "lat_grid": lat_grid,
-        "lng_grid": lng_grid,
-        "category": category
-    }).fetchall()
+    try:
+        rows = conn.execute(text("""
+            SELECT id, business_name, category, city, state, latitude, longitude,
+                   user_phone, whatsapp, rating, is_verified, is_premium
+            FROM listings
+            WHERE lat_grid = :lat_grid
+              AND lng_grid = :lng_grid
+              AND category = :category
+              AND is_active = 1
+              AND status = 'approved'
+        """), {
+            "lat_grid": lat_grid,
+            "lng_grid": lng_grid,
+            "category": category
+        }).fetchall()
+    finally:
+        conn.close()
     return rows
 
 
@@ -107,6 +116,7 @@ def update_sponsored_status():
 
 # --- Browse with filters ---
 def browse_listings(location, category, page):
+    conn = None
     try:
         limit = 10
         offset = (page - 1) * limit
@@ -180,6 +190,9 @@ def browse_listings(location, category, page):
     except Exception as e:
         logger.info("BROWSE SERVICE ERROR:", e)
         return {"status": "error", "message": "Server error"}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 # --- Admin service functions ---

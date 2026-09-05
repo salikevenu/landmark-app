@@ -54,25 +54,28 @@ def _fetch_businesses(search=None, limit=500):
     where_sql = " AND ".join(clauses)
     live = public_is_sponsored_sql("")
     rank = sponsorship_rank_sql("")
-    rows = conn.execute(
-        text(f"""
-            SELECT
-                id,
-                business_name,
-                category,
-                COALESCE(rating, 0) AS rating,
-                latitude,
-                longitude,
-                user_phone AS phone,
-                whatsapp,
-                CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
-            FROM listings
-            WHERE {where_sql}
-            ORDER BY {rank} DESC, is_premium DESC, COALESCE(rating, 0) DESC
-            LIMIT :limit
-        """),
-        params,
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            text(f"""
+                SELECT
+                    id,
+                    business_name,
+                    category,
+                    COALESCE(rating, 0) AS rating,
+                    latitude,
+                    longitude,
+                    user_phone AS phone,
+                    whatsapp,
+                    CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
+                FROM listings
+                WHERE {where_sql}
+                ORDER BY {rank} DESC, is_premium DESC, COALESCE(rating, 0) DESC
+                LIMIT :limit
+            """),
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
     return [_row_to_business(r) for r in rows]
 
 
@@ -119,6 +122,7 @@ def list_map_businesses():
 @jwt_required(optional=True)
 def get_map_business(listing_id):
     """Single listing for View on Map / flyTo."""
+    conn = None
     try:
         conn = get_db_connection()
         row = conn.execute(
@@ -144,6 +148,9 @@ def get_map_business(listing_id):
     except Exception as e:
         logger.exception("get_map_business error")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @nearby_bp.route("/search", methods=["GET"])

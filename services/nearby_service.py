@@ -40,12 +40,15 @@ def find_nearby_listings(user_lat, user_lng, category, listing_type, sort_type, 
           AND lat_grid BETWEEN :lat_min AND :lat_max
           AND lng_grid BETWEEN :lng_min AND :lng_max
     """)
-    rows = conn.execute(query, {
-        "lat_min": lat_grid - grid_range,
-        "lat_max": lat_grid + grid_range,
-        "lng_min": lng_grid - grid_range,
-        "lng_max": lng_grid + grid_range
-    }).fetchall()
+    try:
+        rows = conn.execute(query, {
+            "lat_min": lat_grid - grid_range,
+            "lat_max": lat_grid + grid_range,
+            "lng_min": lng_grid - grid_range,
+            "lng_max": lng_grid + grid_range
+        }).fetchall()
+    finally:
+        conn.close()
 
     results = []
     for row in rows:

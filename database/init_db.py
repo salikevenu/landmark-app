@@ -3,7 +3,7 @@ import logging
 logger = logging.getLogger(__name__)
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,9 +12,19 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Small bounded pool: this app runs a single Gunicorn sync worker on Render
+# Free, so pool_size never needs to be large — it only needs to tolerate a
+# connection or two not being returned promptly. pool_pre_ping guards against
+# Neon silently closing an idle connection; pool_recycle proactively retires
+# connections before that can happen.
 engine = create_engine(
     DATABASE_URL,
-    poolclass=NullPool,
+    poolclass=QueuePool,
+    pool_size=2,
+    max_overflow=1,
+    pool_timeout=10,
+    pool_recycle=280,
+    pool_pre_ping=True,
     connect_args={
         "sslmode": "require",
         "connect_timeout": 10,
@@ -31,7 +41,17 @@ def get_db_connection():
     return engine.connect()
 
 def init_db():
+    """Run schema initialization on one connection, guaranteeing it is
+    closed even if a DDL statement raises partway through."""
     conn = get_db_connection()
+    try:
+        _init_db_body(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _init_db_body(conn):
 
     # =====================================================
     # USERS TABLE
@@ -732,8 +752,6 @@ def init_db():
         ON pos_customers (business_id, phone)
     """))
 
-    conn.commit()
-    conn.close()
 
 if __name__ == "__main__":
     init_db()

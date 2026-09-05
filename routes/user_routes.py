@@ -46,29 +46,32 @@ def get_user_by_id(user_id):
     user_id = _as_user_id(user_id)
     conn = get_db_connection()
     try:
-        user = conn.execute(
-            text("""
-                SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
-                FROM users
-                WHERE id = :uid
-            """),
-            {"uid": user_id},
-        ).fetchone()
-        return dict(user._mapping) if user else None
-    except Exception:
-        user = conn.execute(
-            text("""
-                SELECT id, name, phone, role, plan, referral_code, subscription_expiry
-                FROM users
-                WHERE id = :uid
-            """),
-            {"uid": user_id},
-        ).fetchone()
-        if not user:
-            return None
-        payload = dict(user._mapping)
-        payload["avatar_url"] = ""
-        return payload
+        try:
+            user = conn.execute(
+                text("""
+                    SELECT id, name, phone, role, plan, referral_code, subscription_expiry, avatar_url
+                    FROM users
+                    WHERE id = :uid
+                """),
+                {"uid": user_id},
+            ).fetchone()
+            return dict(user._mapping) if user else None
+        except Exception:
+            user = conn.execute(
+                text("""
+                    SELECT id, name, phone, role, plan, referral_code, subscription_expiry
+                    FROM users
+                    WHERE id = :uid
+                """),
+                {"uid": user_id},
+            ).fetchone()
+            if not user:
+                return None
+            payload = dict(user._mapping)
+            payload["avatar_url"] = ""
+            return payload
+    finally:
+        conn.close()
 
 
 def _profile_payload(user):
@@ -165,6 +168,7 @@ def update_profile():
     if len(name) > 100:
         return jsonify({"error": "Name must be 100 characters or fewer"}), 400
 
+    conn = None
     try:
         conn = get_db_connection()
         result = conn.execute(
@@ -178,6 +182,9 @@ def update_profile():
     except Exception as e:
         logger.exception("update_profile error")
         return jsonify({"error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @user_bp.route("/profile/avatar", methods=["POST"])
@@ -209,6 +216,7 @@ def upload_profile_avatar():
     if size > 10 * 1024 * 1024:
         return jsonify({"error": "Avatar image must be 10 MB or smaller."}), 400
 
+    conn = None
     try:
         upload_root = current_app.config.get("UPLOAD_FOLDER", "static/uploads")
         avatar_dir = os.path.join(current_app.root_path, upload_root, "avatars")
@@ -237,6 +245,9 @@ def upload_profile_avatar():
     except Exception as e:
         logger.exception("upload_profile_avatar error")
         return jsonify({"error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @user_bp.route("/logout", methods=["POST"])
@@ -294,15 +305,18 @@ def user_dashboard():
 def create_listing():
     user_id = get_jwt_identity()
     db = get_db_connection()
-    user = db.execute(
-        text("SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
+    try:
+        user = db.execute(
+            text("SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
 
-    business_count = db.execute(
-        text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
-        {"uid": user_id}
-    ).scalar()  # Use scalar for aggregate
+        business_count = db.execute(
+            text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).scalar()  # Use scalar for aggregate
+    finally:
+        db.close()
 
     max_allowed = user._mapping["business_limit"] + user._mapping["extra_businesses_purchased"]
 
@@ -328,6 +342,7 @@ def browse():
 
 @user_bp.route("/api/browse")
 def api_browse():
+    conn = None
     try:
         page = max(1, min(int(request.args.get("page", 1) or 1), 10000))
         search = request.args.get("search", "")
@@ -416,6 +431,9 @@ def api_browse():
     except Exception as e:
         logger.exception("browse listings error")
         return jsonify({"error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 # ------------------------------------------------------------
 # Invite & referral
@@ -440,50 +458,53 @@ def api_invite():
     and the backfill migration already cover this."""
     user_id = get_jwt_identity()
     conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT referral_code FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
-    referral_code = user._mapping["referral_code"] if user else None
-    if not referral_code:
-        for _ in range(REFERRAL_CODE_ASSIGN_ATTEMPTS):
-            code = generate_referral_code()
-            try:
-                result = conn.execute(
-                    text("""
-                        UPDATE users SET referral_code = :code
-                        WHERE id = :uid AND referral_code IS NULL
-                        RETURNING referral_code
-                    """),
-                    {"code": code, "uid": user_id}
-                )
-                row = result.fetchone()
-                conn.commit()
-                if row:
-                    referral_code = row._mapping["referral_code"]
-                else:
-                    # Another request already assigned one concurrently — use it.
-                    existing = conn.execute(
-                        text("SELECT referral_code FROM users WHERE id = :uid"),
-                        {"uid": user_id}
-                    ).fetchone()
-                    referral_code = existing._mapping["referral_code"] if existing else None
-                break
-            except IntegrityError:
-                conn.rollback()
-                continue
-        else:
-            logger.error("Could not assign a unique referral_code to user id=%s", user_id)
-            return jsonify({"error": "Could not generate referral code. Please try again."}), 503
-    referral_count = conn.execute(
-        text("SELECT COUNT(*) AS cnt FROM users WHERE referred_by = :uid"),
-        {"uid": user_id}
-    ).fetchone()._mapping["cnt"]
-    return jsonify({
-        "referral_code": referral_code,
-        "referral_link": referral_link_for(referral_code),
-        "referral_count": referral_count,
-    })
+    try:
+        user = conn.execute(
+            text("SELECT referral_code FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        referral_code = user._mapping["referral_code"] if user else None
+        if not referral_code:
+            for _ in range(REFERRAL_CODE_ASSIGN_ATTEMPTS):
+                code = generate_referral_code()
+                try:
+                    result = conn.execute(
+                        text("""
+                            UPDATE users SET referral_code = :code
+                            WHERE id = :uid AND referral_code IS NULL
+                            RETURNING referral_code
+                        """),
+                        {"code": code, "uid": user_id}
+                    )
+                    row = result.fetchone()
+                    conn.commit()
+                    if row:
+                        referral_code = row._mapping["referral_code"]
+                    else:
+                        # Another request already assigned one concurrently — use it.
+                        existing = conn.execute(
+                            text("SELECT referral_code FROM users WHERE id = :uid"),
+                            {"uid": user_id}
+                        ).fetchone()
+                        referral_code = existing._mapping["referral_code"] if existing else None
+                    break
+                except IntegrityError:
+                    conn.rollback()
+                    continue
+            else:
+                logger.error("Could not assign a unique referral_code to user id=%s", user_id)
+                return jsonify({"error": "Could not generate referral code. Please try again."}), 503
+        referral_count = conn.execute(
+            text("SELECT COUNT(*) AS cnt FROM users WHERE referred_by = :uid"),
+            {"uid": user_id}
+        ).fetchone()._mapping["cnt"]
+        return jsonify({
+            "referral_code": referral_code,
+            "referral_link": referral_link_for(referral_code),
+            "referral_count": referral_count,
+        })
+    finally:
+        conn.close()
 
 # ------------------------------------------------------------
 # Track, recommend, subscription status, pricing
@@ -504,10 +525,13 @@ def recommend():
 def subscription_status():
     user_id = get_jwt_identity()
     conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT role, plan, subscription_expiry FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
+    try:
+        user = conn.execute(
+            text("SELECT role, plan, subscription_expiry FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+    finally:
+        conn.close()
     if not user:
         return jsonify({"error": "User not found"}), 404
 

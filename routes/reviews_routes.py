@@ -62,6 +62,7 @@ def list_reviews():
     page = max(1, request.args.get("page", default=1, type=int) or 1)
     offset = (page - 1) * PAGE_SIZE
 
+    conn = None
     try:
         conn = get_db_connection()
         _ensure_reply_columns_once(conn)
@@ -132,6 +133,9 @@ def list_reviews():
     except Exception:
         logger.exception("list_reviews error")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @reviews_api_bp.route("/stats", methods=["GET"])
@@ -139,6 +143,7 @@ def list_reviews():
 def review_stats():
     """Average rating and 1–5 star distribution for the owner's listings."""
     user_id = get_jwt_identity()
+    conn = None
     try:
         conn = get_db_connection()
         _ensure_reply_columns_once(conn)
@@ -189,6 +194,9 @@ def review_stats():
     except Exception:
         logger.exception("list_reviews error")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @reviews_api_bp.route("/reply", methods=["POST"])
@@ -207,6 +215,7 @@ def reply_to_review():
     if len(reply_text) > 2000:
         return jsonify({"success": False, "error": "reply must be under 2000 characters"}), 400
 
+    conn = None
     try:
         conn = get_db_connection()
         _ensure_reply_columns_once(conn)
@@ -236,3 +245,6 @@ def reply_to_review():
     except Exception:
         logger.exception("list_reviews error")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            conn.close()

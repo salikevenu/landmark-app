@@ -27,13 +27,16 @@ def wallet_page():
 def wallet_transactions():
     user_id = get_jwt_identity()
     conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT id, amount, type, source, status, created_at
-        FROM wallet_transactions
-        WHERE user_id = :uid
-        ORDER BY id DESC
-        LIMIT 50
-    """), {"uid": user_id}).fetchall()
+    try:
+        rows = conn.execute(text("""
+            SELECT id, amount, type, source, status, created_at
+            FROM wallet_transactions
+            WHERE user_id = :uid
+            ORDER BY id DESC
+            LIMIT 50
+        """), {"uid": user_id}).fetchall()
+    finally:
+        conn.close()
     items = []
     for r in rows:
         m = dict(r._mapping)
@@ -48,20 +51,22 @@ def wallet_transactions():
 def wallet_overview():
     user_id = get_jwt_identity()
     conn = get_db_connection()
+    try:
+        # Available balance
+        wallet = conn.execute(
+            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
+        available = wallet._mapping["balance"] if wallet else 0.0
 
-    # Available balance
-    wallet = conn.execute(
-        text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
-    available = wallet._mapping["balance"] if wallet else 0.0
-
-    # Pending (locked) referral earnings
-    pending = conn.execute(text("""
-        SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions
-        WHERE user_id = :uid AND status = 'locked'
-          AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')
-    """), {"uid": user_id}).scalar()
+        # Pending (locked) referral earnings
+        pending = conn.execute(text("""
+            SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions
+            WHERE user_id = :uid AND status = 'locked'
+              AND source IN ('activation_bonus','base_referral','referral_first_bonus','referral_recurring')
+        """), {"uid": user_id}).scalar()
+    finally:
+        conn.close()
 
     next_payout = next_saturday_6pm_ist().strftime("%Y-%m-%d %H:%M IST") if next_saturday_6pm_ist else ""
 
