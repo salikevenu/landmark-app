@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.wallet_service import approve_withdrawal, mark_withdrawal_paid, reject_withdrawal
-from services.payment_service import activate_subscription
+from services.payment_service import activate_subscription, activate_business_power_for_user
+from config.payment_config import BUSINESS_POWER_PLAN
 
 # Helper to convert SQLAlchemy row to dict (for compatibility with old code)
 def _row_to_dict(row):
@@ -216,6 +217,46 @@ def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
     log_admin_action(admin_id, admin_phone, 'change_role', 'user', str(user_id), f'Role changed to {new_role}', ip)
     conn.close()
     return {'status': 'role_updated'}
+
+def activate_business_power(user_id, admin_id, admin_phone, ip, duration_days=365):
+    """Admin-only manual activation of the Business Power enterprise plan.
+
+    Contact-sales pricing has no self-service checkout, so this admin
+    action is the sole activation path. Never creates a payments row and
+    never enqueues a referral-commission job — Business Power is not part
+    of the standard referral commission system. Idempotent: re-activating
+    an existing Business Power user simply refreshes the expiry date.
+    """
+    conn = get_db_connection()
+    try:
+        current = conn.execute(
+            text("SELECT id, role FROM users WHERE id = :user_id"),
+            {"user_id": user_id},
+        ).fetchone()
+        if not current:
+            return {"error": "User not found", "_http": 404}
+        if (current._mapping.get("role") or "") == "admin":
+            return {"error": "Cannot change an admin role from this API", "_http": 403}
+    finally:
+        conn.close()
+
+    try:
+        days = int(duration_days)
+    except (TypeError, ValueError):
+        days = 365
+    if days <= 0 or days > 3650:
+        days = 365
+
+    expiry_date = activate_business_power_for_user(user_id, duration_days=days)
+    if expiry_date is None:
+        return {"error": "User not found", "_http": 404}
+
+    log_admin_action(
+        admin_id, admin_phone, "activate_business_power", "user", str(user_id),
+        f"Business Power activated, expiry {expiry_date}", ip,
+    )
+    return {"status": "business_power_activated", "plan": BUSINESS_POWER_PLAN, "expiry": expiry_date}
+
 
 def reset_user_subscription(user_id, admin_id, admin_phone, ip):
     conn = get_db_connection()

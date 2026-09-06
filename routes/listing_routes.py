@@ -16,7 +16,7 @@ from services.listing_service import (
     update_review_service,
     delete_review_service,
 )
-from services.subscription_access import is_subscription_active
+from services.subscription_access import is_subscription_active, get_business_limit_for_user
 from services.authz import db_user_is_admin
 from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 import logging
@@ -65,7 +65,7 @@ def _parse_coord(value, lo, hi, field):
 def _paid_listing_user(conn, user_id, *, for_update=False):
     """Load the authenticated user from DB. JWT role/plan claims are ignored."""
     sql = """
-        SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased
+        SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased, business_limit
         FROM users WHERE id = :uid
     """
     if for_update:
@@ -102,21 +102,18 @@ def api_create_listing():
         if err:
             return err
 
-        plan = user_dict.get("plan")
         listing_count = conn.execute(
             text("SELECT COUNT(*) as cnt FROM listings WHERE user_id = :uid"),
             {"uid": user_id}
         ).fetchone()._mapping["cnt"]
 
-        extra_slots = int(user_dict.get("extra_businesses_purchased") or 0)
-        if plan == "business_basic" and listing_count >= 1:
-            return jsonify({"error": "Basic plan allows only 1 listing. Upgrade to Premium."}), 403
-        elif plan == "business_premium" and listing_count >= 3 + extra_slots:
-            return jsonify({"error": "Premium plan allows up to 3 listings."}), 403
-        elif plan == "service_provider" and listing_count >= 10:
-            return jsonify({"error": "Service provider limit reached (10 listings)."}), 403
-        elif plan not in ("business_basic", "business_premium", "service_provider"):
-            return jsonify({"error": "Active subscription required"}), 403
+        # Single authoritative limit check (see get_business_limit_for_user) —
+        # do not re-derive this from plan strings here. is_subscription_active
+        # (already enforced above by _paid_listing_user) guarantees plan is
+        # one of the recognized paid plans by this point.
+        max_allowed = get_business_limit_for_user(user_dict)
+        if max_allowed is not None and listing_count >= max_allowed:
+            return jsonify({"error": "Business limit reached. Upgrade your plan to add more listings."}), 403
 
         business_name = request.form.get("business_name")
         category = request.form.get("category")
@@ -242,23 +239,56 @@ def my_listings_page():
 
 
 # =========================
-# MY LISTINGS DATA (JSON)
+# EDIT LISTING PAGE (HTML)
 # =========================
+@listing_bp.route("/edit-listing/<int:listing_id>")
+def edit_listing_page(listing_id):
+    """Shell page only — actual data load/save goes through the already
+    ownership-checked GET/PUT /api/listing/*-listing/<id> JSON APIs."""
+    return render_template("users/edit_listing.html")
+
+
+# =========================
+# MY LISTINGS DATA (JSON) — paginated, bounded page size
+# =========================
+DEFAULT_MY_LISTINGS_PAGE_SIZE = 50
+MAX_MY_LISTINGS_PAGE_SIZE = 100
+
+
 @listing_bp.route("/my-listings-data", methods=["GET"])
 @jwt_required()
 def my_listings():
     user_id = get_jwt_identity()
+    page = request.args.get("page", 1, type=int) or 1
+    page = max(1, min(page, 100000))
+    limit = request.args.get("limit", DEFAULT_MY_LISTINGS_PAGE_SIZE, type=int) or DEFAULT_MY_LISTINGS_PAGE_SIZE
+    limit = max(1, min(limit, MAX_MY_LISTINGS_PAGE_SIZE))
+    offset = (page - 1) * limit
+
     conn = get_db_connection()
+    total = conn.execute(
+        text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
+        {"uid": user_id}
+    ).scalar() or 0
+
     rows = conn.execute(text("""
-        SELECT l.*, 
+        SELECT l.*,
             (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as image_url
         FROM listings l
         WHERE l.user_id = :uid
         ORDER BY l.id DESC
-    """), {"uid": user_id}).fetchall()
+        LIMIT :limit OFFSET :offset
+    """), {"uid": user_id, "limit": limit, "offset": offset}).fetchall()
 
     listings = [dict(r._mapping) for r in rows]
-    return jsonify({"listings": listings})
+    pages = (total + limit - 1) // limit if total else 1
+    return jsonify({
+        "listings": listings,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "pages": pages,
+    })
 
 
 # =========================

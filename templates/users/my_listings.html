@@ -131,6 +131,11 @@
     box-shadow: 0 20px 35px -15px rgba(0, 255, 255, 0.2);
   }
 
+  .listing-card-selected {
+    border-color: #00ffff;
+    box-shadow: 0 0 0 2px rgba(0, 255, 255, 0.5);
+  }
+
   .card-inner {
     display: flex;
     flex-wrap: wrap;
@@ -386,14 +391,41 @@
     alert("💬 WhatsApp action tracked");
   }
 
-  document.addEventListener("DOMContentLoaded", async () => {
-    const container = document.getElementById("listingContainer");
+  // Client-only "active business" context — a UI convenience, not a
+  // security boundary. Every actual view/edit/delete action still goes
+  // through its own ownership-checked API call (WHERE id=:lid AND
+  // user_id=:uid); nothing ever trusts this stored value.
+  function getSelectedBusinessId() {
     try {
-      const res = await LandmarkSession.authFetch("/api/listing/my-listings-data");
+      return sessionStorage.getItem("landmark_selected_business");
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function selectBusiness(id) {
+    try {
+      sessionStorage.setItem("landmark_selected_business", String(id));
+    } catch (e) { /* ignore — selection is a convenience only */ }
+    document.querySelectorAll(".listing-card").forEach(card => {
+      card.classList.toggle("listing-card-selected", card.dataset.listingId === String(id));
+    });
+  }
+
+  let currentPage = 1;
+  let totalPages = 1;
+
+  async function loadListingsPage(page) {
+    const container = document.getElementById("listingContainer");
+    const loadMoreWrap = document.getElementById("loadMoreWrap");
+    try {
+      const res = await LandmarkSession.authFetch(`/api/listing/my-listings-data?page=${page}&limit=50`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      currentPage = data.page || page;
+      totalPages = data.pages || 1;
 
-      if (!data.listings || data.listings.length === 0) {
+      if (page === 1 && (!data.listings || data.listings.length === 0)) {
         container.innerHTML = `
           <div class="empty-state">
             <div class="empty-icon">📭</div>
@@ -401,15 +433,18 @@
             <p>Create your first business listing and start reaching customers.</p>
             <a href="/api/user/create-listing" class="new-listing-btn" style="margin-top:1rem; display:inline-block;">+ New Listing</a>
           </div>`;
+        if (loadMoreWrap) loadMoreWrap.remove();
         return;
       }
 
+      const selectedId = getSelectedBusinessId();
       let html = "";
       for (const item of data.listings) {
         const statusClass = `status-${item.status || 'pending'}`;
         const statusText = item.status || "pending";
+        const isSelected = selectedId === String(item.id);
         html += `
-          <div class="listing-card">
+          <div class="listing-card${isSelected ? ' listing-card-selected' : ''}" data-listing-id="${item.id}" onclick="selectBusiness(${item.id})">
             <div class="card-inner">
               <div class="listing-img-wrapper">
                 <img class="listing-img" src="/static/default-business.png" alt="${escapeHtml(item.business_name)}" onerror="this.src='/static/default-business.png'">
@@ -427,26 +462,46 @@
                   ${escapeHtml(item.description?.substring(0, 120) || "No description provided")}${item.description?.length > 120 ? "…" : ""}
                 </div>
                 <div class="action-buttons">
-                  <a href="/api/listing/listing/${item.id}" class="btn-action">👁️ View</a>
-                  <a href="/map?id=${item.id}" class="btn-action">🗺️ View on Map</a>
-                  <button onclick="toggleStatus(${item.id})" class="btn-action">🔄 Toggle Status</button>
-                  <button onclick="deleteListing(${item.id})" class="btn-action btn-danger">🗑️ Delete</button>
+                  <a href="/api/listing/listing/${item.id}" class="btn-action" onclick="event.stopPropagation()">👁️ View</a>
+                  <a href="/api/listing/edit-listing/${item.id}" class="btn-action" onclick="event.stopPropagation()">✏️ Edit</a>
+                  <a href="/map?id=${item.id}" class="btn-action" onclick="event.stopPropagation()">🗺️ View on Map</a>
+                  <button onclick="event.stopPropagation(); toggleStatus(${item.id})" class="btn-action">🔄 Toggle Status</button>
+                  <button onclick="event.stopPropagation(); deleteListing(${item.id})" class="btn-action btn-danger">🗑️ Delete</button>
                 </div>
                 <div class="contact-links">
-                  ${item.whatsapp ? `<a href="#" onclick="trackWhatsApp(${item.id}); return false;">💬 WhatsApp</a>` : ''}
-                  ${item.user_phone ? `<a href="#" onclick="trackCall(${item.id}); return false;">📞 Call</a>` : ''}
+                  ${item.whatsapp ? `<a href="#" onclick="event.stopPropagation(); trackWhatsApp(${item.id}); return false;">💬 WhatsApp</a>` : ''}
+                  ${item.user_phone ? `<a href="#" onclick="event.stopPropagation(); trackCall(${item.id}); return false;">📞 Call</a>` : ''}
                 </div>
               </div>
             </div>
           </div>
         `;
       }
-      container.innerHTML = html;
+      if (page === 1) {
+        container.innerHTML = html;
+      } else {
+        container.insertAdjacentHTML("beforeend", html);
+      }
+
+      if (loadMoreWrap) {
+        loadMoreWrap.remove();
+      }
+      if (currentPage < totalPages) {
+        container.insertAdjacentHTML("afterend", `
+          <div id="loadMoreWrap" style="text-align:center; margin-top:1.5rem;">
+            <button id="loadMoreBtn" class="new-listing-btn">Load more businesses</button>
+          </div>`);
+        document.getElementById("loadMoreBtn").onclick = () => loadListingsPage(currentPage + 1);
+      }
     } catch (err) {
       console.error(err);
-      container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><h3 style="color:#ffaa88;">Failed to load listings</h3><p>Please refresh the page or try again later.</p></div>`;
+      if (page === 1) {
+        container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><h3 style="color:#ffaa88;">Failed to load listings</h3><p>Please refresh the page or try again later.</p></div>`;
+      }
     }
-  });
+  }
+
+  document.addEventListener("DOMContentLoaded", () => loadListingsPage(1));
 </script>
 
 {% endblock %}

@@ -12,7 +12,7 @@ import os
 import secrets
 import logging
 from routes.decorators import requires_active_plan
-from services.subscription_access import is_subscription_active
+from services.subscription_access import is_subscription_active, get_business_limit_for_user
 from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 
 user_bp = Blueprint("user", __name__)
@@ -301,13 +301,13 @@ def user_dashboard():
     return render_template("users/dashboard.html", wallet=0, user=None)
 
 @user_bp.route('/create-listing')
-@requires_active_plan('service_provider', 'business_basic', 'business_premium')
+@requires_active_plan('service_provider', 'business_basic', 'business_premium', 'business_power')
 def create_listing():
     user_id = get_jwt_identity()
     db = get_db_connection()
     try:
         user = db.execute(
-            text("SELECT role, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
+            text("SELECT role, plan, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
             {"uid": user_id}
         ).fetchone()
 
@@ -318,9 +318,11 @@ def create_listing():
     finally:
         db.close()
 
-    max_allowed = user._mapping["business_limit"] + user._mapping["extra_businesses_purchased"]
+    # Single authoritative limit check (see get_business_limit_for_user) —
+    # None means unlimited (Business Power).
+    max_allowed = get_business_limit_for_user(dict(user._mapping))
 
-    if business_count >= max_allowed:
+    if max_allowed is not None and business_count >= max_allowed:
         if user._mapping["role"] == "business_premium":
             flash("You have reached your free business limit. Purchase an extra slot for ₹249.", "warning")
             return redirect(url_for('user.extra_business_payment'))

@@ -1,7 +1,9 @@
 # Canonical subscription-active check for listing/business access.
 from datetime import datetime
 
-PAID_PLANS = ("service_provider", "business_basic", "business_premium")
+from config.payment_config import BUSINESS_POWER_PLAN
+
+PAID_PLANS = ("service_provider", "business_basic", "business_premium", BUSINESS_POWER_PLAN)
 CANONICAL_CREATE_LISTING_API = "/api/listing/create-listing"
 
 
@@ -33,3 +35,22 @@ def is_subscription_active(user_row):
         return expiry >= datetime.utcnow().date()
     except Exception:
         return False
+
+
+def get_business_limit_for_user(user_row):
+    """Single authoritative business/listing creation cap for a user.
+
+    Returns None for unlimited (Business Power). Otherwise returns the
+    plan's stored business_limit plus any purchased extra slots. Both
+    listing-creation enforcement points (the create-listing page gate and
+    the create-listing API) must call this instead of re-deriving the cap
+    from plan strings themselves.
+    """
+    if not user_row:
+        return 0
+    plan = (user_row.get("plan") or "").strip().lower()
+    if plan == BUSINESS_POWER_PLAN:
+        return None
+    limit = int(user_row.get("business_limit") or 0)
+    extra = int(user_row.get("extra_businesses_purchased") or 0)
+    return limit + extra

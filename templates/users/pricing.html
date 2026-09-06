@@ -139,6 +139,14 @@
       pageTypes: ["business"],
       eligibleRoles: ["free", "service_provider", "business_basic"],
       features: "3 verified listings, advanced analytics, priority support, featured badge."
+    },
+    {
+      id: "Business Power",
+      name: "Business Power",
+      custom: true,
+      pageTypes: ["business"],
+      eligibleRoles: ["free", "service_provider", "business_basic", "business_premium"],
+      features: "Unlimited businesses, all Business Premium features, central business management."
     }
   ];
 
@@ -227,9 +235,27 @@
     }
 
     visiblePlans.forEach(plan => {
-      const paise = billedPaise(plan.price);
       const card = document.createElement("div");
       card.className = "plan-card";
+
+      if (plan.custom) {
+        // Enterprise / contact-sales plan — no fixed price, no self-service
+        // Razorpay checkout. Activation is admin-only (see services/admin_service.py).
+        card.innerHTML = `
+          <h3>${plan.name}</h3>
+          <div class="price">Custom Pricing</div>
+          <p class="price-sub">Contact Sales</p>
+          <p class="plan-features">${plan.features}</p>
+          <a class="btn-plan" style="display:inline-block; text-decoration:none; box-sizing:border-box;"
+             href="mailto:support@landmarkvts.in?subject=Business%20Power%20Enterprise%20Plan">
+            Contact Sales
+          </a>
+        `;
+        container.appendChild(card);
+        return;
+      }
+
+      const paise = billedPaise(plan.price);
       card.innerHTML = `
         <h3>${plan.name}</h3>
         <div class="price">₹${formatRupees(paise)}</div>

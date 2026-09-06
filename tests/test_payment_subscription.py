@@ -217,7 +217,7 @@ class ListingAccessTests(unittest.TestCase):
         }))
         src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
         self.assertIn(
-            "requires_active_plan('service_provider', 'business_basic', 'business_premium')",
+            "requires_active_plan('service_provider', 'business_basic', 'business_premium', 'business_power')",
             src,
         )
 
@@ -816,6 +816,7 @@ class CreateListingFlowTests(unittest.TestCase):
         user_row = _row({
             "id": 42, "role": "business_basic", "plan": "business_basic",
             "subscription_expiry": expiry, "is_active": 1,
+            "extra_businesses_purchased": 0, "business_limit": 1,
         })
         conn = MagicMock()
 
@@ -877,6 +878,7 @@ class CreateListingFlowTests(unittest.TestCase):
         user_row = _row({
             "id": 42, "role": "service_provider", "plan": "service_provider",
             "subscription_expiry": expiry, "is_active": 1,
+            "extra_businesses_purchased": 0, "business_limit": 10,
         })
         conn = MagicMock()
 

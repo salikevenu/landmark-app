@@ -77,6 +77,16 @@ def billed_term(monthly_paise, cycle=None):
     return key, billed_amount_paise(monthly_paise, key), billed_duration_days(key)
 
 
+# Business Power: manually-activated enterprise plan (unlimited listings,
+# Business Premium feature parity, custom/contact-sales pricing). Deliberately
+# NOT added to PLANS/PLAN_PRICES — it must never resolve through
+# get_plan_spec()/billed_term() or the self-service Razorpay checkout
+# (routes/payment_routes.py create_order calls get_plan_spec on the
+# client-submitted plan string). Granted only via the admin activation path
+# in services/admin_service.activate_business_power.
+BUSINESS_POWER_PLAN = "business_power"
+BUSINESS_POWER_ROLE = "business_power"
+
 # Extra business is a listing-slot purchase, not a subscription plan.
 # Amount matches the existing PLAN_DETAILS extra_business path (₹249).
 EXTRA_BUSINESS_PLAN = "extra_business"

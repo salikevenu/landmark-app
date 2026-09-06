@@ -10,6 +10,8 @@ from config.payment_config import (
     duration_days_for_stored_amount,
     get_plan_spec,
     is_extra_business_plan,
+    BUSINESS_POWER_PLAN,
+    BUSINESS_POWER_ROLE,
     EXTRA_BUSINESS_AMOUNT_PAISE,
     EXTRA_BUSINESS_PLAN,
 )
@@ -168,6 +170,62 @@ def activate_subscription_for_user(user_id, spec, duration_days=None):
         expiry = _activate_user_on_conn(conn, user_id, spec, duration_days)
         conn.commit()
         return expiry
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def activate_business_power_for_user(user_id, duration_days=365):
+    """Manually grant the Business Power enterprise plan.
+
+    Deliberately separate from finalize_paid_order/verify_payment_service:
+    Business Power has no fixed Razorpay price, so it must never go through
+    the standard checkout/activation path, must never create a payments row,
+    and must never call enqueue_referral_commission_job (that only happens
+    inside finalize_paid_order for the three standard plans) — Business
+    Power is intentionally non-commissionable.
+
+    business_limit is left at 0: Business Power's unlimited listing
+    capacity comes from
+    services.subscription_access.get_business_limit_for_user() checking the
+    plan directly, not from this column.
+
+    CAS: only reports success when the UPDATE actually matched a row.
+    Idempotent — safe to call more than once for the same user; each call
+    simply refreshes the expiry date.
+    """
+    uid = _as_int_user_id(user_id)
+    if uid is None:
+        return None
+    expiry_date = _expiry_date(int(duration_days))
+    conn = get_db_connection()
+    try:
+        result = conn.execute(text("""
+            UPDATE users
+            SET role = :role,
+                plan = :plan,
+                subscription_expiry = :expiry_date,
+                business_limit = 0
+            WHERE id = :uid
+        """), {
+            "role": BUSINESS_POWER_ROLE,
+            "plan": BUSINESS_POWER_PLAN,
+            "expiry_date": expiry_date,
+            "uid": uid,
+        })
+        if getattr(result, "rowcount", 0) != 1:
+            conn.rollback()
+            return None
+        conn.commit()
+        return expiry_date
     except Exception:
         try:
             conn.rollback()
