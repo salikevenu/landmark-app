@@ -53,9 +53,15 @@ class PlanMappingTests(unittest.TestCase):
         self.assertEqual(display, "Business Basic")
         self.assertEqual(spec["plan"], "business_basic")
         self.assertEqual(spec["role"], "business_basic")
-        self.assertEqual(spec["amount_paise"], 99900)
+        self.assertEqual(spec["amount_paise"], 69900)
         self.assertEqual(spec["duration_days"], 30)
         self.assertEqual(spec["business_limit"], 1)
+
+    def test_service_provider_price(self):
+        display, spec = get_plan_spec("service_provider")
+        self.assertEqual(display, "Service Provider")
+        self.assertEqual(spec["role"], "service_provider")
+        self.assertEqual(spec["amount_paise"], 29900)
 
     def test_internal_key_resolves(self):
         display, spec = get_plan_spec("business_premium")
@@ -77,6 +83,26 @@ class PlanMappingTests(unittest.TestCase):
         self.assertEqual((cycle, amount, days), ("yearly", 419160, 365))
         with self.assertRaises(ValueError):
             billed_term(99900, "weekly")
+
+    def test_current_plan_prices_and_prepaid_amounts(self):
+        """Exact LANDMARK subscription prices and their billed prepaid
+        amounts for every plan x billing-cycle combination."""
+        cases = [
+            ("Service Provider", "monthly", 29900),
+            ("Service Provider", "3months", 80730),
+            ("Service Provider", "yearly", 251160),
+            ("Business Basic", "monthly", 69900),
+            ("Business Basic", "3months", 188730),
+            ("Business Basic", "yearly", 587160),
+            ("Business Premium", "monthly", 149900),
+            ("Business Premium", "3months", 404730),
+            ("Business Premium", "yearly", 1259160),
+        ]
+        for display, cycle, expected_paise in cases:
+            with self.subTest(plan=display, cycle=cycle):
+                _, spec = get_plan_spec(display)
+                _, amount, _ = billed_term(spec["amount_paise"], cycle)
+                self.assertEqual(amount, expected_paise)
 
 
 class LockedPaymentDB:
@@ -225,7 +251,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
             "id": "pay_1",
             "order_id": "order_1",
             "status": "captured",
-            "amount": order.get("amount", 99900),
+            "amount": order.get("amount", 69900),
             "notes": order.get("notes") or {},
         }
         client.payment.fetch.return_value = pay
@@ -246,7 +272,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         conn.execute.side_effect = execute
         return conn
 
-    def _paid_order(self, amount=99900, plan="business_basic"):
+    def _paid_order(self, amount=69900, plan="business_basic"):
         return {
             "status": "paid",
             "amount": amount,
@@ -270,7 +296,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         order = self._paid_order(amount=100)
         row = _row({
             "id": 1, "user_id": 42, "order_id": "order_1",
-            "payment_id": "order_1", "amount": 99900, "status": "created",
+            "payment_id": "order_1", "amount": 69900, "status": "created",
             "plan": "business_basic",
         })
         with patch("services.payment_service.get_razorpay_client", return_value=self._client(True, order)), \
@@ -288,7 +314,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         store = LockedPaymentDB(
             {
                 "id": 9, "user_id": 42, "order_id": "order_1",
-                "payment_id": "order_1", "amount": 99900, "status": "created",
+                "payment_id": "order_1", "amount": 69900, "status": "created",
                 "plan": "business_basic",
             },
             {"plan": "free", "role": "user", "subscription_expiry": None},
@@ -313,7 +339,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         store = LockedPaymentDB(
             {
                 "id": 9, "user_id": 42, "order_id": "order_1",
-                "payment_id": "order_1", "amount": 99900, "status": "created",
+                "payment_id": "order_1", "amount": 69900, "status": "created",
                 "plan": "business_basic",
             },
             {"plan": "free", "role": "user", "subscription_expiry": None},
@@ -339,7 +365,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         store = LockedPaymentDB(
             {
                 "id": 9, "user_id": 42, "order_id": "order_1",
-                "payment_id": "pay_1", "amount": 99900, "status": "captured",
+                "payment_id": "pay_1", "amount": 69900, "status": "captured",
                 "plan": "business_basic",
             },
             {"plan": "free", "role": "user", "subscription_expiry": None},
@@ -362,7 +388,7 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         store = LockedPaymentDB(
             {
                 "id": 9, "user_id": 42, "order_id": "order_1",
-                "payment_id": "order_1", "amount": 99900, "status": "created",
+                "payment_id": "order_1", "amount": 69900, "status": "created",
                 "plan": "business_basic",
             },
             {"plan": "free", "role": "user", "subscription_expiry": None},
@@ -396,17 +422,17 @@ class VerifyPaymentServiceTests(unittest.TestCase):
         store = LockedPaymentDB(
             {
                 "id": 3, "user_id": 42, "order_id": "order_9",
-                "payment_id": "order_9", "amount": 49900, "status": "created",
+                "payment_id": "order_9", "amount": 29900, "status": "created",
                 "plan": "service_provider",
             },
             {"plan": "free", "role": "user", "subscription_expiry": None},
         )
-        order = self._paid_order(amount=49900, plan="service_provider")
+        order = self._paid_order(amount=29900, plan="service_provider")
         pay = {
             "id": "pay_9",
             "order_id": "order_9",
             "status": "captured",
-            "amount": 49900,
+            "amount": 29900,
             "notes": order.get("notes") or {},
         }
         with patch("services.payment_service.get_razorpay_client", return_value=self._client(True, order, pay)), \
@@ -537,7 +563,7 @@ class CrossUserVerifyPaymentTests(unittest.TestCase):
                 "user_id": self.OWNER_ID,
                 "order_id": "order_a",
                 "payment_id": "order_a",
-                "amount": 99900,
+                "amount": 69900,
                 "status": "created",
                 "plan": "business_basic",
             },
@@ -556,13 +582,13 @@ class CrossUserVerifyPaymentTests(unittest.TestCase):
         client.utility.verify_payment_signature.return_value = True
         client.order.fetch.return_value = {
             "status": "paid",
-            "amount": 99900,
+            "amount": 69900,
             "notes": {"plan": "business_basic", "user_id": str(notes_user_id)},
         }
         client.payment.fetch.return_value = {
             "status": "captured",
             "order_id": "order_a",
-            "amount": 99900,
+            "amount": 69900,
             "notes": {"plan": "business_basic", "user_id": str(notes_user_id)},
         }
         client.order.create.side_effect = AssertionError("must not create a Razorpay order")
@@ -701,10 +727,10 @@ class PaymentRouteTests(unittest.TestCase):
             )
         self.assertEqual(res.status_code, 200)
         body = res.get_json()
-        self.assertEqual(body["amount"], 839160)
+        self.assertEqual(body["amount"], 587160)
         self.assertEqual(body["billing_cycle"], "yearly")
         payload = rzp.order.create.call_args[0][0]
-        self.assertEqual(payload["amount"], 839160)
+        self.assertEqual(payload["amount"], 587160)
         self.assertEqual(payload["notes"]["billing_cycle"], "yearly")
         self.assertEqual(payload["notes"]["duration_days"], "365")
 

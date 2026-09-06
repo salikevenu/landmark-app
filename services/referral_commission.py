@@ -1,7 +1,12 @@
 """Canonical referral commission.
 
-First successful paid subscription: fixed bonus by plan (see
-FIRST_BONUS_BY_PLAN) — NOT a percentage, NOT derived from amount paid.
+First successful paid subscription: monthly billing cycle pays a fixed
+bonus by plan (see FIRST_BONUS_BY_PLAN) — NOT a percentage, NOT derived
+from amount paid. A first subscription billed 3-month or 12-month instead
+pays 10% of the actual successful payment amount (no fixed bonus) because
+the discounted multi-month price already reflects that commitment; the
+billing cycle is derived server-side from the stored/activated payment
+amount, never trusted from client input.
 Every eligible renewal thereafter (same plan, upgrade, downgrade, or
 billing-cycle change): 10% of the actual successful payment amount.
 
@@ -28,6 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from database.init_db import get_db_connection
+from config.payment_config import get_plan_spec, duration_days_for_stored_amount
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +182,7 @@ def _load_activated_payment(conn, referred_user_id, razorpay_payment_id):
     """
     row = conn.execute(
         text("""
-            SELECT plan, status, user_id
+            SELECT plan, status, user_id, amount
             FROM payments
             WHERE payment_id = :pid AND user_id = :uid
             ORDER BY id DESC
@@ -199,23 +205,48 @@ def _load_activated_payment(conn, referred_user_id, razorpay_payment_id):
     return mapping
 
 
-def _first_bonus_for_plan(conn, referred_user_id, razorpay_payment_id):
-    """Resolve the fixed first-sale bonus for the plan on THIS payment.
+def _first_commission_amount(conn, referred_user_id, razorpay_payment_id, amount):
+    """Resolve the first-sale commission for THIS payment.
 
-    Looks up payments.plan via the exact (payment_id, user_id) pair so a
-    payment can never be attributed to the wrong subscriber. Never
-    guesses: an unrecognized plan raises CommissionPlanLookupError rather
-    than returning a percentage or a defaulted amount.
+    Looks up payments.plan/amount via the exact (payment_id, user_id) pair
+    so a payment can never be attributed to the wrong subscriber. The
+    billing cycle is derived server-side from the activated payment's
+    stored amount (never trusted from client/job input):
+
+    - monthly cycle: fixed bonus by plan (FIRST_BONUS_BY_PLAN) — NOT a
+      percentage.
+    - 3-month or 12-month cycle: 10% of the actual successful payment
+      amount — NOT the fixed bonus.
+
+    Never guesses: an unrecognized plan or an amount that doesn't match
+    any known billing cycle for that plan raises CommissionPlanLookupError
+    rather than returning a defaulted or fixed amount.
     """
     mapping = _load_activated_payment(conn, referred_user_id, razorpay_payment_id)
     plan_key = mapping.get("plan")
-    bonus = FIRST_BONUS_BY_PLAN.get(plan_key)
-    if bonus is None:
+    if plan_key not in FIRST_BONUS_BY_PLAN:
         raise CommissionPlanLookupError(
             f"Unrecognized plan {plan_key!r} on payment {razorpay_payment_id} "
-            f"for user_id={referred_user_id}; refusing to guess first-sale bonus"
+            f"for user_id={referred_user_id}; refusing to guess first-sale commission"
         )
-    return bonus
+    display, spec = get_plan_spec(plan_key)
+    if not spec:
+        raise CommissionPlanLookupError(
+            f"No plan spec found for plan {plan_key!r} on payment {razorpay_payment_id} "
+            f"for user_id={referred_user_id}; refusing to guess first-sale commission"
+        )
+    cycle, _duration_days = duration_days_for_stored_amount(
+        spec["amount_paise"], mapping.get("amount")
+    )
+    if cycle is None:
+        raise CommissionPlanLookupError(
+            f"Stored payment amount {mapping.get('amount')!r} for plan {plan_key!r} "
+            f"on payment {razorpay_payment_id} (user_id={referred_user_id}) does not "
+            f"match any known billing cycle; refusing to guess first-sale commission"
+        )
+    if cycle == "monthly":
+        return FIRST_BONUS_BY_PLAN[plan_key]
+    return round(float(amount) * RECURRING_RATE, 2)
 
 
 def process_referral_commission(referred_user_id, payment_amount, razorpay_payment_id=None, conn=None):
@@ -302,15 +333,18 @@ def process_referral_commission(referred_user_id, payment_amount, razorpay_payme
         if already:
             return {"created": [], "reason": "already_processed", "referrer_id": referrer_id}
 
-        # First successful paid subscription pays the fixed by-plan bonus
-        # ONLY; every payment thereafter pays 10% recurring ONLY — the two
-        # are mutually exclusive per payment, not stacked on the first one.
+        # First successful paid subscription pays its first-sale commission
+        # ONLY (fixed by-plan bonus for monthly, 10% of actual amount for
+        # 3-month/12-month); every payment thereafter pays 10% recurring
+        # ONLY — the two are mutually exclusive per payment, not stacked on
+        # the first one.
         if not _is_truthy_flag(mapping.get("first_sub_commission_paid")):
             # Raises CommissionPlanLookupError on any ambiguity — deliberately
             # NOT caught here, so first_sub_commission_paid is only ever set
-            # once the fixed bonus has actually been determined (never burns
-            # the one-time first-bonus opportunity on a failed lookup).
-            bonus = _first_bonus_for_plan(conn, referred_user_id, razorpay_payment_id)
+            # once the first-sale commission has actually been determined
+            # (never burns the one-time first-sale opportunity on a failed
+            # lookup).
+            bonus = _first_commission_amount(conn, referred_user_id, razorpay_payment_id, amount)
             if bonus > 0:
                 if _insert_commission_tx(
                     conn, referrer_id, bonus, FIRST_BONUS_SOURCE,

@@ -31,6 +31,7 @@ from services.referral_commission import (
     process_referral_commission,
     release_locked_referral_payouts,
 )
+from config.payment_config import get_plan_spec
 from services.wallet_service import add_pending_referral_reward, process_referral
 from services.referral_service import process_referral_reward
 
@@ -97,14 +98,21 @@ class CommissionLedger:
         self.user_locks[uid] = threading.Lock()
         return self.users[uid]
 
-    def add_payment(self, payment_id, user_id, plan, status="activated"):
+    def add_payment(self, payment_id, user_id, plan, status="activated", amount_paise=None):
         """Seed a payments row — process_referral_commission looks up the
-        plan for the fixed first-sale bonus via (payment_id, user_id)."""
+        plan/amount for the first-sale commission via (payment_id, user_id).
+        Defaults amount_paise to the plan's monthly price (via get_plan_spec)
+        so existing call sites keep exercising the monthly/fixed-bonus path
+        unless a test explicitly asks for a 3-month/12-month amount."""
+        if amount_paise is None:
+            _, spec = get_plan_spec(plan)
+            amount_paise = spec["amount_paise"] if spec else None
         self.payments[str(payment_id)] = {
             "payment_id": str(payment_id),
             "user_id": user_id,
             "plan": plan,
             "status": status,
+            "amount": amount_paise,
         }
 
     def connect(self):
@@ -634,7 +642,7 @@ class FixedFirstBonusModelTests(unittest.TestCase):
     def test_service_provider_first_bonus_is_exactly_50(self):
         self.ledger.add_payment("pay_sp", self.referred, "service_provider")
         with self._patch():
-            process_referral_commission(self.referred, 499, "pay_sp")
+            process_referral_commission(self.referred, 299, "pay_sp")
         first = self._first()
         self.assertEqual(len(first), 1)
         self.assertEqual(first[0]["amount"], 50)
@@ -642,7 +650,7 @@ class FixedFirstBonusModelTests(unittest.TestCase):
     def test_business_basic_first_bonus_is_exactly_100(self):
         self.ledger.add_payment("pay_bb", self.referred, "business_basic")
         with self._patch():
-            process_referral_commission(self.referred, 999, "pay_bb")
+            process_referral_commission(self.referred, 699, "pay_bb")
         first = self._first()
         self.assertEqual(len(first), 1)
         self.assertEqual(first[0]["amount"], 100)
@@ -655,12 +663,12 @@ class FixedFirstBonusModelTests(unittest.TestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(first[0]["amount"], 150)
 
-    def test_first_bonus_fixed_regardless_of_billing_cycle_amount(self):
-        """Same plan (business_basic), three different actual-paid amounts
-        simulating monthly / 3-month / yearly discounted totals — the fixed
-        ₹100 bonus must not move with the amount."""
-        cycles = [("monthly", 999), ("3months", 2697.30), ("yearly", 8391.60)]
-        for label, amount in cycles:
+    def test_first_bonus_fixed_only_for_monthly_cycle(self):
+        """Monthly-cycle payments (the stored payments.amount matches the
+        plan's plain monthly price) always pay the fixed ₹100 bonus for
+        business_basic, regardless of the caller-supplied actual amount —
+        the monthly cycle never derives commission as a percentage."""
+        for label, amount in [("plain", 699), ("tampered_large", 5000)]:
             with self.subTest(cycle=label):
                 ledger = CommissionLedger()
                 ledger.add_user(self.referrer)
@@ -673,9 +681,56 @@ class FixedFirstBonusModelTests(unittest.TestCase):
                 self.assertEqual(len(first), 1)
                 self.assertEqual(first[0]["amount"], 100)
 
+    def test_first_commission_is_ten_percent_for_3month_first_subscription(self):
+        """A FIRST subscription billed on the 3-month cycle must NOT get the
+        fixed bonus — it must get exactly 10% of the actual 3-month
+        discounted amount for each plan."""
+        cases = [
+            ("service_provider", 80730, 807.30, 80.73),
+            ("business_basic", 188730, 1887.30, 188.73),
+            ("business_premium", 404730, 4047.30, 404.73),
+        ]
+        for plan, amount_paise, amount_rupees, expected in cases:
+            with self.subTest(plan=plan):
+                ledger = CommissionLedger()
+                ledger.add_user(self.referrer)
+                ledger.add_user(self.referred, referred_by=self.referrer)
+                pay_id = f"pay_3mo_first_{plan}"
+                ledger.add_payment(pay_id, self.referred, plan, amount_paise=amount_paise)
+                with patch.object(rc, "get_db_connection", side_effect=ledger.connect):
+                    process_referral_commission(self.referred, amount_rupees, pay_id)
+                first = [t for t in ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
+                self.assertEqual(len(first), 1)
+                self.assertEqual(first[0]["amount"], expected)
+                self.assertNotEqual(first[0]["amount"], rc.FIRST_BONUS_BY_PLAN.get(plan))
+
+    def test_first_commission_is_ten_percent_for_12month_first_subscription(self):
+        """A FIRST subscription billed on the 12-month (yearly) cycle must
+        NOT get the fixed bonus — it must get exactly 10% of the actual
+        12-month discounted amount for each plan."""
+        cases = [
+            ("service_provider", 251160, 2511.60, 251.16),
+            ("business_basic", 587160, 5871.60, 587.16),
+            ("business_premium", 1259160, 12591.60, 1259.16),
+        ]
+        for plan, amount_paise, amount_rupees, expected in cases:
+            with self.subTest(plan=plan):
+                ledger = CommissionLedger()
+                ledger.add_user(self.referrer)
+                ledger.add_user(self.referred, referred_by=self.referrer)
+                pay_id = f"pay_12mo_first_{plan}"
+                ledger.add_payment(pay_id, self.referred, plan, amount_paise=amount_paise)
+                with patch.object(rc, "get_db_connection", side_effect=ledger.connect):
+                    process_referral_commission(self.referred, amount_rupees, pay_id)
+                first = [t for t in ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
+                self.assertEqual(len(first), 1)
+                self.assertEqual(first[0]["amount"], expected)
+                self.assertNotEqual(first[0]["amount"], rc.FIRST_BONUS_BY_PLAN.get(plan))
+
     def test_first_bonus_is_not_a_percentage_of_amount(self):
-        """A large one-time payment must not inflate the fixed bonus —
-        10% of 5000 would be 500; the fixed service_provider bonus is 50."""
+        """A large one-time MONTHLY payment must not inflate the fixed
+        bonus — 10% of 5000 would be 500; the fixed service_provider bonus
+        is 50 as long as the stored payment amount is the monthly price."""
         self.ledger.add_payment("pay_huge", self.referred, "service_provider")
         with self._patch():
             process_referral_commission(self.referred, 5000, "pay_huge")
@@ -692,7 +747,7 @@ class FixedFirstBonusModelTests(unittest.TestCase):
         self.assertEqual(rec[0]["amount"], 100.0)
 
     def test_renewal_commission_for_current_live_prices(self):
-        cases = [(499, 49.9, "service_provider"), (999, 99.9, "business_basic"), (1499, 149.9, "business_premium")]
+        cases = [(299, 29.9, "service_provider"), (699, 69.9, "business_basic"), (1499, 149.9, "business_premium")]
         for amount, expected, plan in cases:
             with self.subTest(amount=amount):
                 ledger = CommissionLedger()
@@ -707,25 +762,25 @@ class FixedFirstBonusModelTests(unittest.TestCase):
                 self.assertEqual(rec[0]["amount"], expected)
 
     def test_renewal_uses_actual_discounted_multimonth_amount(self):
-        """business_basic 3-month billed total: 999 * 3 * 0.90 = 2697.30 —
+        """business_basic 3-month billed total: 699 * 3 * 0.90 = 1887.30 —
         commission must be 10% of THAT actual amount, not a synthetic
         per-month decomposition."""
         self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
         self.ledger.add_payment("pay_3mo_renew", self.referred, "business_basic")
         with self._patch():
-            process_referral_commission(self.referred, 2697.30, "pay_3mo_renew")
+            process_referral_commission(self.referred, 1887.30, "pay_3mo_renew")
         rec = self._recurring()
         self.assertEqual(len(rec), 1)
-        self.assertEqual(rec[0]["amount"], round(2697.30 * 0.10, 2))
+        self.assertEqual(rec[0]["amount"], round(1887.30 * 0.10, 2))
 
     def test_downgrade_renewal_gets_ten_percent_of_actual_payment(self):
         self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
         self.ledger.add_payment("pay_downgrade", self.referred, "service_provider")
         with self._patch():
-            process_referral_commission(self.referred, 499, "pay_downgrade")
+            process_referral_commission(self.referred, 299, "pay_downgrade")
         rec = self._recurring()
         self.assertEqual(len(rec), 1)
-        self.assertEqual(rec[0]["amount"], 49.9)
+        self.assertEqual(rec[0]["amount"], 29.9)
 
     def test_upgrade_renewal_gets_ten_percent_of_actual_payment(self):
         self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
@@ -763,8 +818,8 @@ class FixedFirstBonusModelTests(unittest.TestCase):
         self.ledger.add_payment("pay_first3", self.referred, "business_basic")
         self.ledger.add_payment("pay_cycle_change", self.referred, "business_basic")
         with self._patch():
-            process_referral_commission(self.referred, 999, "pay_first3")
-            process_referral_commission(self.referred, 2697.30, "pay_cycle_change")
+            process_referral_commission(self.referred, 699, "pay_first3")
+            process_referral_commission(self.referred, 1887.30, "pay_cycle_change")
         first = self._first()
         self.assertEqual(len(first), 1)
 

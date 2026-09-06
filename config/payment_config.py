@@ -13,14 +13,14 @@ PLANS = {
     "Service Provider": {
         "plan": "service_provider",
         "role": "service_provider",
-        "amount_paise": 49900,
+        "amount_paise": 29900,
         "duration_days": 30,
         "business_limit": 10,
     },
     "Business Basic": {
         "plan": "business_basic",
         "role": "business_basic",
-        "amount_paise": 99900,
+        "amount_paise": 69900,
         "duration_days": 30,
         "business_limit": 1,
     },

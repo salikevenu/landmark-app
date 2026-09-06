@@ -120,9 +120,9 @@ class CreateOrderHardeningTests(unittest.TestCase):
             )
         self.assertEqual(res.status_code, 200)
         body = res.get_json()
-        self.assertEqual(body["amount"], 99900)
+        self.assertEqual(body["amount"], 69900)
         self.assertEqual(body["user_id"], "7")
-        self.assertEqual(rzp.order.create.call_args[0][0]["amount"], 99900)
+        self.assertEqual(rzp.order.create.call_args[0][0]["amount"], 69900)
         self.assertEqual(rzp.order.create.call_args[0][0]["notes"]["user_id"], "7")
 
     def test_invalid_plan(self):
@@ -372,8 +372,8 @@ class WebhookHardeningTests(unittest.TestCase):
         fin.assert_not_called()
 
     def test_notes_cannot_change_duration(self):
-        store = _store()
-        payload = self._event(amount=99900)
+        store = _store(amount=69900)
+        payload = self._event(amount=69900)
         body, sig = self._sign(payload)
         row = _row(store.payment)
         conn = MagicMock()
