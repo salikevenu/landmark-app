@@ -516,7 +516,7 @@ def _init_db_body(conn):
         ('withdrawal_min_amount', '100'),
         ('withdrawal_max_amount', '50000'),
         ('referral_bonus_percent', '10'),
-        ('recurring_commission_percent', '5'),
+        ('recurring_commission_percent', '10'),
         ('sponsor_price', '999'),
         ('verify_price', '499')
     ]

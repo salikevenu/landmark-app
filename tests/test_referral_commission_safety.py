@@ -85,6 +85,7 @@ class CommissionLedger:
         self.next_tx_id = 1
         self.next_job_id = 1
         self.users_wallet_column = {}
+        self.payments = {}
 
     def add_user(self, uid, referred_by=None, first_paid=False, wallet_col=0):
         self.users[uid] = {
@@ -95,6 +96,16 @@ class CommissionLedger:
         self.users_wallet_column[uid] = wallet_col
         self.user_locks[uid] = threading.Lock()
         return self.users[uid]
+
+    def add_payment(self, payment_id, user_id, plan, status="activated"):
+        """Seed a payments row — process_referral_commission looks up the
+        plan for the fixed first-sale bonus via (payment_id, user_id)."""
+        self.payments[str(payment_id)] = {
+            "payment_id": str(payment_id),
+            "user_id": user_id,
+            "plan": plan,
+            "status": status,
+        }
 
     def connect(self):
         return LedgerConn(self)
@@ -160,11 +171,28 @@ class LedgerConn:
                 return FakeResult(None)
             return FakeResult(FakeRow(dict(user)))
 
+        if "from payments" in q:
+            pid = params.get("pid")
+            uid = params.get("uid")
+            payment = self.store.payments.get(str(pid))
+            if payment and payment["user_id"] == uid:
+                return FakeResult(FakeRow(dict(payment)))
+            return FakeResult(None)
+
         if "update users set first_sub_commission_paid" in q:
             uid = params["uid"]
             if uid in self.store.users:
                 self.store.users[uid]["first_sub_commission_paid"] = 1
             return FakeResult(rowcount=1)
+
+        if "select 1 from wallet_transactions" in q:
+            rzp = params.get("rzp")
+            ref_id = params.get("ref_id")
+            exists = any(
+                t.get("razorpay_payment_id") == rzp and t.get("reference_id") == ref_id
+                for t in self.store.txs
+            )
+            return FakeResult(FakeRow({"exists": 1}) if exists else None)
 
         if "insert into wallet_transactions" in q:
             source = params["source"]
@@ -304,6 +332,7 @@ class CommissionSafetyTests(unittest.TestCase):
         return [t["source"] for t in self.ledger.txs]
 
     def test_a_first_commission_concurrency(self):
+        self.ledger.add_payment("pay_same", self.referred, "service_provider")
         errors = []
 
         def run(pay_id):
@@ -322,11 +351,16 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(errors, [])
         firsts = [t for t in self.ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
         self.assertEqual(len(firsts), 1)
-        self.assertEqual(firsts[0]["amount"], 10)
+        self.assertEqual(firsts[0]["amount"], 50)
+        # Same payment_id raced twice: the loser must be blocked by the
+        # payment-level idempotency guard, not fall through to a second
+        # (wrongly-sourced) commission for the identical payment.
         recurrings = [t for t in self.ledger.txs if t["source"] == RECURRING_SOURCE]
-        self.assertEqual(len(recurrings), 1)
+        self.assertEqual(len(recurrings), 0)
 
     def test_a_two_payments_still_one_first_bonus(self):
+        self.ledger.add_payment("pay_a", self.referred, "service_provider")
+        self.ledger.add_payment("pay_b", self.referred, "service_provider")
         errors = []
 
         def run(pay_id):
@@ -345,18 +379,29 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(errors, [])
         firsts = [t for t in self.ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
         self.assertEqual(len(firsts), 1)
+        self.assertEqual(firsts[0]["amount"], 50)
+        # Two genuinely different payments for the same referred user: the
+        # winner of the first-bonus race gets ONLY the fixed bonus; the
+        # other (processed once the flag is already set) gets ONLY the 10%
+        # recurring commission for its own (different) payment.
         recurrings = [t for t in self.ledger.txs if t["source"] == RECURRING_SOURCE]
-        self.assertEqual(len(recurrings), 2)
+        self.assertEqual(len(recurrings), 1)
 
     def test_b_same_payment_retry(self):
+        self.ledger.add_payment("pay_1", self.referred, "business_basic")
         with self._patch():
             process_referral_commission(self.referred, 499, "pay_1")
             process_referral_commission(self.referred, 499, "pay_1")
         self.assertEqual(self._by_source().count(FIRST_BONUS_SOURCE), 1)
-        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 1)
+        # Retrying the SAME payment_id must not also mint a recurring
+        # commission for it once the flag it flipped makes the second
+        # attempt look like a "later" payment — the idempotency guard
+        # blocks any further processing of an already-handled payment.
+        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 0)
         self.assertEqual({t["razorpay_payment_id"] for t in self.ledger.txs}, {"pay_1"})
 
     def test_c_verify_webhook_race(self):
+        self.ledger.add_payment("pay_vw", self.referred, "service_provider")
         conn = self.ledger.connect()
         enqueue_referral_commission_job(conn, "pay_vw", "pay_vw", self.referred, 100)
         conn.commit()
@@ -377,22 +422,29 @@ class CommissionSafetyTests(unittest.TestCase):
         t2.join()
         self.assertEqual(errors, [])
         self.assertEqual(self._by_source().count(FIRST_BONUS_SOURCE), 1)
-        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 1)
+        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 0)
         completed = [j for j in self.ledger.jobs if j["status"] in ("completed", "skipped")]
         self.assertEqual(len(completed), 1)
 
-    def test_d_two_different_payments_10_then_5(self):
+    def test_d_first_fixed_then_recurring_ten_percent(self):
+        """First payment gets the fixed plan bonus (NOT a percentage of the
+        200 rupees paid — business_basic's fixed bonus is 100, not 20).
+        The second payment for the same referred user is a pure 10% renewal."""
+        self.ledger.add_payment("pay_a", self.referred, "business_basic")
+        self.ledger.add_payment("pay_b", self.referred, "business_basic")
         with self._patch():
             process_referral_commission(self.referred, 200, "pay_a")
             process_referral_commission(self.referred, 200, "pay_b")
         first = [t for t in self.ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
         rec = [t for t in self.ledger.txs if t["source"] == RECURRING_SOURCE]
         self.assertEqual(len(first), 1)
-        self.assertEqual(first[0]["amount"], 20)
+        self.assertEqual(first[0]["amount"], 100)
         self.assertEqual(first[0]["razorpay_payment_id"], "pay_a")
-        self.assertEqual(len(rec), 2)
-        self.assertEqual(sorted(t["amount"] for t in rec), [10, 10])
-        self.assertEqual(sorted(t["razorpay_payment_id"] for t in rec), ["pay_a", "pay_b"])
+        # pay_a was the first payment — fixed bonus ONLY, no stacked recurring.
+        # pay_b is the (second, different) payment — 10% recurring ONLY.
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["amount"], 20)
+        self.assertEqual(rec[0]["razorpay_payment_id"], "pay_b")
 
     def test_e_commission_failure_leaves_pending_job(self):
         conn = self.ledger.connect()
@@ -407,6 +459,7 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(self.ledger.txs, [])
 
     def test_f_retry_after_failure_creates_commission_once(self):
+        self.ledger.add_payment("pay_retry", self.referred, "service_provider")
         conn = self.ledger.connect()
         enqueue_referral_commission_job(conn, "pay_retry", "pay_retry", self.referred, 100)
         conn.commit()
@@ -416,10 +469,11 @@ class CommissionSafetyTests(unittest.TestCase):
             process_pending_referral_commission_jobs(razorpay_payment_id="pay_retry")
             process_pending_referral_commission_jobs(razorpay_payment_id="pay_retry")
         self.assertEqual(self._by_source().count(FIRST_BONUS_SOURCE), 1)
-        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 1)
+        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 0)
         self.assertEqual(self.ledger.jobs[0]["status"], "completed")
 
     def test_g_duplicate_notification_after_failure_still_processes(self):
+        self.ledger.add_payment("pay_dup", self.referred, "service_provider")
         conn = self.ledger.connect()
         enqueue_referral_commission_job(conn, "pay_dup", "pay_dup", self.referred, 100)
         conn.commit()
@@ -429,7 +483,9 @@ class CommissionSafetyTests(unittest.TestCase):
         with self._patch():
             after_payment_finalized({"success": True, "duplicate": True, "razorpay_payment_id": "pay_dup"})
         self.assertEqual(self.ledger.jobs[0]["status"], "completed")
-        self.assertEqual(len(self.ledger.txs), 2)
+        # This referred user's first-ever payment -> exactly one commission
+        # row (the fixed bonus), not a stacked bonus+recurring pair.
+        self.assertEqual(len(self.ledger.txs), 1)
 
     def test_j_self_referral_zero_commission(self):
         self.ledger.users[self.referred]["referred_by"] = self.referred
@@ -446,6 +502,7 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(self.ledger.txs, [])
 
     def test_payout_h_i_concurrent_workers_credit_once(self):
+        self.ledger.add_payment("pay_payout", self.referred, "service_provider")
         conn = self.ledger.connect()
         process_referral_commission(self.referred, 100, "pay_payout", conn=conn)
         conn.commit()
@@ -489,6 +546,7 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertEqual(self.ledger.txs, [])
 
     def test_failed_job_automatic_retry_completes_once(self):
+        self.ledger.add_payment("pay_auto", self.referred, "service_provider")
         conn = self.ledger.connect()
         enqueue_referral_commission_job(conn, "pay_auto", "pay_auto", self.referred, 100)
         conn.commit()
@@ -500,7 +558,7 @@ class CommissionSafetyTests(unittest.TestCase):
             process_pending_referral_commission_jobs()
         self.assertEqual(self.ledger.jobs[0]["status"], "completed")
         self.assertEqual(self._by_source().count(FIRST_BONUS_SOURCE), 1)
-        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 1)
+        self.assertEqual(self._by_source().count(RECURRING_SOURCE), 0)
 
     def test_payout_does_not_write_users_wallet_column(self):
         src = (ROOT / "services" / "referral_commission.py").read_text(encoding="utf-8")
@@ -549,6 +607,312 @@ class CommissionSafetyTests(unittest.TestCase):
         self.assertFalse(out["success"])
         self.assertEqual(self.ledger.txs, [])
         self.assertEqual(self.ledger.wallet, {})
+
+
+class FixedFirstBonusModelTests(unittest.TestCase):
+    """New commission model: fixed first-sale bonus by plan (₹50 service /
+    ₹100 basic / ₹150 premium — never a percentage of amount paid), then
+    10% of the actual payment on every eligible renewal thereafter
+    (same plan, upgrade, downgrade, or billing-cycle change)."""
+
+    def setUp(self):
+        self.ledger = CommissionLedger()
+        self.referrer = 1
+        self.referred = 2
+        self.ledger.add_user(self.referrer)
+        self.ledger.add_user(self.referred, referred_by=self.referrer)
+
+    def _patch(self):
+        return patch.object(rc, "get_db_connection", side_effect=self.ledger.connect)
+
+    def _first(self):
+        return [t for t in self.ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
+
+    def _recurring(self):
+        return [t for t in self.ledger.txs if t["source"] == RECURRING_SOURCE]
+
+    def test_service_provider_first_bonus_is_exactly_50(self):
+        self.ledger.add_payment("pay_sp", self.referred, "service_provider")
+        with self._patch():
+            process_referral_commission(self.referred, 499, "pay_sp")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["amount"], 50)
+
+    def test_business_basic_first_bonus_is_exactly_100(self):
+        self.ledger.add_payment("pay_bb", self.referred, "business_basic")
+        with self._patch():
+            process_referral_commission(self.referred, 999, "pay_bb")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["amount"], 100)
+
+    def test_business_premium_first_bonus_is_exactly_150(self):
+        self.ledger.add_payment("pay_bp", self.referred, "business_premium")
+        with self._patch():
+            process_referral_commission(self.referred, 1499, "pay_bp")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["amount"], 150)
+
+    def test_first_bonus_fixed_regardless_of_billing_cycle_amount(self):
+        """Same plan (business_basic), three different actual-paid amounts
+        simulating monthly / 3-month / yearly discounted totals — the fixed
+        ₹100 bonus must not move with the amount."""
+        cycles = [("monthly", 999), ("3months", 2697.30), ("yearly", 8391.60)]
+        for label, amount in cycles:
+            with self.subTest(cycle=label):
+                ledger = CommissionLedger()
+                ledger.add_user(self.referrer)
+                ledger.add_user(self.referred, referred_by=self.referrer)
+                pay_id = f"pay_cycle_{label}"
+                ledger.add_payment(pay_id, self.referred, "business_basic")
+                with patch.object(rc, "get_db_connection", side_effect=ledger.connect):
+                    process_referral_commission(self.referred, amount, pay_id)
+                first = [t for t in ledger.txs if t["source"] == FIRST_BONUS_SOURCE]
+                self.assertEqual(len(first), 1)
+                self.assertEqual(first[0]["amount"], 100)
+
+    def test_first_bonus_is_not_a_percentage_of_amount(self):
+        """A large one-time payment must not inflate the fixed bonus —
+        10% of 5000 would be 500; the fixed service_provider bonus is 50."""
+        self.ledger.add_payment("pay_huge", self.referred, "service_provider")
+        with self._patch():
+            process_referral_commission(self.referred, 5000, "pay_huge")
+        first = self._first()
+        self.assertEqual(first[0]["amount"], 50)
+
+    def test_renewal_commission_is_exactly_ten_percent(self):
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        self.ledger.add_payment("pay_renew", self.referred, "business_basic")
+        with self._patch():
+            process_referral_commission(self.referred, 1000, "pay_renew")
+        rec = self._recurring()
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["amount"], 100.0)
+
+    def test_renewal_commission_for_current_live_prices(self):
+        cases = [(499, 49.9, "service_provider"), (999, 99.9, "business_basic"), (1499, 149.9, "business_premium")]
+        for amount, expected, plan in cases:
+            with self.subTest(amount=amount):
+                ledger = CommissionLedger()
+                ledger.add_user(self.referrer)
+                ledger.add_user(self.referred, referred_by=self.referrer, first_paid=True)
+                pay_id = f"pay_price_{amount}"
+                ledger.add_payment(pay_id, self.referred, plan)
+                with patch.object(rc, "get_db_connection", side_effect=ledger.connect):
+                    process_referral_commission(self.referred, amount, pay_id)
+                rec = [t for t in ledger.txs if t["source"] == RECURRING_SOURCE]
+                self.assertEqual(len(rec), 1)
+                self.assertEqual(rec[0]["amount"], expected)
+
+    def test_renewal_uses_actual_discounted_multimonth_amount(self):
+        """business_basic 3-month billed total: 999 * 3 * 0.90 = 2697.30 —
+        commission must be 10% of THAT actual amount, not a synthetic
+        per-month decomposition."""
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        self.ledger.add_payment("pay_3mo_renew", self.referred, "business_basic")
+        with self._patch():
+            process_referral_commission(self.referred, 2697.30, "pay_3mo_renew")
+        rec = self._recurring()
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["amount"], round(2697.30 * 0.10, 2))
+
+    def test_downgrade_renewal_gets_ten_percent_of_actual_payment(self):
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        self.ledger.add_payment("pay_downgrade", self.referred, "service_provider")
+        with self._patch():
+            process_referral_commission(self.referred, 499, "pay_downgrade")
+        rec = self._recurring()
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["amount"], 49.9)
+
+    def test_upgrade_renewal_gets_ten_percent_of_actual_payment(self):
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        self.ledger.add_payment("pay_upgrade", self.referred, "business_premium")
+        with self._patch():
+            process_referral_commission(self.referred, 1499, "pay_upgrade")
+        rec = self._recurring()
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["amount"], 149.9)
+
+    def test_no_second_first_commission_after_upgrade(self):
+        self.ledger.add_payment("pay_first", self.referred, "service_provider")
+        self.ledger.add_payment("pay_upgrade_2", self.referred, "business_premium")
+        with self._patch():
+            process_referral_commission(self.referred, 499, "pay_first")
+            process_referral_commission(self.referred, 1499, "pay_upgrade_2")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["razorpay_payment_id"], "pay_first")
+        rec = self._recurring()
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["razorpay_payment_id"], "pay_upgrade_2")
+
+    def test_no_second_first_commission_after_downgrade(self):
+        self.ledger.add_payment("pay_first2", self.referred, "business_premium")
+        self.ledger.add_payment("pay_downgrade_2", self.referred, "service_provider")
+        with self._patch():
+            process_referral_commission(self.referred, 1499, "pay_first2")
+            process_referral_commission(self.referred, 499, "pay_downgrade_2")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["razorpay_payment_id"], "pay_first2")
+
+    def test_no_second_first_commission_after_billing_cycle_change(self):
+        self.ledger.add_payment("pay_first3", self.referred, "business_basic")
+        self.ledger.add_payment("pay_cycle_change", self.referred, "business_basic")
+        with self._patch():
+            process_referral_commission(self.referred, 999, "pay_first3")
+            process_referral_commission(self.referred, 2697.30, "pay_cycle_change")
+        first = self._first()
+        self.assertEqual(len(first), 1)
+
+    def test_unknown_plan_does_not_pay_a_guessed_first_bonus(self):
+        """An unrecognized plan key must never fall back to a percentage or
+        a guessed fixed amount. The job must stay pending (retryable, with
+        diagnosable last_error), and the one-time first-bonus flag must NOT
+        be burned by the failed attempt."""
+        self.ledger.add_payment("pay_unknown", self.referred, "mystery_plan")
+        conn = self.ledger.connect()
+        enqueue_referral_commission_job(conn, "pay_unknown", "pay_unknown", self.referred, 777)
+        conn.commit()
+        with self._patch():
+            out = process_pending_referral_commission_jobs(razorpay_payment_id="pay_unknown")
+        self.assertEqual(out["failed"], [1])
+        self.assertEqual(self.ledger.jobs[0]["status"], "pending")
+        self.assertIn("Unrecognized plan", self.ledger.jobs[0]["last_error"])
+        self.assertEqual(self.ledger.txs, [])
+        self.assertEqual(self.ledger.users[self.referred]["first_sub_commission_paid"], 0)
+
+    def test_unrecognized_plan_does_not_crash_the_dispatcher(self):
+        """A second, independent eligible job must still process normally
+        even though an earlier job hit an unknown plan."""
+        self.ledger.add_payment("pay_bad", self.referred, "not_a_real_plan")
+        self.ledger.add_payment("pay_good", self.referred, "service_provider")
+        conn = self.ledger.connect()
+        enqueue_referral_commission_job(conn, "pay_bad", "pay_bad", self.referred, 100)
+        conn.commit()
+        with self._patch():
+            process_pending_referral_commission_jobs(razorpay_payment_id="pay_bad")
+        conn2 = self.ledger.connect()
+        enqueue_referral_commission_job(conn2, "pay_good", "pay_good", self.referred, 100)
+        conn2.commit()
+        with self._patch():
+            out = process_pending_referral_commission_jobs(razorpay_payment_id="pay_good")
+        self.assertEqual(out["processed"], [2])
+        good_job = next(j for j in self.ledger.jobs if j["payment_id"] == "pay_good")
+        self.assertEqual(good_job["status"], "completed")
+        self.assertEqual(self._first()[0]["razorpay_payment_id"], "pay_good")
+
+    def test_payment_not_activated_refuses_first_bonus(self):
+        self.ledger.add_payment("pay_not_active", self.referred, "service_provider", status="created")
+        with self._patch():
+            with self.assertRaises(rc.CommissionPlanLookupError):
+                process_referral_commission(self.referred, 499, "pay_not_active")
+        self.assertEqual(self.ledger.txs, [])
+
+    def test_missing_payment_row_refuses_first_bonus(self):
+        """No add_payment() call at all — simulates the job racing ahead of
+        a committed payments row, or a data-integrity gap. Must refuse, not
+        guess."""
+        with self._patch():
+            with self.assertRaises(rc.CommissionPlanLookupError):
+                process_referral_commission(self.referred, 499, "pay_never_recorded")
+        self.assertEqual(self.ledger.txs, [])
+
+    def test_first_bonus_lookup_scoped_to_the_referred_users_own_payment(self):
+        """The (payment_id, user_id) lookup must never attribute a payment
+        row belonging to a different user."""
+        other_user = 99
+        self.ledger.add_payment("pay_other_user", other_user, "business_premium")
+        with self._patch():
+            with self.assertRaises(rc.CommissionPlanLookupError):
+                process_referral_commission(self.referred, 499, "pay_other_user")
+        self.assertEqual(self.ledger.txs, [])
+
+    # ---- Fix 1: recurring commission requires an activated payment ----
+
+    def test_recurring_commission_refuses_non_activated_payment(self):
+        """The renewal (recurring) branch must enforce the exact same
+        activation requirement as the first-sale bonus branch — a payment
+        that is not in the repository's activated state must never
+        produce a commission, must not touch the wallet, and must not
+        change first_sub_commission_paid (already 1 here, from an earlier
+        eligible payment)."""
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        self.ledger.add_payment("pay_renew_not_active", self.referred, "business_basic", status="created")
+        with self._patch():
+            with self.assertRaises(rc.CommissionPlanLookupError):
+                process_referral_commission(self.referred, 999, "pay_renew_not_active")
+        self.assertEqual(self.ledger.txs, [])
+        self.assertEqual(self.ledger.users[self.referred]["first_sub_commission_paid"], 1)
+
+    def test_recurring_commission_refuses_missing_payment_row(self):
+        """No payments row at all for this (payment_id, user_id) — must
+        refuse rather than blindly trust the caller-supplied amount."""
+        self.ledger.users[self.referred]["first_sub_commission_paid"] = 1
+        with self._patch():
+            with self.assertRaises(rc.CommissionPlanLookupError):
+                process_referral_commission(self.referred, 999, "pay_renew_never_recorded")
+        self.assertEqual(self.ledger.txs, [])
+
+    # ---- Fix 2: idempotency guard is scoped to the referred subscriber ----
+
+    def test_idempotency_guard_is_scoped_to_the_referred_user_not_just_payment_id(self):
+        """A DIFFERENT referred user's own commission row that happens to
+        share this razorpay_payment_id string must never cause the
+        current user's own legitimate commission to be wrongly skipped as
+        'already_processed'. Uses RECURRING_SOURCE for the seeded other-
+        user row (while this user's own eligible commission is the FIRST
+        bonus) specifically so this scenario does not collide with the
+        pre-existing (source, razorpay_payment_id) unique index — this
+        test proves the guard's own reference_id scoping, not just the
+        database constraint."""
+        other_user = 77
+        self.ledger.add_user(other_user, referred_by=self.referrer, first_paid=True)
+        conn = self.ledger.connect()
+        conn.execute(
+            """
+            INSERT INTO wallet_transactions
+                (user_id, amount, type, source, reference_id, status, unlock_at,
+                 created_at, razorpay_payment_id)
+            VALUES (:referrer_id, :amount, 'credit', :source, :ref_id, 'locked',
+                    :unlock_at, CURRENT_TIMESTAMP, :rzp)
+            """,
+            {
+                "referrer_id": self.referrer,
+                "amount": 20.0,
+                "source": RECURRING_SOURCE,
+                "ref_id": f"user_{other_user}",
+                "unlock_at": "2020-01-01 00:00:00",
+                "rzp": "pay_shared_id",
+            },
+        )
+        conn.commit()
+
+        self.ledger.add_payment("pay_shared_id", self.referred, "service_provider")
+        with self._patch():
+            result = process_referral_commission(self.referred, 499, "pay_shared_id")
+        self.assertEqual(result["reason"], "ok")
+        mine = [
+            t for t in self.ledger.txs
+            if t["source"] == FIRST_BONUS_SOURCE and t["reference_id"] == f"user_{self.referred}"
+        ]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual(mine[0]["amount"], 50)
+
+    def test_same_payment_retry_still_blocked_by_scoped_guard(self):
+        """Retains the same-payment-retry protection (now user-scoped):
+        retrying the identical payment for the SAME referred user must
+        still be blocked — this is the case the guard exists for."""
+        self.ledger.add_payment("pay_retry_scoped", self.referred, "service_provider")
+        with self._patch():
+            first_result = process_referral_commission(self.referred, 499, "pay_retry_scoped")
+            second_result = process_referral_commission(self.referred, 499, "pay_retry_scoped")
+        self.assertEqual(first_result["reason"], "ok")
+        self.assertEqual(second_result["reason"], "already_processed")
+        self.assertEqual(len(self.ledger.txs), 1)
 
 
 class OrderIdUniquenessTests(unittest.TestCase):

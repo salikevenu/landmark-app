@@ -1,4 +1,9 @@
-"""Canonical referral commission (10% first successful sub, 5% each activation).
+"""Canonical referral commission.
+
+First successful paid subscription: fixed bonus by plan (see
+FIRST_BONUS_BY_PLAN) — NOT a percentage, NOT derived from amount paid.
+Every eligible renewal thereafter (same plan, upgrade, downgrade, or
+billing-cycle change): 10% of the actual successful payment amount.
 
 Stage 2B money-safety:
 - Lock the referred user row (SELECT ... FOR UPDATE) before first-bonus decisions.
@@ -33,6 +38,27 @@ COMMISSION_SOURCES = (FIRST_BONUS_SOURCE, RECURRING_SOURCE)
 JOB_PENDING = "pending"
 JOB_COMPLETED = "completed"
 JOB_SKIPPED = "skipped"
+RECURRING_RATE = 0.10
+
+# Fixed first-sale bonus by plan (config.payment_config.PLANS[*]["plan"] key).
+# Financial constant, not a percentage — never derive this from amount paid.
+FIRST_BONUS_BY_PLAN = {
+    "service_provider": 50.0,
+    "business_basic": 100.0,
+    "business_premium": 150.0,
+}
+
+
+class CommissionPlanLookupError(Exception):
+    """Raised when the first-sale bonus plan cannot be safely determined.
+
+    Deliberately a plain exception (not a returned reason string) so it
+    flows through the existing job-retry path in
+    process_pending_referral_commission_jobs unchanged: the job is left
+    pending, attempts is incremented, and last_error is recorded — exactly
+    how any other unexpected failure in this function is already handled.
+    Never guess a bonus amount when this is raised.
+    """
 
 
 def get_unlock_utc(referral_utc: datetime):
@@ -138,8 +164,63 @@ def ensure_referral_commission_schema():
             pass
 
 
+def _load_activated_payment(conn, referred_user_id, razorpay_payment_id):
+    """Fetch the payment row for the exact (payment_id, user_id) pair and
+    require it to be in the repository's activated successful-payment
+    state. Shared by BOTH the first-sale bonus lookup and the recurring
+    branch, so the same financial invariant applies to every referral
+    commission regardless of source: it must be tied to a genuinely
+    activated payment, never a created/pending/failed one. Never guesses:
+    raises CommissionPlanLookupError (not a returned reason string) so
+    callers get the existing safe job-retry/error behavior for free.
+    """
+    row = conn.execute(
+        text("""
+            SELECT plan, status, user_id
+            FROM payments
+            WHERE payment_id = :pid AND user_id = :uid
+            ORDER BY id DESC
+            LIMIT 1
+        """),
+        {"pid": str(razorpay_payment_id), "uid": referred_user_id},
+    ).fetchone()
+    if not row:
+        raise CommissionPlanLookupError(
+            f"No activated payment row found for user_id={referred_user_id} "
+            f"payment_id={razorpay_payment_id}; refusing to create commission"
+        )
+    mapping = row._mapping
+    if (mapping.get("status") or "").lower() != "activated":
+        raise CommissionPlanLookupError(
+            f"Payment {razorpay_payment_id} for user_id={referred_user_id} is not "
+            f"in activated state (status={mapping.get('status')!r}); refusing "
+            f"commission"
+        )
+    return mapping
+
+
+def _first_bonus_for_plan(conn, referred_user_id, razorpay_payment_id):
+    """Resolve the fixed first-sale bonus for the plan on THIS payment.
+
+    Looks up payments.plan via the exact (payment_id, user_id) pair so a
+    payment can never be attributed to the wrong subscriber. Never
+    guesses: an unrecognized plan raises CommissionPlanLookupError rather
+    than returning a percentage or a defaulted amount.
+    """
+    mapping = _load_activated_payment(conn, referred_user_id, razorpay_payment_id)
+    plan_key = mapping.get("plan")
+    bonus = FIRST_BONUS_BY_PLAN.get(plan_key)
+    if bonus is None:
+        raise CommissionPlanLookupError(
+            f"Unrecognized plan {plan_key!r} on payment {razorpay_payment_id} "
+            f"for user_id={referred_user_id}; refusing to guess first-sale bonus"
+        )
+    return bonus
+
+
 def process_referral_commission(referred_user_id, payment_amount, razorpay_payment_id=None, conn=None):
-    """Queue 10% first-bonus and 5% recurring commission for the referrer.
+    """Queue the fixed first-sale bonus (by plan) and 10% recurring commission
+    for the referrer.
 
     Must run inside one DB transaction with the referred user row locked.
     ``razorpay_payment_id`` is required for money-safe idempotency.
@@ -187,8 +268,49 @@ def process_referral_commission(referred_user_id, payment_amount, razorpay_payme
         user_ref = f"user_{referred_user_id}"
         amount = float(payment_amount)
 
+        # Payment-level idempotency guard: since first-bonus vs. recurring is
+        # now decided by the (mutable) first_sub_commission_paid flag rather
+        # than a per-source-only check, a retry of the SAME razorpay payment
+        # could otherwise land in a different branch than its original
+        # attempt (e.g. first attempt sets the flag and pays the fixed bonus;
+        # a retry of that identical payment would then see the flag already
+        # true and wrongly pay a second, different-source commission for the
+        # same payment). Block any further processing once this exact
+        # payment has produced a commission row under either source.
+        # Scoped to (this payment AND this referred subscriber's own commission
+        # row) via razorpay_payment_id + reference_id (the existing "user_<id>"
+        # tag every commission row is written with — see _insert_commission_tx
+        # call sites below). Scoping by reference_id, not just payment_id,
+        # means a row that happens to share this payment_id but belongs to a
+        # different referred user's commission can never be mistaken for
+        # "this user's payment already processed".
+        already = conn.execute(
+            text("""
+                SELECT 1 FROM wallet_transactions
+                WHERE razorpay_payment_id = :rzp
+                  AND reference_id = :ref_id
+                  AND source IN (:src_first, :src_recurring)
+                LIMIT 1
+            """),
+            {
+                "rzp": razorpay_payment_id,
+                "ref_id": user_ref,
+                "src_first": FIRST_BONUS_SOURCE,
+                "src_recurring": RECURRING_SOURCE,
+            },
+        ).fetchone()
+        if already:
+            return {"created": [], "reason": "already_processed", "referrer_id": referrer_id}
+
+        # First successful paid subscription pays the fixed by-plan bonus
+        # ONLY; every payment thereafter pays 10% recurring ONLY — the two
+        # are mutually exclusive per payment, not stacked on the first one.
         if not _is_truthy_flag(mapping.get("first_sub_commission_paid")):
-            bonus = round(amount * 0.10, 2)
+            # Raises CommissionPlanLookupError on any ambiguity — deliberately
+            # NOT caught here, so first_sub_commission_paid is only ever set
+            # once the fixed bonus has actually been determined (never burns
+            # the one-time first-bonus opportunity on a failed lookup).
+            bonus = _first_bonus_for_plan(conn, referred_user_id, razorpay_payment_id)
             if bonus > 0:
                 if _insert_commission_tx(
                     conn, referrer_id, bonus, FIRST_BONUS_SOURCE,
@@ -199,14 +321,22 @@ def process_referral_commission(referred_user_id, payment_amount, razorpay_payme
                 text("UPDATE users SET first_sub_commission_paid = 1 WHERE id = :uid"),
                 {"uid": referred_user_id},
             )
-
-        recurring = round(amount * 0.05, 2)
-        if recurring > 0:
-            if _insert_commission_tx(
-                conn, referrer_id, recurring, RECURRING_SOURCE,
-                user_ref, razorpay_payment_id, unlock_at_str,
-            ):
-                created.append(RECURRING_SOURCE)
+        else:
+            # Same activation requirement as the first-sale bonus: a
+            # recurring commission must never be created from a payment
+            # that isn't in the repository's activated successful-payment
+            # state. Raises (not caught here) so an ineligible payment
+            # never inserts a wallet row — no ledger write, no
+            # first_sub_commission_paid change (it's already 1 here), and
+            # the existing job retry/error path handles the failure safely.
+            _load_activated_payment(conn, referred_user_id, razorpay_payment_id)
+            recurring = round(amount * RECURRING_RATE, 2)
+            if recurring > 0:
+                if _insert_commission_tx(
+                    conn, referrer_id, recurring, RECURRING_SOURCE,
+                    user_ref, razorpay_payment_id, unlock_at_str,
+                ):
+                    created.append(RECURRING_SOURCE)
 
         if own:
             conn.commit()
