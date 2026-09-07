@@ -17,6 +17,7 @@ from .withdraw_routes import withdraw_bp
 from .rank_routes import rank_bp
 from .admin_ranger_routes import admin_ranger_bp
 from .pos_routes import pos_bp
+from .organization_routes import organization_bp
 
 def register_routes(app):
     # Public pages (no /api prefix)
@@ -43,6 +44,7 @@ def register_routes(app):
     app.register_blueprint(rank_bp)
     app.register_blueprint(admin_ranger_bp)
     app.register_blueprint(pos_bp, url_prefix="/api/pos")
+    app.register_blueprint(organization_bp, url_prefix="/api/organization")
 
     # Visible in Render logs so a missing analytics mount cannot stay silent
     print(

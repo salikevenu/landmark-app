@@ -435,7 +435,15 @@ class DashboardReferralNavigationTests(unittest.TestCase):
         }
         self.assertEqual(
             invite_rules,
-            {"user.invite": "/api/user/invite", "user.api_invite": "/api/user/api/invite", "redirect_invite": "/invite"},
+            {
+                "user.invite": "/api/user/invite",
+                "user.api_invite": "/api/user/api/invite",
+                "redirect_invite": "/invite",
+                # Business Power V2 organization member invitations — an
+                # unrelated feature that happens to share the word "invite";
+                # not a second referral-invite page.
+                "organization.invite_organization_member": "/api/organization/<int:organization_id>/members/invite",
+            },
         )
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
         redirect_fn = app_src.split("def redirect_invite")[1].split("\n@app.route")[0]
