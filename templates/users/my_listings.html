@@ -7,9 +7,45 @@
 <div class="listings-container">
   <div class="header-section">
     <h1 class="page-title">My <span class="gradient-text">Listings</span></h1>
-    <a href="/api/user/create-listing" class="new-listing-btn">
-      <span class="plus-icon">+</span> New Listing
-    </a>
+    <div style="display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center;">
+      <select id="orgSelector" class="new-listing-btn" style="display:none;"></select>
+      <button id="manageTeamBtn" class="new-listing-btn" style="display:none;" onclick="toggleTeamPanel()">👥 Team</button>
+      <a id="newListingLink" href="/api/user/create-listing" class="new-listing-btn">
+        <span class="plus-icon">+</span> New Listing
+      </a>
+    </div>
+  </div>
+
+  <div id="orgBusinessFormWrap" style="display:none; margin-bottom:1.5rem;">
+    <div class="listing-card"><div class="card-inner" style="flex-direction:column; width:100%;">
+      <h3 class="business-name">New Organization Business</h3>
+      <input id="orgBizName" placeholder="Business name" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+      <input id="orgBizCategory" placeholder="Category" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+      <input id="orgBizLat" placeholder="Latitude" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+      <input id="orgBizLng" placeholder="Longitude" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+      <div class="action-buttons">
+        <button class="btn-action" onclick="submitOrgBusiness()">Create</button>
+        <button class="btn-action" onclick="document.getElementById('orgBusinessFormWrap').style.display='none'">Cancel</button>
+      </div>
+      <p id="orgBizStatus" class="meta-text"></p>
+    </div></div>
+  </div>
+
+  <div id="orgTeamPanel" style="display:none; margin-bottom:1.5rem;">
+    <div class="listing-card"><div class="card-inner" style="flex-direction:column; width:100%;">
+      <h3 class="business-name">Team Members</h3>
+      <div id="orgInviteFormWrap" style="display:none; margin-bottom:1rem;">
+        <input id="inviteePhone" placeholder="10-digit phone" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+        <select id="inviteeRole" style="margin:0.4rem 0; padding:0.5rem; width:100%;">
+          <option value="manager">Manager</option>
+          <option value="staff">Staff</option>
+        </select>
+        <button class="btn-action" onclick="submitInvite()">Send Invitation</button>
+        <p id="inviteStatus" class="meta-text"></p>
+      </div>
+      <button id="showInviteBtn" class="btn-action" style="display:none;" onclick="document.getElementById('orgInviteFormWrap').style.display='block'">+ Invite Member</button>
+      <div id="orgMembersList" class="meta-text">Loading members...</div>
+    </div></div>
   </div>
 
   <div id="listingContainer" class="listings-grid">
@@ -362,11 +398,12 @@
   async function deleteListing(id) {
     if (!confirm("⚠️ Delete this listing permanently? This action cannot be undone.")) return;
     try {
-      const res = await LandmarkSession.authFetch(`/api/listing/delete-listing/${id}`, {
-        method: "DELETE"
-      });
+      const url = selectedOrgId
+        ? `/api/organization/${selectedOrgId}/businesses/${id}`
+        : `/api/listing/delete-listing/${id}`;
+      const res = await LandmarkSession.authFetch(url, { method: "DELETE" });
       const data = await res.json();
-      if (res.status === 403) {
+      if (res.status === 403 || res.status === 404) {
         alert(data.error || "Not allowed");
         return;
       }
@@ -415,17 +452,198 @@
   let currentPage = 1;
   let totalPages = 1;
 
+  // Business Power V2: which organization's businesses are currently being
+  // viewed. This is a UI convenience only (sessionStorage), never trusted
+  // for authorization -- every request is independently re-authorized
+  // server-side via services/organization_authz.py.
+  let selectedOrgId = null;
+  let currentOrgRole = null;
+
+  function getSelectedOrgId() {
+    try {
+      return sessionStorage.getItem("landmark_selected_org");
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function setSelectedOrgId(id) {
+    try {
+      if (id) sessionStorage.setItem("landmark_selected_org", String(id));
+      else sessionStorage.removeItem("landmark_selected_org");
+    } catch (e) { /* ignore -- convenience only */ }
+  }
+
+  async function loadOrganizations() {
+    try {
+      const res = await LandmarkSession.authFetch("/api/organization");
+      const data = res.ok ? await res.json() : { organizations: [] };
+      const orgs = data.organizations || [];
+      const selector = document.getElementById("orgSelector");
+      const teamBtn = document.getElementById("manageTeamBtn");
+      if (orgs.length === 0) {
+        selector.style.display = "none";
+        teamBtn.style.display = "none";
+        loadListingsPage(1);
+        return;
+      }
+      const remembered = getSelectedOrgId();
+      const validIds = orgs.map(o => String(o.id));
+      selectedOrgId = validIds.includes(remembered) ? remembered : null;
+
+      selector.innerHTML = `<option value="">— My Own Listings —</option>` +
+        orgs.map(o => `<option value="${o.id}"${String(o.id) === selectedOrgId ? " selected" : ""}>${escapeHtml(o.name)} (${o.role})</option>`).join("");
+      selector.style.display = "inline-block";
+      selector.onchange = onOrgChange;
+      await onOrgChange();
+    } catch (e) {
+      console.error(e);
+      loadListingsPage(1);
+    }
+  }
+
+  async function onOrgChange() {
+    const selector = document.getElementById("orgSelector");
+    selectedOrgId = selector.value || null;
+    setSelectedOrgId(selectedOrgId);
+    const teamBtn = document.getElementById("manageTeamBtn");
+    const newListingLink = document.getElementById("newListingLink");
+    document.getElementById("orgTeamPanel").style.display = "none";
+    document.getElementById("orgBusinessFormWrap").style.display = "none";
+
+    if (!selectedOrgId) {
+      currentOrgRole = null;
+      teamBtn.style.display = "none";
+      newListingLink.href = "/api/user/create-listing";
+      newListingLink.onclick = null;
+    } else {
+      try {
+        const res = await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}`);
+        const detail = await res.json();
+        currentOrgRole = res.ok ? detail.your_role : null;
+      } catch (e) {
+        currentOrgRole = null;
+      }
+      teamBtn.style.display = "inline-block";
+      newListingLink.href = "#";
+      newListingLink.onclick = (ev) => {
+        ev.preventDefault();
+        document.getElementById("orgBusinessFormWrap").style.display = "block";
+      };
+    }
+    loadListingsPage(1);
+  }
+
+  function toggleTeamPanel() {
+    const panel = document.getElementById("orgTeamPanel");
+    const isOpen = panel.style.display !== "none";
+    panel.style.display = isOpen ? "none" : "block";
+    if (!isOpen) loadTeamMembers();
+  }
+
+  async function loadTeamMembers() {
+    const list = document.getElementById("orgMembersList");
+    const showInviteBtn = document.getElementById("showInviteBtn");
+    // Cosmetic only -- the server independently enforces who may invite.
+    showInviteBtn.style.display = (currentOrgRole === "owner" || currentOrgRole === "manager") ? "inline-block" : "none";
+    try {
+      const res = await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}/members?limit=50`);
+      const data = await res.json();
+      if (!res.ok) {
+        list.innerText = data.error || "Unable to load members.";
+        return;
+      }
+      list.innerHTML = (data.members || []).map(m => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.4rem 0; border-bottom:1px solid rgba(0,255,255,0.1);">
+          <span>${escapeHtml(m.name || m.phone)} — ${escapeHtml(m.role)}</span>
+          ${currentOrgRole === "owner" && m.role !== "owner" ? `
+            <span>
+              <button class="btn-action" onclick="changeRole(${m.id}, '${m.role === 'manager' ? 'staff' : 'manager'}')">Make ${m.role === 'manager' ? 'Staff' : 'Manager'}</button>
+              <button class="btn-action btn-danger" onclick="removeTeamMember(${m.id})">Remove</button>
+            </span>` : ''}
+        </div>
+      `).join("") || "No active members.";
+    } catch (e) {
+      list.innerText = "Unable to load members.";
+    }
+  }
+
+  async function submitInvite() {
+    const phone = document.getElementById("inviteePhone").value.trim();
+    const role = document.getElementById("inviteeRole").value;
+    const status = document.getElementById("inviteStatus");
+    try {
+      const res = await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}/members/invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, role }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        status.innerText = data.error || "Unable to send invitation";
+        return;
+      }
+      status.innerText = `Invitation created. Share this token with them: ${data.token}`;
+    } catch (e) {
+      status.innerText = "Network error";
+    }
+  }
+
+  async function changeRole(memberId, newRole) {
+    await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}/members/${memberId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: newRole }),
+    });
+    loadTeamMembers();
+  }
+
+  async function removeTeamMember(memberId) {
+    if (!confirm("Remove this member from the organization?")) return;
+    await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}/members/${memberId}`, { method: "DELETE" });
+    loadTeamMembers();
+  }
+
+  async function submitOrgBusiness() {
+    const status = document.getElementById("orgBizStatus");
+    const form = new URLSearchParams();
+    form.append("business_name", document.getElementById("orgBizName").value.trim());
+    form.append("category", document.getElementById("orgBizCategory").value.trim());
+    form.append("latitude", document.getElementById("orgBizLat").value.trim());
+    form.append("longitude", document.getElementById("orgBizLng").value.trim());
+    try {
+      const res = await LandmarkSession.authFetch(`/api/organization/${selectedOrgId}/businesses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        status.innerText = data.error || "Unable to create business";
+        return;
+      }
+      document.getElementById("orgBusinessFormWrap").style.display = "none";
+      loadListingsPage(1);
+    } catch (e) {
+      status.innerText = "Network error";
+    }
+  }
+
   async function loadListingsPage(page) {
     const container = document.getElementById("listingContainer");
     const loadMoreWrap = document.getElementById("loadMoreWrap");
     try {
-      const res = await LandmarkSession.authFetch(`/api/listing/my-listings-data?page=${page}&limit=50`);
+      const url = selectedOrgId
+        ? `/api/organization/${selectedOrgId}/businesses?page=${page}&limit=50`
+        : `/api/listing/my-listings-data?page=${page}&limit=50`;
+      const res = await LandmarkSession.authFetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      const items = selectedOrgId ? (data.businesses || []) : (data.listings || []);
       currentPage = data.page || page;
       totalPages = data.pages || 1;
 
-      if (page === 1 && (!data.listings || data.listings.length === 0)) {
+      if (page === 1 && items.length === 0) {
         container.innerHTML = `
           <div class="empty-state">
             <div class="empty-icon">📭</div>
@@ -439,7 +657,7 @@
 
       const selectedId = getSelectedBusinessId();
       let html = "";
-      for (const item of data.listings) {
+      for (const item of items) {
         const statusClass = `status-${item.status || 'pending'}`;
         const statusText = item.status || "pending";
         const isSelected = selectedId === String(item.id);
@@ -462,8 +680,8 @@
                   ${escapeHtml(item.description?.substring(0, 120) || "No description provided")}${item.description?.length > 120 ? "…" : ""}
                 </div>
                 <div class="action-buttons">
-                  <a href="/api/listing/listing/${item.id}" class="btn-action" onclick="event.stopPropagation()">👁️ View</a>
-                  <a href="/api/listing/edit-listing/${item.id}" class="btn-action" onclick="event.stopPropagation()">✏️ Edit</a>
+                  <a href="${selectedOrgId ? `/api/organization/${selectedOrgId}/businesses/${item.id}` : `/api/listing/listing/${item.id}`}" class="btn-action" onclick="event.stopPropagation()">👁️ View</a>
+                  <a href="${selectedOrgId ? `/api/listing/edit-listing/${item.id}?org=${selectedOrgId}` : `/api/listing/edit-listing/${item.id}`}" class="btn-action" onclick="event.stopPropagation()">✏️ Edit</a>
                   <a href="/map?id=${item.id}" class="btn-action" onclick="event.stopPropagation()">🗺️ View on Map</a>
                   <button onclick="event.stopPropagation(); toggleStatus(${item.id})" class="btn-action">🔄 Toggle Status</button>
                   <button onclick="event.stopPropagation(); deleteListing(${item.id})" class="btn-action btn-danger">🗑️ Delete</button>
@@ -501,7 +719,7 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", () => loadListingsPage(1));
+  document.addEventListener("DOMContentLoaded", () => loadOrganizations());
 </script>
 
 {% endblock %}

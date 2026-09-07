@@ -26,6 +26,7 @@ from services.organization_authz import (
     CAN_EDIT_BUSINESS,
     CAN_DELETE_BUSINESS,
     CAN_VIEW_ANALYTICS,
+    CAN_VIEW_BUSINESSES,
     INVITABLE_ROLES,
 )
 
@@ -510,6 +511,30 @@ def list_organization_businesses(user_id, organization_id, page=1, limit=DEFAULT
         businesses = [dict(r._mapping) for r in rows]
         pages = (total + limit - 1) // limit if total else 1
         return {"businesses": businesses, "page": page, "limit": limit, "total": total, "pages": pages}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_organization_business(user_id, organization_id, listing_id):
+    """Any active member (view permission) may load a single business
+    belonging to their organization -- needed for the edit UI, since
+    non-creator members cannot use the legacy user_id-scoped
+    GET /api/listing/listing/<id>."""
+    conn = get_db_connection()
+    try:
+        auth = authorize_organization_listing(conn, user_id, listing_id, CAN_VIEW_BUSINESSES)
+        if auth is None or int(auth["organization_id"]) != int(organization_id):
+            return None
+        row = conn.execute(text("""
+            SELECT id, business_name, category, city, state, latitude, longitude, description
+            FROM listings WHERE id = :lid AND organization_id = :org_id
+        """), {"lid": int(listing_id), "org_id": int(organization_id)}).fetchone()
+        if not row:
+            return None
+        return dict(row._mapping)
     finally:
         try:
             conn.close()

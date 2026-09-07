@@ -31,9 +31,19 @@
 
 <script>
 const listingId = window.location.pathname.split("/").pop();
+// Business Power organization context is a UI convenience only (a plain
+// URL query param) -- the server independently re-authorizes every
+// request through organization_authz.py regardless of what this says.
+const orgId = new URLSearchParams(window.location.search).get('org');
+const loadUrl = orgId
+  ? `/api/organization/${encodeURIComponent(orgId)}/businesses/${listingId}`
+  : `/api/listing/listing/${listingId}`;
+const saveUrl = orgId
+  ? `/api/organization/${encodeURIComponent(orgId)}/businesses/${listingId}`
+  : `/api/listing/update-listing/${listingId}`;
 
 document.addEventListener("DOMContentLoaded", function(){
-  LandmarkSession.authFetch(`/api/listing/listing/${listingId}`)
+  LandmarkSession.authFetch(loadUrl)
     .then(res => res.json())
     .then(data => {
       document.getElementById("business_name").value = data.business_name || "";
@@ -60,7 +70,7 @@ function updateListing(){
     return;
   }
 
-  LandmarkSession.authFetch(`/api/listing/update-listing/${listingId}`, {
+  LandmarkSession.authFetch(saveUrl, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

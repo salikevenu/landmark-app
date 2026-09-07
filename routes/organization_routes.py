@@ -21,6 +21,7 @@ from services.organization_service import (
     remove_member,
     create_organization_business,
     list_organization_businesses,
+    get_organization_business,
     update_organization_business,
     delete_organization_business,
     get_organization_analytics,
@@ -133,6 +134,16 @@ def create_org_business(organization_id):
     if result.get("error"):
         return jsonify(result), result.get("_http") or 400
     return jsonify(result), 201
+
+
+@organization_bp.route("/<int:organization_id>/businesses/<int:listing_id>", methods=["GET"])
+@jwt_required()
+def get_org_business(organization_id, listing_id):
+    user_id = get_jwt_identity()
+    result = get_organization_business(user_id, organization_id, listing_id)
+    if result is None:
+        return jsonify({"error": "Not found or unauthorized"}), 404
+    return jsonify(result)
 
 
 @organization_bp.route("/<int:organization_id>/businesses/<int:listing_id>", methods=["PUT"])

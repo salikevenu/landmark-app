@@ -65,7 +65,22 @@
 <script>
     async function loadAnalytics() {
         try {
-            const res = await LandmarkSession.authFetch('/api/analytics/data');
+            // Business Power organization context is a UI convenience only
+            // (URL query param, not sessionStorage/JWT) — the server
+            // independently re-authorizes every request via
+            // organization_authz.py regardless of what the client asks for.
+            const orgId = new URLSearchParams(window.location.search).get('org');
+            const endpoint = orgId
+              ? `/api/organization/${encodeURIComponent(orgId)}/analytics`
+              : '/api/analytics/data';
+            const res = await LandmarkSession.authFetch(endpoint);
+            if (!res.ok) {
+              document.querySelector('.analytics-container, body').insertAdjacentHTML(
+                'afterbegin',
+                '<p style="color:#ffaa88;text-align:center;">Unable to load analytics (not authorized for this organization, or Business Power is not currently active).</p>'
+              );
+              return;
+            }
             const data = await res.json();
 
             // Update stats
