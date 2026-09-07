@@ -18,7 +18,7 @@ from services.sms_service import get_sms_service
 from services.audit_service import log_admin_action
 from services.admin_service import (
     get_admin_stats, get_admin_users, ban_user, unban_user, change_user_role, reset_user_subscription,
-    activate_business_power,
+    activate_business_power, activate_business_power_v2, get_admin_organization_detail,
     get_admin_listings, approve_listing_admin, disable_listing_admin, verify_listing_admin,
     delete_listing_admin, sponsor_listing_admin,
     get_admin_payments, approve_payment_admin,
@@ -299,6 +299,26 @@ def api_activate_business_power(user_id):
     result = activate_business_power(user_id, admin_id, admin_phone, ip, duration_days=duration_days)
     if result.get("error"):
         return jsonify(result), result.get("_http") or 400
+    return jsonify(result)
+
+@admin_bp.route("/api/admin/users/<int:user_id>/activate-business-power-v2", methods=["POST"])
+@admin_required
+def api_activate_business_power_v2(user_id):
+    data = request.get_json(silent=True) or {}
+    duration_days = data.get("duration_days") or 365
+    admin_id, admin_phone = get_admin_info()
+    ip = request.remote_addr
+    result = activate_business_power_v2(user_id, admin_id, admin_phone, ip, duration_days=duration_days)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 400
+    return jsonify(result)
+
+@admin_bp.route("/api/admin/organizations/<int:organization_id>", methods=["GET"])
+@admin_required
+def api_admin_organization_detail(organization_id):
+    result = get_admin_organization_detail(organization_id)
+    if result.get("error"):
+        return jsonify(result), result.get("_http") or 404
     return jsonify(result)
 
 @admin_bp.route("/api/admin/users/<int:user_id>/reset-subscription", methods=["POST"])

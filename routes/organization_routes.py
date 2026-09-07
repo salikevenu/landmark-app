@@ -23,6 +23,7 @@ from services.organization_service import (
     list_organization_businesses,
     update_organization_business,
     delete_organization_business,
+    get_organization_analytics,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,4 +157,14 @@ def delete_org_business(organization_id, listing_id):
     )
     if result.get("error"):
         return jsonify(result), result.get("_http") or 400
+    return jsonify(result)
+
+
+@organization_bp.route("/<int:organization_id>/analytics", methods=["GET"])
+@jwt_required()
+def org_analytics(organization_id):
+    user_id = get_jwt_identity()
+    result = get_organization_analytics(user_id, organization_id)
+    if result is None:
+        return jsonify({"error": "Not found or unauthorized"}), 404
     return jsonify(result)

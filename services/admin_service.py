@@ -5,6 +5,7 @@ from sqlalchemy import text
 from database.init_db import get_db_connection
 from services.wallet_service import approve_withdrawal, mark_withdrawal_paid, reject_withdrawal
 from services.payment_service import activate_subscription, activate_business_power_for_user
+from services.organization_service import ensure_organization_for_user
 from config.payment_config import BUSINESS_POWER_PLAN
 
 # Helper to convert SQLAlchemy row to dict (for compatibility with old code)
@@ -256,6 +257,70 @@ def activate_business_power(user_id, admin_id, admin_phone, ip, duration_days=36
         f"Business Power activated, expiry {expiry_date}", ip,
     )
     return {"status": "business_power_activated", "plan": BUSINESS_POWER_PLAN, "expiry": expiry_date}
+
+
+def activate_business_power_v2(user_id, admin_id, admin_phone, ip, duration_days=365):
+    """Admin-only: ensures V1 Business Power activation (idempotently
+    reusing activate_business_power above -- no parallel activation
+    mechanism), then ensures an organization exists for the user, making
+    them its owner. Idempotent end to end: re-running never creates a
+    duplicate organization, a duplicate owner membership, or a second
+    payments/wallet/referral side effect."""
+    v1_result = activate_business_power(user_id, admin_id, admin_phone, ip, duration_days=duration_days)
+    if v1_result.get("error"):
+        return v1_result
+
+    org = ensure_organization_for_user(user_id)
+    if org is None:
+        return {"error": "Could not provision organization", "_http": 500}
+
+    log_admin_action(
+        admin_id, admin_phone, "activate_business_power_v2", "organization", str(org["id"]),
+        f"user_id={user_id}", ip,
+    )
+    return {
+        "status": "business_power_v2_activated",
+        "plan": v1_result.get("plan"),
+        "expiry": v1_result.get("expiry"),
+        "organization_id": org["id"],
+        "organization_name": org.get("name"),
+    }
+
+
+def get_admin_organization_detail(organization_id):
+    """Admin view only -- does not go through organization_authz (admin
+    inspects any organization regardless of membership, matching the
+    existing admin pattern of unrestricted read access, e.g.
+    get_admin_listings)."""
+    conn = get_db_connection()
+    try:
+        org_id = int(organization_id)
+        org_row = conn.execute(text("""
+            SELECT o.id, o.name, o.status, o.created_at, o.owner_user_id,
+                   u.phone AS owner_phone, u.plan AS owner_plan,
+                   u.subscription_expiry AS owner_subscription_expiry
+            FROM organizations o
+            JOIN users u ON u.id = o.owner_user_id
+            WHERE o.id = :org_id
+        """), {"org_id": org_id}).fetchone()
+        if not org_row:
+            return {"error": "Organization not found", "_http": 404}
+        member_count = conn.execute(text("""
+            SELECT COUNT(*) FROM organization_members
+            WHERE organization_id = :org_id AND status = 'active'
+        """), {"org_id": org_id}).scalar() or 0
+        business_count = conn.execute(text("""
+            SELECT COUNT(*) FROM listings WHERE organization_id = :org_id
+        """), {"org_id": org_id}).scalar() or 0
+        detail = dict(org_row._mapping)
+        detail["member_count"] = member_count
+        detail["business_count"] = business_count
+        return detail
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def reset_user_subscription(user_id, admin_id, admin_phone, ip):

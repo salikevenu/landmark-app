@@ -25,6 +25,7 @@ from services.organization_authz import (
     CAN_CREATE_BUSINESS,
     CAN_EDIT_BUSINESS,
     CAN_DELETE_BUSINESS,
+    CAN_VIEW_ANALYTICS,
     INVITABLE_ROLES,
 )
 
@@ -571,6 +572,68 @@ def delete_organization_business(actor_user_id, organization_id, listing_id, ip_
             f"organization_id={organization_id}", ip_address,
         )
         return {"message": "Business deleted"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_organization_analytics(user_id, organization_id):
+    """Owner/manager only (staff has no analytics access). Aggregates only
+    listings belonging to THIS organization -- every query below is scoped
+    by organization_id, established via authorize_organization first, so a
+    member of a different organization can never reach this data."""
+    conn = get_db_connection()
+    try:
+        role = authorize_organization(conn, user_id, organization_id, CAN_VIEW_ANALYTICS)
+        if role is None:
+            return None
+        org_id = int(organization_id)
+
+        totals = conn.execute(text("""
+            SELECT
+                COALESCE(SUM(views), 0) as total_views,
+                COALESCE(SUM(clicks), 0) as total_clicks,
+                COALESCE(SUM(whatsapp_clicks), 0) as total_whatsapp
+            FROM listings
+            WHERE organization_id = :org_id
+        """), {"org_id": org_id}).fetchone()
+
+        daily_stats = []
+        for i in range(6, -1, -1):
+            date_str = (datetime.utcnow() - timedelta(days=i)).strftime('%Y-%m-%d')
+            row = conn.execute(text("""
+                SELECT
+                    COALESCE(SUM(views), 0) as views,
+                    COALESCE(SUM(clicks), 0) as clicks
+                FROM listings
+                WHERE organization_id = :org_id AND DATE(created_at) = :date
+            """), {"org_id": org_id, "date": date_str}).fetchone()
+            daily_stats.append({
+                'date': date_str,
+                'views': row._mapping['views'],
+                'clicks': row._mapping['clicks'],
+            })
+
+        top_listings = conn.execute(text("""
+            SELECT id, business_name, views, clicks, whatsapp_clicks
+            FROM listings
+            WHERE organization_id = :org_id
+            ORDER BY views DESC
+            LIMIT 5
+        """), {"org_id": org_id}).fetchall()
+
+        return {
+            'totals': {
+                'views': totals._mapping['total_views'],
+                'clicks': totals._mapping['total_clicks'],
+                'whatsapp': totals._mapping['total_whatsapp'],
+                'calls': 0,
+            },
+            'daily': daily_stats,
+            'top_listings': [dict(r._mapping) for r in top_listings],
+        }
     finally:
         try:
             conn.close()
