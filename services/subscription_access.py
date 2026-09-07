@@ -37,6 +37,23 @@ def is_subscription_active(user_row):
         return False
 
 
+def is_active_business_power_owner(user_row):
+    """Single source of truth for 'this organization's billing owner
+    currently has an active Business Power subscription'.
+
+    Reuses the exact same canonical is_subscription_active() check every
+    other paid plan uses -- never re-implements expiry parsing, never a
+    parallel subscription system. Callers (services/organization_authz.py)
+    must call this rather than checking plan/expiry themselves.
+    """
+    if not user_row:
+        return False
+    plan = (user_row.get("plan") or "").strip().lower()
+    if plan != BUSINESS_POWER_PLAN:
+        return False
+    return is_subscription_active(user_row)
+
+
 def get_business_limit_for_user(user_row):
     """Single authoritative business/listing creation cap for a user.
 
