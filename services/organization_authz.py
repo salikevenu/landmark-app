@@ -102,7 +102,9 @@ def authorize_organization_listing(conn, user_id, listing_id, allowed_roles):
     access merely by knowing an organization ID or listing ID -- both must
     resolve together through this single join.
 
-    Returns the member's role string on success, or None (deny).
+    Returns {"role": ..., "organization_id": ...} on success (the listing's
+    OWN, actual organization_id -- resolved from the join, never trusted
+    from a caller-supplied value), or None (deny).
     """
     uid = _as_int(user_id)
     lid = _as_int(listing_id)
@@ -129,7 +131,7 @@ def authorize_organization_listing(conn, user_id, listing_id, allowed_roles):
         "plan": m["owner_plan"], "subscription_expiry": m["owner_subscription_expiry"],
     }):
         return None
-    return m["role"]
+    return {"role": m["role"], "organization_id": m["organization_id"]}
 
 
 def get_membership_status(conn, user_id, organization_id):

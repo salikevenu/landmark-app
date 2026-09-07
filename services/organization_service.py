@@ -17,10 +17,14 @@ from database.init_db import get_db_connection
 from services.audit_service import log_admin_action
 from services.organization_authz import (
     authorize_organization,
+    authorize_organization_listing,
     CAN_VIEW_ORGANIZATION,
     CAN_INVITE_MEMBERS,
     CAN_CHANGE_ROLE,
     CAN_REMOVE_MEMBER,
+    CAN_CREATE_BUSINESS,
+    CAN_EDIT_BUSINESS,
+    CAN_DELETE_BUSINESS,
     INVITABLE_ROLES,
 )
 
@@ -393,6 +397,180 @@ def get_organization_detail(user_id, organization_id):
         detail["member_count"] = member_count
         detail["business_count"] = business_count
         return detail
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _parse_coord(value, lo, hi):
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (lo <= num <= hi):
+        return None
+    return num
+
+
+def create_organization_business(actor_user_id, organization_id, data, user_phone=None):
+    """Owner/manager only. listings.user_id is set to the CREATING member
+    (never reassigned afterward); organization_id is the organization
+    relationship. No business_limit check -- organization capacity comes
+    from the owner's unlimited Business Power plan, already verified by
+    authorize_organization via CAN_CREATE_BUSINESS."""
+    conn = get_db_connection()
+    try:
+        role = authorize_organization(conn, actor_user_id, organization_id, CAN_CREATE_BUSINESS)
+        if role is None:
+            return {"error": "Not found or unauthorized", "_http": 404}
+        org_id = int(organization_id)
+
+        business_name = (data.get("business_name") or "").strip()
+        category = (data.get("category") or "").strip()
+        if not business_name or not category:
+            return {"error": "Business name and category required", "_http": 400}
+        latitude = _parse_coord(data.get("latitude"), -90, 90)
+        longitude = _parse_coord(data.get("longitude"), -180, 180)
+        if latitude is None or longitude is None:
+            return {"error": "Invalid latitude/longitude", "_http": 400}
+        listing_type = (data.get("listing_type") or "business").strip().lower()
+        if listing_type not in ("business", "service"):
+            listing_type = "business"
+
+        result = conn.execute(text("""
+            INSERT INTO listings (
+                user_id, user_phone, organization_id, listing_type, business_name, category,
+                city, state, latitude, longitude,
+                description, whatsapp, website, status, is_active,
+                is_premium, is_featured, is_sponsored, is_verified
+            ) VALUES (
+                :user_id, :user_phone, :org_id, :listing_type, :business_name, :category,
+                :city, :state, :latitude, :longitude,
+                :description, :whatsapp, :website, 'pending', 1,
+                0, 0, 0, 0
+            )
+            RETURNING id
+        """), {
+            "user_id": int(actor_user_id),
+            "user_phone": user_phone,
+            "org_id": org_id,
+            "listing_type": listing_type,
+            "business_name": business_name,
+            "category": category,
+            "city": data.get("city", ""),
+            "state": data.get("state", ""),
+            "latitude": latitude,
+            "longitude": longitude,
+            "description": data.get("description", ""),
+            "whatsapp": data.get("whatsapp", ""),
+            "website": data.get("website", ""),
+        })
+        listing_id = result.fetchone()[0]
+        conn.commit()
+        log_admin_action(
+            int(actor_user_id), user_phone, "organization_business_created", "listing", str(listing_id),
+            f"organization_id={org_id}", None,
+        )
+        return {"success": True, "listing_id": listing_id, "message": "Business submitted for review"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def list_organization_businesses(user_id, organization_id, page=1, limit=DEFAULT_PAGE_SIZE):
+    """Any active member (view permission) — paginated, bounded page size."""
+    conn = get_db_connection()
+    try:
+        role = authorize_organization(conn, user_id, organization_id, CAN_VIEW_ORGANIZATION)
+        if role is None:
+            return None
+        org_id = int(organization_id)
+        page = _clamp_page(page)
+        limit = _clamp_limit(limit)
+        offset = (page - 1) * limit
+
+        total = conn.execute(text("""
+            SELECT COUNT(*) FROM listings WHERE organization_id = :org_id
+        """), {"org_id": org_id}).scalar() or 0
+
+        rows = conn.execute(text("""
+            SELECT l.*,
+                (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as image_url
+            FROM listings l
+            WHERE l.organization_id = :org_id
+            ORDER BY l.id DESC
+            LIMIT :limit OFFSET :offset
+        """), {"org_id": org_id, "limit": limit, "offset": offset}).fetchall()
+
+        businesses = [dict(r._mapping) for r in rows]
+        pages = (total + limit - 1) // limit if total else 1
+        return {"businesses": businesses, "page": page, "limit": limit, "total": total, "pages": pages}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def update_organization_business(actor_user_id, organization_id, listing_id, data, ip_address=None):
+    """Owner/manager only. Never touches listings.user_id."""
+    conn = get_db_connection()
+    try:
+        auth = authorize_organization_listing(conn, actor_user_id, listing_id, CAN_EDIT_BUSINESS)
+        if auth is None or int(auth["organization_id"]) != int(organization_id):
+            return {"error": "Not found or unauthorized", "_http": 404}
+        lid = int(listing_id)
+        conn.execute(text("""
+            UPDATE listings
+            SET business_name = :bname, category = :cat, city = :city, state = :state, description = :desc
+            WHERE id = :lid AND organization_id = :org_id
+        """), {
+            "bname": data.get("business_name"),
+            "cat": data.get("category"),
+            "city": data.get("city"),
+            "state": data.get("state"),
+            "desc": data.get("description"),
+            "lid": lid,
+            "org_id": int(organization_id),
+        })
+        conn.commit()
+        log_admin_action(
+            int(actor_user_id), None, "organization_business_updated", "listing", str(lid),
+            f"organization_id={organization_id}", ip_address,
+        )
+        return {"message": "Business updated"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def delete_organization_business(actor_user_id, organization_id, listing_id, ip_address=None):
+    """Owner only. Never touches listings.user_id on any other row."""
+    conn = get_db_connection()
+    try:
+        auth = authorize_organization_listing(conn, actor_user_id, listing_id, CAN_DELETE_BUSINESS)
+        if auth is None or int(auth["organization_id"]) != int(organization_id):
+            return {"error": "Not found or unauthorized", "_http": 404}
+        lid = int(listing_id)
+        conn.execute(text("DELETE FROM listing_images WHERE listing_id = :lid"), {"lid": lid})
+        result = conn.execute(text("""
+            DELETE FROM listings WHERE id = :lid AND organization_id = :org_id
+        """), {"lid": lid, "org_id": int(organization_id)})
+        if getattr(result, "rowcount", 0) != 1:
+            conn.rollback()
+            return {"error": "Not found or unauthorized", "_http": 404}
+        conn.commit()
+        log_admin_action(
+            int(actor_user_id), None, "organization_business_deleted", "listing", str(lid),
+            f"organization_id={organization_id}", ip_address,
+        )
+        return {"message": "Business deleted"}
     finally:
         try:
             conn.close()
