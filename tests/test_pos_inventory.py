@@ -118,6 +118,13 @@ class FakeConn:
         q = " ".join(str(getattr(sql, "text", sql)).lower().split())
         params = params or {}
 
+        # Phase B entitlement gate: every fake user is Business Power by
+        # default, so these inventory tests (predating POS subscriptions)
+        # keep exercising inventory behavior without their own
+        # entitlement setup.
+        if q.startswith("select plan, subscription_expiry from users"):
+            return FakeResult(row=FakeRow({"plan": "business_power", "subscription_expiry": "2099-01-01"}))
+
         if q.startswith("select id from pos_businesses"):
             row = self.businesses.owned_by(params.get("business_id"), params.get("uid"))
             return FakeResult(row=FakeRow(dict(row)) if row else None)

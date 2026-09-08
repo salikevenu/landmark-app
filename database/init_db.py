@@ -760,6 +760,104 @@ def _init_db_body(conn):
     """))
 
     # =====================================================
+    # POS SUBSCRIPTIONS
+    # =====================================================
+    # POS entitlement — deliberately separate from the marketplace
+    # subscription source of truth (users.plan/subscription_expiry) and
+    # from Business Power (organizations). One row per owner (not per
+    # business): a POS subscription is purchased by the owner and covers
+    # up to that plan's business-count limit, enforced in application code
+    # from a fixed plan definition (services/subscription_access.py) —
+    # never a stored business_limit column here. There is no 'expired'
+    # status: expiry is always evaluated dynamically against expires_at,
+    # matching the existing is_subscription_active() convention, so
+    # nothing needs to actively flip a stored value at the right moment.
+    # A Business Power owner does not need a row here at all — POS access
+    # for Business Power is resolved via the existing
+    # is_active_business_power_owner() check first, before this table is
+    # ever consulted.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_subscriptions (
+            id SERIAL PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+            pos_plan TEXT NOT NULL CHECK (pos_plan IN ('starter', 'growth')),
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'suspended')),
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+
+    # =====================================================
+    # POS BILLING ORDERS (Phase G-A + G-B + G-C)
+    # =====================================================
+    # Razorpay order-creation + verified-payment + activation-marker
+    # foundation — a row here means "a Razorpay order was created for this
+    # owner's intended plan"; once status='paid', "a signature-verified
+    # Razorpay payment was associated with it"; once activated_at is set,
+    # "this paid order has already been applied to pos_subscriptions
+    # exactly once." Deliberately separate from pos_subscriptions: G-A/G-B
+    # never read or write pos_subscriptions at all; G-C (routes/pos_routes.py
+    # + services/pos_billing_activation.py) is the only code that does, and
+    # only after confirming status='paid' here. amount_paise/currency/
+    # pos_plan are server-resolved from services.subscription_access.POS_PLANS
+    # at creation time, not a second pricing authority. status is
+    # created/paid/failed — deliberately not widened further in G-C; the
+    # activation lifecycle lives in activated_at instead, not a new status
+    # value. No business_id: a POS subscription (and therefore its billing
+    # order) is owner-level, matching pos_subscriptions. No card/UPI/bank/
+    # CVV/other payment-credential data is ever stored here or anywhere in
+    # this codebase — only Razorpay's own order/payment identifiers.
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS pos_billing_orders (
+            id SERIAL PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL REFERENCES users(id),
+            pos_plan TEXT NOT NULL CHECK (pos_plan IN ('starter', 'growth')),
+            amount_paise INTEGER NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'INR',
+            razorpay_order_id TEXT NOT NULL UNIQUE,
+            razorpay_payment_id TEXT,
+            status TEXT NOT NULL DEFAULT 'created'
+                CHECK (status IN ('created', 'paid', 'failed')),
+            paid_at TIMESTAMP,
+            activated_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_billing_orders_owner ON pos_billing_orders(owner_user_id)"))
+    # Additive upgrade path for a database that already has an older shape
+    # (no-op when the CREATE TABLE above just created the full current
+    # shape) — mirrors how `payments` evolved above via trailing ALTER
+    # statements.
+    conn.execute(text(
+        "ALTER TABLE pos_billing_orders ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT"
+    ))
+    conn.execute(text(
+        "ALTER TABLE pos_billing_orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP"
+    ))
+    conn.execute(text(
+        "ALTER TABLE pos_billing_orders DROP CONSTRAINT IF EXISTS pos_billing_orders_status_check"
+    ))
+    conn.execute(text("""
+        ALTER TABLE pos_billing_orders ADD CONSTRAINT pos_billing_orders_status_check
+            CHECK (status IN ('created', 'paid', 'failed'))
+    """))
+    # Enforces "one payment must not be attached to multiple local billing
+    # orders" at the database level. Partial: most rows never reach 'paid'
+    # and razorpay_payment_id stays NULL for them.
+    conn.execute(text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_pos_billing_orders_payment_id
+        ON pos_billing_orders (razorpay_payment_id)
+        WHERE razorpay_payment_id IS NOT NULL
+    """))
+    # Phase G-C: durable "already activated" marker (NULL = not yet).
+    conn.execute(text(
+        "ALTER TABLE pos_billing_orders ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP"
+    ))
+
+    # =====================================================
     # BUSINESS POWER V2 — ORGANIZATIONS
     # =====================================================
     # Additive layer on top of Business Power V1 (users -> listings).

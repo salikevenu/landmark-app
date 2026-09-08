@@ -71,3 +71,70 @@ def get_business_limit_for_user(user_row):
     limit = int(user_row.get("business_limit") or 0)
     extra = int(user_row.get("extra_businesses_purchased") or 0)
     return limit + extra
+
+
+# ===========================================================================
+# POS ENTITLEMENT
+# ===========================================================================
+# LANDMARK POS is a separate platform/product from the marketplace. This
+# section must never read or write users.plan / users.subscription_expiry,
+# and must never be driven by PAID_PLANS/PLANS above -- those remain the
+# marketplace's own, unmodified source of truth. The only intentional
+# overlap is Business Power, whose existing canonical check
+# (is_active_business_power_owner, above) is reused exactly as-is -- never
+# a second implementation of that logic.
+#
+# Business limits are fixed, code-controlled values, not
+# database-configurable in this phase -- callers must derive a limit from
+# POS_PLANS (or a Business Power grant), never store one independently.
+
+POS_PLANS = {
+    "starter": {"monthly_price_paise": 39900, "business_limit": 1},
+    "growth": {"monthly_price_paise": 79900, "business_limit": 3},
+}
+
+
+def is_pos_subscription_active(pos_subscription_row):
+    """True only for an 'active'-status pos_subscriptions row that has not
+    passed its expires_at. A NULL expires_at never expires. Expiry is
+    always evaluated dynamically here -- there is no stored 'expired'
+    status -- so nothing needs to flip a stale row at the right moment,
+    mirroring is_subscription_active()'s own dynamic-expiry convention.
+    """
+    if not pos_subscription_row:
+        return False
+    if pos_subscription_row.get("status") != "active":
+        return False
+    expires_at = pos_subscription_row.get("expires_at")
+    if expires_at is None:
+        return True
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except ValueError:
+            return False
+    return expires_at >= datetime.utcnow()
+
+
+def resolve_pos_entitlement(user_row, pos_subscription_row):
+    """The one place POS access is decided.
+
+    Checks the existing canonical Business Power helper first -- a
+    Business Power owner never needs a pos_subscriptions row at all, and
+    gets unlimited businesses at Growth-equivalent capability. Otherwise
+    falls back to the owner's own pos_subscriptions row, if any.
+
+    Returns {"has_access": bool, "plan": "starter"|"growth"|None,
+    "business_limit": int|None} -- business_limit is None for unlimited
+    (Business Power only), otherwise the fixed limit from POS_PLANS.
+    Callers must not derive entitlement any other way.
+    """
+    if is_active_business_power_owner(user_row):
+        return {"has_access": True, "plan": "growth", "business_limit": None}
+
+    if is_pos_subscription_active(pos_subscription_row):
+        plan = pos_subscription_row.get("pos_plan")
+        limit = POS_PLANS.get(plan, {}).get("business_limit")
+        return {"has_access": True, "plan": plan, "business_limit": limit}
+
+    return {"has_access": False, "plan": None, "business_limit": None}

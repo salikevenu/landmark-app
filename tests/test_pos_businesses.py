@@ -74,6 +74,14 @@ class FakeConn:
     def execute(self, sql, params=None):
         q = " ".join(str(getattr(sql, "text", sql)).lower().split())
         params = params or {}
+        # Phase B entitlement gate: every fake user is Business Power by
+        # default so these business-identity tests (predating POS
+        # subscriptions) keep exercising ownership/creation behavior
+        # without needing their own entitlement setup. Business Power
+        # also means the fake never needs a pos_subscriptions handler --
+        # _resolve_pos_entitlement short-circuits before querying it.
+        if q.startswith("select plan, subscription_expiry from users"):
+            return FakeResult(row=FakeRow({"plan": "business_power", "subscription_expiry": "2099-01-01"}))
         if q.startswith("select") and "from pos_businesses" in q:
             rows = self.store.for_owner(params.get("uid"))
             return FakeResult(rows=[FakeRow(dict(r)) for r in rows])
