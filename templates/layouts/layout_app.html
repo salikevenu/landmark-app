@@ -424,6 +424,25 @@
             }
         }
 
+        #pwaInstallBtn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1500;
+            background: rgba(0, 255, 255, 0.12);
+            border: 1px solid #0ff;
+            color: #0ff;
+            padding: 10px 18px;
+            border-radius: 30px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 0 14px rgba(0, 255, 255, 0.25);
+        }
+        #pwaInstallBtn:hover {
+            background: #0ff;
+            color: #000;
+        }
+
         /* Scrollbar */
         ::-webkit-scrollbar {
             width: 6px;
@@ -856,9 +875,19 @@
           if (document.visibilityState === 'visible' && !uploadingAvatar) loadProfile();
         });
       })();
+
+      // ========== PWA SERVICE WORKER ==========
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      }
     </script>
 
     {% block extra_scripts %}{% endblock %}
+
+    <!-- PWA install invitation: hidden until the browser's own
+         beforeinstallprompt fires; see static/js/pwa-install.js -->
+    <button id="pwaInstallBtn" type="button" hidden>📲 Install LANDMARK App</button>
+    <script src="{{ url_for('static', filename='js/pwa-install.js') }}"></script>
 </body>
 
 </html>

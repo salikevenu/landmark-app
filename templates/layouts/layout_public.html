@@ -85,6 +85,21 @@ input::placeholder {
 .table-striped > tbody > tr:nth-of-type(odd) > * {
     background-color: rgba(255,255,255,0.05);
 }
+
+#pwaInstallBtn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1500;
+    background: linear-gradient(45deg, #ffd700, #ffcc00);
+    color: #1a1a1a;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 30px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+}
 </style>
 
 </head>
@@ -119,8 +134,13 @@ function changeLanguage(lang) {
 
 <script>
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js');
+    navigator.serviceWorker.register('/sw.js', { scope: '/' });
   }
 </script>
+
+<!-- PWA install invitation: hidden until the browser's own
+     beforeinstallprompt fires; see static/js/pwa-install.js -->
+<button id="pwaInstallBtn" type="button" hidden>📲 Install LANDMARK App</button>
+<script src="{{ url_for('static', filename='js/pwa-install.js') }}"></script>
 </body>
 </html>

@@ -671,6 +671,20 @@ def favicon():
         return send_from_directory('static', 'favicon.ico', mimetype='image/vnd.microsoft.icon')
     return '', 204
 
+@app.route('/sw.js')
+def service_worker():
+    """Serves the existing static/sw.js from the site root instead of
+    /static/sw.js. A service worker's default scope is the directory of
+    its own script URL, so registering it from /static/ can only ever
+    control /static/* -- never the actual pages (/, /register, /dashboard,
+    ...), even though manifest.json declares scope "/". Serving the same,
+    unmodified file from the root gives it a default scope of "/" with no
+    other change. Service-Worker-Allowed is set defensively in case a
+    browser ever resolves the registering script's own location strictly."""
+    response = send_from_directory('static', 'sw.js', mimetype='text/javascript')
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
 @app.route('/.well-known/appspecific/com.chrome.devtools.json')
 def chrome_devtools():
     return '', 204
