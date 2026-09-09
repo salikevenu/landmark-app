@@ -31,12 +31,19 @@ class MessageCentralSMS:
         # ✅ Use a persistent session for connection reuse and performance
         self.session = requests.Session()
         
-        # ✅ Add retry strategy for temporary network failures
+        # ✅ Retry strategy for temporary network failures -- GET only.
+        # send_otp()'s POST is intentionally NOT retryable: it is not
+        # idempotent (a blind retry can trigger a duplicate SMS) and an
+        # open-ended retry loop combined with requests' single-float
+        # timeout semantics can block the single sync Gunicorn worker for
+        # well over its 120s timeout (see services/sms_service.py's
+        # send_otp/verify_otp timeout tuples below). verify_otp()'s GET is
+        # idempotent and safe to retry, so it stays in the allowed set.
         retry_strategy = Retry(
             total=3,
             backoff_factor=1,
             status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "POST"]
+            allowed_methods=["GET"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -81,7 +88,10 @@ class MessageCentralSMS:
             }
             headers = {"authToken": auth_token}
 
-            response = self.session.post(url, params=params, headers=headers, timeout=20)
+            # (connect_timeout, read_timeout): a single bounded attempt,
+            # never retried (see the Retry() setup in __init__) -- worst
+            # case ~20s, comfortably under Gunicorn's 120s worker timeout.
+            response = self.session.post(url, params=params, headers=headers, timeout=(5, 15))
 
             if response.status_code == 200:
                 data = response.json()
@@ -126,7 +136,12 @@ class MessageCentralSMS:
                 "Accept": "application/json"
             }
 
-            response = self.session.get(url, params=params, headers=headers, timeout=20)
+            # Explicit (connect_timeout, read_timeout) tuple, same reasoning
+            # as send_otp(): bounds a single attempt to ~20s. Retries for
+            # this GET remain enabled (idempotent, genuinely useful) --
+            # worst case here is bounded attempts x ~20s + backoff, still
+            # comfortably under Gunicorn's 120s worker timeout.
+            response = self.session.get(url, params=params, headers=headers, timeout=(5, 15))
             logger.info(f"Raw response from Message Central: {response.text}")
 
             safe_headers = dict(response.request.headers)
