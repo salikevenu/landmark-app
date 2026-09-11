@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>LANDMARK</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+// Decides, before any dashboard markup exists, whether this browser is
+// already running LANDMARK as an installed PWA. The server cannot know
+// that (no server-side "installed" flag exists anywhere), so this must
+// run client-side -- but it runs in a blank interstitial instead of
+// inside the real dashboard template, so no dashboard content is ever
+// rendered ahead of the decision.
+(function () {
+  var isStandalone =
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true;
+  // "?onboarded=1" only ever trusts this ONE hop (this page redirecting
+  // itself straight home because it just proved standalone mode) -- it
+  // is not stored anywhere, so it grants no lasting bypass of the guard
+  // in routes/user_routes.py's user_dashboard().
+  window.location.replace(isStandalone ? '/dashboard?onboarded=1' : '/install');
+})();
+</script>
+</head>
+<body></body>
+</html>

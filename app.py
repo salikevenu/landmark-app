@@ -311,7 +311,10 @@ def join():
 
 @app.route("/dashboard")
 def redirect_dashboard():
-    return redirect("/api/user/dashboard")
+    target = "/api/user/dashboard"
+    if request.query_string:
+        target += "?" + request.query_string.decode("utf-8")
+    return redirect(target)
 
 @app.route('/download/android')
 def download_apk():

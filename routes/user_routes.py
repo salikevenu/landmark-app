@@ -298,7 +298,26 @@ def verify_payment():
 # ------------------------------------------------------------
 @user_bp.route("/dashboard")
 def user_dashboard():
-    return render_template("users/dashboard.html", wallet=0, user=None)
+    """Regular-user dashboard entry point.
+
+    Standalone (installed-PWA) detection only exists in the browser, so
+    it cannot gate this route server-side -- but the real dashboard
+    template must never be sent ahead of that check (that would mean the
+    dashboard was already rendered before the install nudge could apply).
+    Instead this renders a blank interstitial (dashboard_gate.html) that
+    performs the check first and, only if not standalone, sends the
+    browser to /install.
+
+    "?onboarded=1" is a one-shot signal set only by that interstitial
+    (after it detects standalone) and by /install's own exits -- it is
+    never persisted (no session/localStorage, no server-side "installed"
+    column) and only ever trusts the single request that carries it, so
+    landing here any other way (fresh tab, bookmark, sidebar link) still
+    goes through the gate again.
+    """
+    if request.args.get("onboarded") == "1":
+        return render_template("users/dashboard.html", wallet=0, user=None)
+    return render_template("users/dashboard_gate.html")
 
 @user_bp.route('/create-listing')
 @requires_active_plan('service_provider', 'business_basic', 'business_premium', 'business_power')

@@ -80,7 +80,7 @@
 
     <p id="installStatus" role="status" aria-live="polite"></p>
 
-    <a href="/dashboard" id="continueLink">Continue to LANDMARK</a>
+    <a href="/dashboard?onboarded=1" id="continueLink">Continue to LANDMARK</a>
   </div>
 </div>
 
@@ -93,10 +93,17 @@
   var deferredPrompt = null;
   var navigated = false;
 
+  // "?onboarded=1" is a one-shot, per-navigation signal read only by the
+  // dashboard route (routes/user_routes.py's user_dashboard()) to trust
+  // this exact hop back from the install screen -- nothing is written to
+  // the browser's own storage and nothing is recorded server-side.
+  // Landing on /dashboard any other way (a fresh tab, a bookmark, the
+  // sidebar link) carries no such parameter, so the guard applies again
+  // -- visiting this screen once is never treated as "installed".
   function goToDashboard() {
     if (navigated) return;
     navigated = true;
-    window.location.replace('/dashboard');
+    window.location.replace('/dashboard?onboarded=1');
   }
 
   // Already installed (running standalone)? Skip this screen entirely --
