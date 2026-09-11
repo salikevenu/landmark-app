@@ -50,7 +50,21 @@ def _limit(*args, **kwargs):
 from database.init_db import engine
 from sqlalchemy import text
 
-VERIFICATION_EXPIRY_SECONDS = 60
+# How long a sent OTP stays valid (checked by store_verification()/
+# get_verification() below, entirely in PostgreSQL -- see NOW() usage
+# there). 5 minutes: long enough to survive real-world SMS delivery
+# latency plus the time a user needs to read and type the code, while
+# staying well within typical OTP-provider (Message Central) validity
+# windows, so a code we still consider valid is never one Message
+# Central has already independently expired.
+VERIFICATION_EXPIRY_SECONDS = 300
+# How long a caller must wait before requesting another OTP for the same
+# phone number. Deliberately a SEPARATE constant from
+# VERIFICATION_EXPIRY_SECONDS: this is a resend throttle, not the OTP's
+# validity window -- conflating the two (as a single "does a live row
+# exist" check previously did) blocks legitimate resends for the entire
+# validity period instead of a short cooldown.
+RESEND_COOLDOWN_SECONDS = 60
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 MAX_OTP_ATTEMPTS = 5
 PENDING_REFERRAL_TTL = timedelta(days=7)
@@ -381,27 +395,48 @@ def generate_jwt_tokens(user_data, remember_me=False):
 # =================================
 
 def store_verification(phone, verification_id):
-    """Store verification_id in PostgreSQL."""
+    """Store verification_id in PostgreSQL.
+
+    expires_at is computed via make_interval(secs => ...) -- a safely
+    parameterized PostgreSQL function call, not a hand-built interval
+    string -- so VERIFICATION_EXPIRY_SECONDS is the single source of
+    truth for OTP validity (no hardcoded '60 seconds'/'300 seconds'
+    literal to drift out of sync with it). created_at is refreshed on
+    every resend (ON CONFLICT) so it tracks "most recently sent", which
+    is what the resend-cooldown check in get_verification() below needs
+    -- it is otherwise unused elsewhere in the codebase (confirmed: no
+    other query reads otp_verifications.created_at).
+    """
     with engine.connect() as conn:
         conn.execute(text("""
             INSERT INTO otp_verifications (phone, verification_id, expires_at)
-            VALUES (:phone, :verification_id, NOW() + INTERVAL '60 seconds')
+            VALUES (:phone, :verification_id, NOW() + make_interval(secs => :expiry_seconds))
             ON CONFLICT (phone) DO UPDATE SET
                 verification_id = :verification_id,
                 attempts = 0,
-                expires_at = NOW() + INTERVAL '60 seconds'
+                created_at = NOW(),
+                expires_at = NOW() + make_interval(secs => :expiry_seconds)
         """), {
             "phone": phone,
-            "verification_id": verification_id
+            "verification_id": verification_id,
+            "expiry_seconds": VERIFICATION_EXPIRY_SECONDS,
         })
         conn.commit()
 
 def get_verification(phone):
-    """Retrieve verification data from PostgreSQL."""
+    """Retrieve verification data from PostgreSQL.
+
+    seconds_since_created is computed by PostgreSQL itself
+    (EXTRACT(EPOCH FROM (NOW() - created_at))) -- never derived from the
+    app server's or a client's clock -- so send_otp()/resend_otp() can
+    enforce RESEND_COOLDOWN_SECONDS using the same authoritative NOW()
+    already used for the expires_at filter below.
+    """
     with engine.connect() as conn:
         # ✅ Let PostgreSQL handle the expiry check
         row = conn.execute(text("""
-            SELECT verification_id, attempts, expires_at, created_at
+            SELECT verification_id, attempts, expires_at, created_at,
+                   EXTRACT(EPOCH FROM (NOW() - created_at)) AS seconds_since_created
             FROM otp_verifications
             WHERE phone = :phone
               AND expires_at > NOW()
@@ -411,7 +446,8 @@ def get_verification(phone):
                 "verification_id": row._mapping["verification_id"],
                 "attempts": row._mapping["attempts"],
                 "expires_at": row._mapping["expires_at"],
-                "created_at": row._mapping["created_at"]
+                "created_at": row._mapping["created_at"],
+                "seconds_since_created": float(row._mapping["seconds_since_created"]),
             }
         return None
 
@@ -470,12 +506,15 @@ def send_otp():
                 "message": ref_error or "Invalid referral code."
             }), 400
 
-        # Cooldown check
+        # Resend cooldown -- independent of OTP validity
+        # (VERIFICATION_EXPIRY_SECONDS): a caller is only ever blocked here
+        # for up to RESEND_COOLDOWN_SECONDS, never for the OTP's full
+        # validity window.
         existing = get_verification(full_phone)
-        if existing:
+        if existing and existing["seconds_since_created"] < RESEND_COOLDOWN_SECONDS:
             return jsonify({
                 "success": False,
-                "message": "Please wait 30 seconds before requesting another OTP."
+                "message": f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP."
             }), 429
 
         # Call the unified SMS service to send OTP
@@ -696,11 +735,13 @@ def resend_otp():
                 "message": ref_error or "Invalid referral code."
             }), 400
 
+        # Same resend cooldown as send_otp() -- see RESEND_COOLDOWN_SECONDS;
+        # independent of VERIFICATION_EXPIRY_SECONDS.
         stored = get_verification(full_phone)
-        if stored:
+        if stored and stored["seconds_since_created"] < RESEND_COOLDOWN_SECONDS:
             return jsonify({
                 "success": False,
-                "message": "Please wait before requesting another OTP."
+                "message": f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP."
             }), 429
 
         # Send a fresh OTP

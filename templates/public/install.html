@@ -1,0 +1,161 @@
+{% extends "layouts/layout_public.html" %}
+
+{% block title %}Install LANDMARK App{% endblock %}
+
+{% block content %}
+<style>
+  /* This page has its own dedicated install UI below; suppress the
+     generic site-wide floating install button here only, so the two
+     don't both appear on the same screen. layout_public.html itself is
+     untouched -- every other page keeps the floating button. */
+  #pwaInstallBtn { display: none !important; }
+
+  .install-icon {
+    width: 84px;
+    height: 84px;
+    border-radius: 20px;
+    display: block;
+    margin: 0 auto 16px;
+  }
+  .install-hint {
+    color: rgba(255,255,255,0.6);
+    font-size: 0.85rem;
+    margin-top: 14px;
+  }
+  #installStatus {
+    min-height: 20px;
+    margin-top: 8px;
+    color: #ffd700;
+    font-size: 0.9rem;
+  }
+  #continueLink {
+    display: inline-block;
+    margin-top: 18px;
+    color: #ffd700;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  #continueLink:hover { text-decoration: underline; }
+
+  .fallback-steps {
+    text-align: left;
+    color: rgba(255,255,255,0.75);
+    font-size: 0.85rem;
+    margin: 14px auto 0;
+    max-width: 300px;
+    padding-left: 22px;
+  }
+  .fallback-steps li { margin-bottom: 4px; }
+
+  /* Touch-friendly, comfortable tap targets on mobile. */
+  #installBtn, #continueLink { min-height: 44px; }
+  #continueLink {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+  }
+</style>
+
+<div class="container">
+  <div class="card" style="text-align:center; max-width:380px;">
+    <img src="{{ url_for('static', filename='images/icon-192.png') }}" alt="LANDMARK" class="install-icon">
+    <h2 style="margin-bottom:4px;">LANDMARK</h2>
+    <p class="page-subtitle" style="margin-bottom:6px;">Install the LANDMARK App</p>
+    <p>Get faster access to your LANDMARK dashboard directly from your home screen.</p>
+
+    <button id="installBtn" type="button" class="btn-primary" hidden style="width:100%; margin-top:14px;">
+      Install LANDMARK App
+    </button>
+    <p class="install-hint" id="installHint" hidden>You can also install it from Chrome's menu.</p>
+
+    <div id="fallbackHint" hidden>
+      <p class="install-hint" style="margin-top:14px;">To install manually:</p>
+      <ol class="fallback-steps">
+        <li>Open Chrome's <strong>⋮</strong> menu</li>
+        <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong></li>
+        <li>Confirm installation</li>
+      </ol>
+    </div>
+
+    <p id="installStatus" role="status" aria-live="polite"></p>
+
+    <a href="/dashboard" id="continueLink">Continue to LANDMARK</a>
+  </div>
+</div>
+
+<script>
+(function () {
+  var installBtn = document.getElementById('installBtn');
+  var installHint = document.getElementById('installHint');
+  var fallbackHint = document.getElementById('fallbackHint');
+  var statusEl = document.getElementById('installStatus');
+  var deferredPrompt = null;
+  var navigated = false;
+
+  function goToDashboard() {
+    if (navigated) return;
+    navigated = true;
+    window.location.replace('/dashboard');
+  }
+
+  // Already installed (running standalone)? Skip this screen entirely --
+  // do not assume; ask the browser directly.
+  var isStandalone =
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true;
+  if (isStandalone) {
+    goToDashboard();
+    return;
+  }
+
+  window.addEventListener('beforeinstallprompt', function (event) {
+    event.preventDefault();
+    deferredPrompt = event;
+    installBtn.hidden = false;
+    installHint.hidden = false;
+    fallbackHint.hidden = true;
+  });
+
+  // Real installation only -- this fires from the browser itself, never
+  // simulated, and is the only thing that navigates onward as "installed".
+  window.addEventListener('appinstalled', function () {
+    statusEl.textContent = 'LANDMARK installed!';
+    goToDashboard();
+  });
+
+  // If the browser never offers a real install prompt (already decided
+  // not to, or an unsupported browser/platform such as iOS Safari), show
+  // manual instructions instead of a dead button -- never a broken one.
+  setTimeout(function () {
+    if (!deferredPrompt) {
+      installBtn.hidden = true;
+      installHint.hidden = true;
+      fallbackHint.hidden = false;
+    }
+  }, 1500);
+
+  installBtn.addEventListener('click', function () {
+    if (!deferredPrompt) return;
+    var prompted = deferredPrompt;
+    deferredPrompt = null;
+    installBtn.disabled = true;
+    statusEl.textContent = 'Waiting for your response…';
+    prompted.prompt();
+    prompted.userChoice.then(function (choice) {
+      if (choice.outcome === 'dismissed') {
+        statusEl.textContent = '';
+        installBtn.hidden = true;
+        installHint.hidden = true;
+        fallbackHint.hidden = false;
+        installBtn.disabled = false;
+      } else {
+        statusEl.textContent = 'Installing…';
+        // appinstalled (above) navigates to the dashboard once Chrome
+        // actually confirms installation -- never claimed here early.
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

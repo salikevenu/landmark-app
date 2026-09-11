@@ -316,9 +316,14 @@ class UserLoginSessionRedirectTests(unittest.TestCase):
 
     # 5. Source-level: successful public login navigation uses .replace, not .href
     def test_login_success_navigation_uses_location_replace(self):
+        # Regular users now land on /install (the post-OTP "Install
+        # LANDMARK App" step, see tests/test_pwa_install_flow.py) before
+        # /dashboard; admin is unchanged. The requirement this test guards
+        # -- .replace, not .href, so the login page drops out of history
+        # -- still holds for both destinations.
         html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
         self.assertIn(
-            "window.location.replace((role === 'admin') ? '/admin/dashboard' : '/dashboard');",
+            "window.location.replace((role === 'admin') ? '/admin/dashboard' : '/install');",
             html,
         )
         self.assertNotIn("window.location.href = (role === 'admin')", html)

@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request
+from flask import Blueprint, redirect, render_template, request
 
 public_bp = Blueprint("public", __name__)
 
@@ -27,3 +27,18 @@ def register_page():
         from routes.auth_routes import cache_landing_referral_code
         cache_landing_referral_code(ref)
     return render_template("public/register.html")
+
+
+@public_bp.route("/install", methods=["GET"])
+def install_app_page():
+    """Post-OTP "Install LANDMARK App" step. Only ever reachable with a
+    currently-valid session -- reuses the exact same check already used
+    by /admin/login and /api/auth/public/login
+    (routes.auth_routes._current_request_is_authenticated_user), so an
+    unauthenticated visit is redirected to login rather than shown this
+    page. No JWT/cookie/CSRF logic is touched or duplicated here; this
+    only reads the existing check."""
+    from routes.auth_routes import _current_request_is_authenticated_user
+    if not _current_request_is_authenticated_user():
+        return redirect("/api/auth/public/login")
+    return render_template("public/install.html")
