@@ -3,7 +3,7 @@
   "name": "LANDMARK App",
   "short_name": "LANDMARK",
   "description": "LANDMARK – Business directory platform",
-  "start_url": "/",
+  "start_url": "/dashboard",
   "scope": "/",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],

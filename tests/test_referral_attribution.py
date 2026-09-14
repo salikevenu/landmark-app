@@ -421,11 +421,15 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn("icon-192.png", app_layout)
 
     def test_manifest_start_url_and_qr_generation_untouched(self):
-        """Regression guard (item 7): the manifest's start_url and the live
-        QR endpoint must be exactly what they were before this change —
-        referral preservation must not touch either."""
+        """Regression guard (item 7): the live QR endpoint must be exactly
+        what it was before this change — referral preservation must not
+        touch it. The manifest's start_url is intentionally /dashboard
+        (see fix/onboarding-and-pwa: installed icon -> app, not marketing
+        homepage) — unrelated to referral attribution, which is
+        unaffected either way since referral capture never depended on
+        start_url's value."""
         manifest = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
-        self.assertIn('"start_url": "/"', manifest)
+        self.assertIn('"start_url": "/dashboard"', manifest)
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
 
@@ -433,8 +437,8 @@ class LandingAndFrontendTests(unittest.TestCase):
 class RegisterPageReferralCaptureTests(unittest.TestCase):
     """/register?ref=CODE must durably capture the code into the session on
     first page load — not just when the phone/OTP form is later submitted.
-    Covers the PWA-install-before-registering gap: manifest start_url is a
-    fixed "/", so a home-screen relaunch carries no ?ref= at all, and only
+    Covers the PWA-install-before-registering gap: a later home-screen
+    relaunch (start_url is /dashboard) carries no ?ref= at all, and only
     a session cache that survives a real browser/app close (see
     cache_landing_referral_code's session.permanent=True) can still
     attribute the referral once the user actually registers."""

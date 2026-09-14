@@ -15,13 +15,16 @@ def register_page():
     the same validated helper /, /join, and /download-app already use
     (routes.auth_routes.cache_landing_referral_code): unknown/invalid
     codes are silently ignored (existing behavior, unchanged), and a
-    missing ref never touches or clears an already-cached one. Needed
-    because the PWA manifest's start_url is a fixed "/" — if a user
-    installs the app from this page before ever submitting their phone
-    number, a later launch from the home-screen icon carries no ?ref= at
-    all, and only this session cache (now durable, see
-    cache_landing_referral_code) lets the referral still be attributed
-    once they do register."""
+    missing ref never touches or clears an already-cached one.
+
+    An already-authenticated visitor is sent straight to /dashboard --
+    same check as /api/auth/public/login and /install -- rather than
+    shown the registration form again; referral capture never applies to
+    an existing session, so it's skipped in that branch too.
+    """
+    from routes.auth_routes import _current_request_is_authenticated_user
+    if _current_request_is_authenticated_user():
+        return redirect("/dashboard")
     ref = (request.args.get("ref") or "").strip()
     if ref:
         from routes.auth_routes import cache_landing_referral_code
@@ -31,14 +34,25 @@ def register_page():
 
 @public_bp.route("/install", methods=["GET"])
 def install_app_page():
-    """Post-OTP "Install LANDMARK App" step. Only ever reachable with a
-    currently-valid session -- reuses the exact same check already used
-    by /admin/login and /api/auth/public/login
-    (routes.auth_routes._current_request_is_authenticated_user), so an
-    unauthenticated visit is redirected to login rather than shown this
-    page. No JWT/cookie/CSRF logic is touched or duplicated here; this
-    only reads the existing check."""
+    """Pre-authentication "Install LANDMARK App" step -- the landing point
+    for a shared link/QR code, reached BEFORE register/login/OTP. Captures
+    ?ref=CODE the same way /register does (same validated helper, unknown/
+    invalid codes silently ignored) so a referral survives this stop even
+    though it comes before the phone number is ever collected.
+
+    An already-authenticated visitor is redirected straight to /dashboard
+    -- same check /api/auth/public/login and /register use -- so this
+    page never becomes a recurring interruption for someone who already
+    has a valid session (e.g. an old bookmark/QR reused after signup).
+    Unauthenticated visitors see the install screen, then continue to
+    /register from there (see install.html) -- no separate auth mechanism
+    is introduced here.
+    """
     from routes.auth_routes import _current_request_is_authenticated_user
-    if not _current_request_is_authenticated_user():
-        return redirect("/api/auth/public/login")
+    if _current_request_is_authenticated_user():
+        return redirect("/dashboard")
+    ref = (request.args.get("ref") or "").strip()
+    if ref:
+        from routes.auth_routes import cache_landing_referral_code
+        cache_landing_referral_code(ref)
     return render_template("public/install.html")

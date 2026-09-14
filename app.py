@@ -288,6 +288,9 @@ def before_request_actions():
 # ==================== WEB ROUTES ====================
 @app.route("/")
 def index():
+    from routes.auth_routes import _current_request_is_authenticated_user
+    if _current_request_is_authenticated_user():
+        return redirect("/dashboard")
     ref = (request.args.get("ref") or "").strip()
     if ref:
         from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
@@ -310,11 +313,20 @@ def join():
     return redirect("/register")
 
 @app.route("/dashboard")
+@jwt_required()
 def redirect_dashboard():
-    target = "/api/user/dashboard"
-    if request.query_string:
-        target += "?" + request.query_string.decode("utf-8")
-    return redirect(target)
+    """The PWA's start_url and the app's single dashboard entry point.
+
+    Name kept for git-history continuity (it used to redirect to
+    /api/user/dashboard). Now renders the dashboard directly, gated by the
+    same @jwt_required() used by every other protected HTML page: a
+    missing/expired/invalid access token is caught by the app's existing
+    global JWT loaders, which -- for a normal browser page request -- send
+    the browser through the existing silent-refresh flow
+    (/api/refresh/silent) before ever falling back to the login page. No
+    new authentication mechanism is introduced here.
+    """
+    return render_template("users/dashboard.html", wallet=0, user=None)
 
 @app.route('/download/android')
 def download_apk():
