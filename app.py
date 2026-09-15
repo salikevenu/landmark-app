@@ -574,8 +574,13 @@ def _overlay_logo_center(qr_img, logo_path):
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
-    from routes.auth_routes import register_url_with_ref
-    signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
+    # referral_link_for() is the single source of truth for the shareable
+    # referral URL (also used by /api/user/api/invite's copy-link text) --
+    # built from the BASE_URL config, never from this request's own host,
+    # so the QR can never encode a different domain (e.g. localhost) than
+    # what was copied/shared as text.
+    from routes.auth_routes import referral_link_for
+    signup_url = referral_link_for(referral_code)
 
     qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
     qr.add_data(signup_url)

@@ -386,8 +386,13 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn("register_url_with_ref", app_src)
         self.assertIn('if ref:', app_src)
         self.assertNotIn("if ref:\n        pass", app_src)
-        self.assertIn("register_url_with_ref(referral_code)", app_src)
+        # The QR endpoint builds its URL via referral_link_for() (the same
+        # helper /api/user/api/invite uses for the copy-link text) rather
+        # than register_url_with_ref() -- see test_qr_encodes_install_url
+        # in test_referral_attribution.py's LandingRouteTests for the
+        # dedicated regression guard on that.
         qr_fn = app_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("referral_link_for(referral_code)", qr_fn)
         self.assertNotIn("cache_landing_referral_code", qr_fn)
         self.assertNotIn("/download-app?ref={referral_code}", app_src)
 
@@ -421,17 +426,26 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn("icon-192.png", app_layout)
 
     def test_manifest_start_url_and_qr_generation_untouched(self):
-        """Regression guard (item 7): the live QR endpoint must be exactly
-        what it was before this change — referral preservation must not
-        touch it. The manifest's start_url is intentionally /dashboard
-        (see fix/onboarding-and-pwa: installed icon -> app, not marketing
-        homepage) — unrelated to referral attribution, which is
-        unaffected either way since referral capture never depended on
-        start_url's value."""
+        """Regression guard (item 7): the manifest's start_url is
+        intentionally /dashboard (see fix/onboarding-and-pwa: installed
+        icon -> app, not marketing homepage) — unrelated to referral
+        attribution, which is unaffected either way since referral
+        capture never depended on start_url's value.
+
+        The QR endpoint's URL construction was deliberately changed by a
+        later, explicitly-scoped task (share-link/QR now point at
+        /install via referral_link_for(), not /register via
+        request.host_url + register_url_with_ref()) -- that change only
+        touches the destination path/domain-source, never referral
+        attribution itself (persist_referral_for_phone,
+        resolve_referrer_id_for_signup, pending_referrals, session
+        ref_code are all untouched). See test_qr_encodes_install_url for
+        the dedicated guard on the current QR construction."""
         manifest = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
         self.assertIn('"start_url": "/dashboard"', manifest)
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
+        qr_fn = qr_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("referral_link_for(referral_code)", qr_fn)
 
 
 class RegisterPageReferralCaptureTests(unittest.TestCase):
@@ -606,12 +620,19 @@ class LandingRouteTests(unittest.TestCase):
             self.assertEqual(join.status_code, 302)
             self.assertIn("/register?ref=NOSUCHCODE", join.headers.get("Location", ""))
 
-    def test_qr_encodes_register_url(self):
-        from routes.auth_routes import register_url_with_ref
-        self.assertTrue(register_url_with_ref("REFCODE1").startswith("/register?ref="))
+    def test_qr_encodes_install_url(self):
+        """The QR (and the copy-link text it must never drift from) point
+        at /install, not /register -- a shared referral link/QR is the
+        pre-authentication entry point for a brand-new user, matching the
+        QR/link -> /install -> register/login -> OTP -> dashboard flow.
+        register_url_with_ref() itself is untouched (still used by /,
+        /join, /download-app for their own unrelated browser-redirect
+        behavior, covered above)."""
+        from routes.auth_routes import referral_link_for
+        self.assertIn("/install?ref=REFCODE1", referral_link_for("REFCODE1"))
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
         qr_fn = qr_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("signup_url = referral_link_for(referral_code)", qr_fn)
         self.assertNotIn("cache_landing_referral_code", qr_fn)
 
 

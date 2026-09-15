@@ -115,12 +115,29 @@ def register_url_with_ref(ref_code):
 
 
 def referral_link_for(ref_code):
-    """Absolute, shareable referral URL. Reuses the existing BASE_URL config
-    (config/payment_config.py) rather than hardcoding a domain."""
+    """Absolute, shareable referral URL for the Invite Friends share
+    link/QR. Reuses the existing BASE_URL config (config/payment_config.py)
+    rather than hardcoding a domain -- BASE_URL already defaults to the
+    production domain there, while still honoring an explicit dev
+    override via the BASE_URL env var, so this never hardcodes localhost
+    itself.
+
+    This is the single source of truth for that shareable URL: both
+    /api/user/api/invite (the copy-link text, routes/user_routes.py) and
+    /qr/<code> (the QR image, app.py's generate_qr()) call this same
+    function, so the two can never encode different URLs.
+
+    Points at /install (not /register): a shared referral link/QR is the
+    pre-authentication entry point a new user opens first, matching the
+    QR/link -> /install -> register/login -> OTP -> dashboard flow.
+    register_url_with_ref() above is a separate, unrelated helper used by
+    /, /join, and /download-app to land an already-browsing visitor on
+    the registration form directly -- intentionally untouched here.
+    """
     code = str(ref_code or "").strip()
     if not code:
         return ""
-    return BASE_URL.rstrip("/") + register_url_with_ref(code)
+    return BASE_URL.rstrip("/") + "/install?ref=" + quote(code, safe="")
 
 
 def fetch_referrer_by_code(ref_code):
