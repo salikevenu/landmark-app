@@ -86,13 +86,13 @@ class InstallScreenSourceTests(unittest.TestCase):
         dismissed_branch = click_fn.split("'dismissed'")[1].split("} else {")[0]
         self.assertIn("fallbackHint.hidden = false", dismissed_branch)
 
-    # 6. appinstalled event continues the session onward (to registration --
+    # 6. appinstalled event continues the session onward (to signup --
     # never a fresh, second authentication mechanism).
     def test_appinstalled_is_handled_and_continues_the_session(self):
         fn = self.html.split("addEventListener('appinstalled'")[1].split("});")[0]
-        self.assertIn("goToDashboard", fn)
-        continue_fn = self.html.split("function goToDashboard")[1].split("\n  }")[0]
-        self.assertIn("/register", continue_fn)
+        self.assertIn("continueToSignup", fn)
+        continue_fn = self.html.split("function continueToSignup")[1].split("\n  }")[0]
+        self.assertIn("/signup", continue_fn)
 
     # 7. already-running-standalone (installed, not currently signed in)
     # skips straight to the same next step as a normal "Continue".
@@ -100,7 +100,7 @@ class InstallScreenSourceTests(unittest.TestCase):
         self.assertIn("display-mode: standalone", self.html)
         self.assertIn("navigator.standalone", self.html)
         block = self.html.split("isStandalone")[-1]
-        self.assertIn("goToDashboard()", block.split("}")[0])
+        self.assertIn("continueToSignup()", block.split("}")[0])
 
     # 8 / 15. fallback when beforeinstallprompt is unavailable
     def test_fallback_shown_when_prompt_never_fires(self):
@@ -123,21 +123,21 @@ class InstallScreenSourceTests(unittest.TestCase):
         self.assertNotIn("sessionStorage", self.html)
 
     # 16. Continue to LANDMARK exists, and (post-install-page redesign)
-    # leads onward to registration -- this screen is pre-authentication,
-    # so there is no session yet to land a dashboard visit on.
+    # leads onward to signup -- this screen is pre-authentication, so
+    # there is no session yet to land a dashboard visit on.
     def test_continue_link_always_present_as_an_escape_hatch(self):
         self.assertIn('id="continueLink"', self.html)
         self.assertIn("Continue to LANDMARK", self.html)
-        self.assertIn('href="/register"', self.html)
+        self.assertIn('href="/signup"', self.html)
 
-    # 17. /register is the single agreed destination (both the plain <a>
-    # fallback and the JS-driven goToDashboard() target it) -- never
+    # 17. /signup is the single agreed destination (both the plain <a>
+    # fallback and the JS-driven continueToSignup() target it) -- never
     # /dashboard, since a visitor who is actually authenticated never sees
     # this rendered screen at all (routes/public_routes.py redirects them
     # away before it renders).
-    def test_register_is_the_single_next_destination(self):
-        self.assertIn('href="/register"', self.html)
-        self.assertIn("window.location.replace('/register')", self.html)
+    def test_signup_is_the_single_next_destination(self):
+        self.assertIn('href="/signup"', self.html)
+        self.assertIn("window.location.replace('/signup')", self.html)
 
 
 class InstallRouteAuthGateTests(unittest.TestCase):
@@ -177,13 +177,17 @@ class InstallRouteAuthGateTests(unittest.TestCase):
 
     def test_install_captures_ref_code_for_unauthenticated_visitor(self):
         """The install page is now the first stop for a shared QR/link, so
-        it must capture ?ref=CODE itself (same validated helper /register
-        already uses) -- otherwise a referral entering via /install would
-        be silently lost before the user ever reaches /register."""
+        it must capture ?ref=CODE itself -- otherwise a referral entering
+        via /install would be silently lost before the user ever reaches
+        /signup. The actual capture now lives in the shared _capture_ref()
+        helper (also used by /signup and /login) rather than being
+        duplicated inline in install_app_page() itself."""
         src = (ROOT / "routes" / "public_routes.py").read_text(encoding="utf-8")
-        fn = src.split("def install_app_page")[1]
-        self.assertIn("cache_landing_referral_code", fn)
-        self.assertIn('request.args.get("ref")', fn)
+        install_fn = src.split("def install_app_page")[1].split("def register_page_legacy")[0]
+        self.assertIn("_capture_ref()", install_fn)
+        capture_fn = src.split("def _capture_ref")[1].split("\ndef ")[0]
+        self.assertIn("cache_landing_referral_code", capture_fn)
+        self.assertIn('request.args.get("ref")', capture_fn)
 
 
 class PostOtpNavigationTests(unittest.TestCase):
@@ -297,15 +301,20 @@ class RootAndRegisterAuthenticatedRedirectTests(unittest.TestCase):
         self.assertIn("/dashboard", res.headers.get("Location", ""))
 
     def test_unauthenticated_register_sees_the_registration_form(self):
-        res = self.client.get("/register")
+        # /register is now an unconditional 302 alias to /signup (the
+        # already-authenticated check moved to /signup itself) -- two
+        # hops, not one. See routes/public_routes.py's
+        # register_page_legacy().
+        res = self.client.get("/register", follow_redirects=True)
         self.assertEqual(res.status_code, 200)
-        self.assertIn(b"Create Account", res.data)
+        self.assertEqual(res.request.path, "/signup")
+        self.assertIn(b"Create your account", res.data)
 
     def test_authenticated_register_is_redirected_to_dashboard(self):
         self.client.set_cookie("access_token", self._token(5, role="free"))
-        res = self.client.get("/register", follow_redirects=False)
-        self.assertEqual(res.status_code, 302)
-        self.assertIn("/dashboard", res.headers.get("Location", ""))
+        res = self.client.get("/register", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/dashboard")
 
 
 class InstallPageInheritsPwaContractTests(unittest.TestCase):

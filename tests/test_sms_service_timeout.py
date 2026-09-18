@@ -128,17 +128,32 @@ class VerifyOtpRemainsFunctionalTests(unittest.TestCase):
         self.assertEqual(mock_get.call_args.kwargs.get("timeout"), (5, 15))
 
     def test_verify_otp_success_path_unchanged(self):
+        # A realistic Message Central success body -- {"verified": True}
+        # (the old mock) is not a shape Message Central actually returns,
+        # and _verification_succeeded() correctly fails closed on it. The
+        # real success signal is data.verificationStatus, with responseCode
+        # 200 as the envelope-level fallback (see services/sms_service.py).
+        success_body = {
+            "responseCode": 200,
+            "message": "SUCCESS",
+            "data": {
+                "verificationId": "vid-1",
+                "mobileNumber": "9876543210",
+                "responseCode": 200,
+                "verificationStatus": "VERIFICATION_COMPLETED",
+            },
+        }
         mock_get = MagicMock()
         mock_get.return_value.status_code = 200
         mock_get.return_value.text = "{}"
-        mock_get.return_value.json.return_value = {"verified": True}
+        mock_get.return_value.json.return_value = success_body
         mock_get.return_value.request.headers = {}
         mock_get.return_value.request.url = "https://cpaas.messagecentral.com/verification/v3/validateOtp"
         mock_get.return_value.request.method = "GET"
         with patch.object(self.svc.session, "get", mock_get):
             success, data = self.svc.verify_otp("vid-1", "123456")
         self.assertTrue(success)
-        self.assertEqual(data, {"verified": True})
+        self.assertEqual(data, success_body)
 
     def test_verify_otp_failure_path_returns_clean_error_not_exception(self):
         import requests

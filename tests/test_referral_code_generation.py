@@ -608,8 +608,12 @@ class VerifyOtpResponseTests(unittest.TestCase):
         verify_fn = src.split("def verify_otp")[1].split("\n@auth_bp.route")[0]
         self.assertIn('"referral_link": referral_link_for(user_data.get("referral_code"))', verify_fn)
         # The existing response shape (status/user) must still be present — additive only.
+        # "user" is now public_user(user_data), not the raw dict: 04f51c1 strips
+        # is_blocked/is_active (_INTERNAL_USER_FIELDS) so moderation state is
+        # never echoed to the client. referral_code (what this test cares
+        # about) is untouched by that filter.
         self.assertIn('"status": status', verify_fn)
-        self.assertIn('"user": user_data', verify_fn)
+        self.assertIn('"user": public_user(user_data)', verify_fn)
 
 
 if __name__ == "__main__":
