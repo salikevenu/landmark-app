@@ -80,7 +80,7 @@
 
     <p id="installStatus" role="status" aria-live="polite"></p>
 
-    <a href="/register" id="continueLink">Continue to LANDMARK</a>
+    <a href="/signup" id="continueLink">Continue to LANDMARK</a>
   </div>
 </div>
 
@@ -97,13 +97,16 @@
   // route redirects an already-authenticated visitor straight to
   // /dashboard, see routes/public_routes.py's install_app_page()) -- so
   // the next step from here, whether the app was actually installed or
-  // the user just clicks through, is always /register, never /dashboard
+  // the user just clicks through, is always /signup, never /dashboard
   // directly. The current browser session/cookies carry forward
   // untouched; no new auth mechanism is introduced here.
-  function goToDashboard() {
+  //
+  // Named for what it does, not where it used to go: the old name
+  // (goToDashboard) had not matched its destination for some time.
+  function continueToSignup() {
     if (navigated) return;
     navigated = true;
-    window.location.replace('/register');
+    window.location.replace('/signup');
   }
 
   // Already running standalone (installed previously, just not currently
@@ -114,7 +117,7 @@
     (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
     window.navigator.standalone === true;
   if (isStandalone) {
-    goToDashboard();
+    continueToSignup();
     return;
   }
 
@@ -130,7 +133,7 @@
   // simulated, and is the only thing that navigates onward as "installed".
   window.addEventListener('appinstalled', function () {
     statusEl.textContent = 'LANDMARK installed!';
-    goToDashboard();
+    continueToSignup();
   });
 
   // If the browser never offers a real install prompt (already decided

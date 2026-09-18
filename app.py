@@ -75,6 +75,26 @@ _boot("database.init_db imported OK")
 _boot("Flask(__name__)")
 app = Flask(__name__)
 
+# ==================== TRUSTED PROXY ====================
+# On Render every request arrives via the platform load balancer, so
+# request.remote_addr is the proxy, not the caller. Without this, ALL
+# users share a single rate-limit bucket (Flask-Limiter keys on
+# get_remote_address), which both lets an attacker hide in the crowd and
+# lets one attacker exhaust the OTP limits for the entire user base --
+# and users.ip_address records the proxy IP for every signup, making the
+# fraud signal worthless.
+#
+# Deliberately gated on RENDER: X-Forwarded-For is attacker-controlled
+# unless something trusted is guaranteed to overwrite it, so this must
+# NEVER be enabled when the app is exposed directly. x_for=1 trusts
+# exactly one hop -- Render's own proxy -- and nothing further upstream.
+if os.getenv("RENDER") == "true":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=0)
+    _boot("ProxyFix enabled (x_for=1) — real client IPs for rate limiting")
+else:
+    _boot("ProxyFix disabled (not on Render) — remote_addr used as-is")
+
 def _run_init_db_async():
     """Schema init only AFTER the worker has finished importing the app."""
     try:
@@ -303,14 +323,18 @@ def index():
 @app.route("/join")
 def join():
     """Referral entry point: /join?ref=CODE. Same capture-and-redirect
-    pattern as '/' and '/download-app' — canonical signup URL stays
-    /register?ref=CODE, this is just a friendlier shareable alias."""
+    pattern as '/' and '/download-app' — the canonical signup URL is
+    /signup?ref=CODE, this is just a friendlier shareable alias."""
+    from routes.auth_routes import (
+        SIGNUP_PATH,
+        cache_landing_referral_code,
+        register_url_with_ref,
+    )
     ref = (request.args.get("ref") or "").strip()
     if ref:
-        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
         cache_landing_referral_code(ref)
         return redirect(register_url_with_ref(ref))
-    return redirect("/register")
+    return redirect(SIGNUP_PATH)
 
 @app.route("/dashboard")
 @jwt_required()
@@ -495,7 +519,10 @@ def refresh_silent():
     here (which would recurse back to this same route).
     """
     next_url = _safe_relative_path(request.args.get("next"))
-    login_url = "/api/auth/public/login"
+    # Canonical login page. Imported rather than hardcoded so this cannot
+    # drift from the routes that actually serve it.
+    from routes.auth_routes import LOGIN_PATH
+    login_url = LOGIN_PATH
 
     try:
         verify_jwt_in_request(refresh=True)

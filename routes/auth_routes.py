@@ -37,9 +37,29 @@ logger = logging.getLogger(__name__)
 
 
 def _limit(*args, **kwargs):
-    """Apply Flask-Limiter only when the extension has been initialized."""
+    """Apply Flask-Limiter only when the extension has been initialized.
+
+    `limiter` is bound at IMPORT time, and this decorator is evaluated at
+    import time too -- so whether the OTP endpoints are rate limited at
+    all depends on `extensions.init_extensions()` having run BEFORE this
+    module is imported. app.py does that (init_extensions at module
+    scope, `from routes import register_routes` after it), but the
+    ordering is load-bearing and invisible.
+
+    Any other entrypoint that imports `routes` first -- a test harness, a
+    management script, a future WSGI module -- would silently get
+    COMPLETELY UNRATE-LIMITED OTP endpoints. Failing loudly in the log is
+    the difference between noticing that in the first boot line and
+    noticing it in an SMS bill.
+    """
     def deco(fn):
         if limiter is None:
+            logger.error(
+                "RATE LIMIT NOT APPLIED to %s: extensions.init_extensions() "
+                "has not run yet at import time. OTP endpoints are UNPROTECTED "
+                "in this process.",
+                getattr(fn, "__name__", fn),
+            )
             return fn
         return limiter.limit(*args, **kwargs)(fn)
     return deco
@@ -69,6 +89,23 @@ COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
 MAX_OTP_ATTEMPTS = 5
 PENDING_REFERRAL_TTL = timedelta(days=7)
 REFERRAL_CODE_INSERT_ATTEMPTS = 8
+
+# Token lifetimes. The access token is deliberately short and FIXED --
+# "remember me" must never lengthen it (see generate_jwt_tokens below for
+# why). Session longevity comes from the refresh token plus app.py's
+# silent-refresh bounce, not from a long-lived access token.
+ACCESS_TOKEN_TTL = timedelta(hours=2)
+DEFAULT_REFRESH_TTL = timedelta(days=7)
+REMEMBER_ME_REFRESH_TTL = timedelta(days=365)
+
+# Canonical pre-auth URLs. Single source of truth: every redirect, link
+# and fallback in the codebase builds from these, so the flow cannot
+# drift apart again the way /register, /public/login and
+# /api/auth/public/login did.
+SIGNUP_PATH = "/signup"
+LOGIN_PATH = "/login"
+WELCOME_PATH = "/welcome"
+DASHBOARD_PATH = "/dashboard"
 
 
 # =================================
@@ -107,11 +144,17 @@ def extract_referral_code(data=None):
 
 
 def register_url_with_ref(ref_code):
-    """Canonical signup URL that preserves a referral code."""
+    """Canonical signup URL that preserves a referral code.
+
+    Now points at SIGNUP_PATH (/signup). /register still exists as a
+    permanent redirect to it (routes/public_routes.py), so links and QR
+    codes already printed, shared or scanned keep working -- but nothing
+    in the codebase generates the old URL any more.
+    """
     code = str(ref_code or "").strip()
     if not code:
-        return "/register"
-    return "/register?ref=" + quote(code, safe="")
+        return SIGNUP_PATH
+    return SIGNUP_PATH + "?ref=" + quote(code, safe="")
 
 
 def referral_link_for(ref_code):
@@ -305,7 +348,8 @@ def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, re
     with engine.connect() as conn:
         user = conn.execute(
             text("""
-                SELECT id, phone, name, role, referral_code, referred_by
+                SELECT id, phone, name, role, referral_code, referred_by,
+                       is_blocked, is_active
                 FROM users WHERE phone = :phone
             """),
             {"phone": phone}
@@ -359,6 +403,8 @@ def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, re
                     "role": "free",
                     "referral_code": referral_code,
                     "referred_by": bound_referrer,
+                    "is_blocked": False,
+                    "is_active": 1,
                 }, "new"
             except IntegrityError as exc:
                 last_integrity = exc
@@ -368,7 +414,8 @@ def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, re
                     pass
                 raced = conn.execute(
                     text("""
-                        SELECT id, phone, name, role, referral_code, referred_by
+                        SELECT id, phone, name, role, referral_code, referred_by,
+                               is_blocked, is_active
                         FROM users WHERE phone = :phone
                     """),
                     {"phone": phone},
@@ -380,14 +427,59 @@ def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, re
         raise last_integrity
 
 
+#: Columns loaded for the auth decision that must never be echoed back
+#: to the client. is_blocked/is_active are moderation state -- useful to
+#: this module, nobody else's business.
+_INTERNAL_USER_FIELDS = ("is_blocked", "is_active")
+
+
+def public_user(user_data):
+    """The user object safe to return in an auth response body."""
+    return {
+        key: value
+        for key, value in (user_data or {}).items()
+        if key not in _INTERNAL_USER_FIELDS
+    }
+
+
+def account_is_usable(user_data):
+    """False for a banned or deactivated account.
+
+    Mirrors services.jwt_session.lookup_jwt_user's check, which runs on
+    every subsequent request. Applying it HERE too is what stops a banned
+    user from passing OTP, being handed valid cookies, being redirected to
+    /dashboard, and only then being 401'd by the user loader -- which sent
+    them round the silent-refresh loop back to login with no explanation
+    of why. Fail the login where the user can be told, not four redirects
+    later.
+    """
+    if not user_data:
+        return False
+    if user_data.get("is_blocked"):
+        return False
+    if user_data.get("is_active") == 0:
+        return False
+    return True
+
+
 def generate_jwt_tokens(user_data, remember_me=False):
-    """Generate access and refresh tokens."""
-    if remember_me:
-        access_expires = timedelta(days=30)
-        refresh_expires = timedelta(days=365)
-    else:
-        access_expires = timedelta(hours=2)
-        refresh_expires = timedelta(days=7)
+    """Generate access and refresh tokens.
+
+    remember_me extends the REFRESH token only. The access token is
+    always short-lived, because it is the credential that cannot be
+    cheaply withdrawn: revocation goes through services.jwt_blocklist,
+    which falls back to per-process memory whenever Redis is unreachable
+    (and extensions.py treats Redis as optional). A 30-day access token
+    on a lost phone therefore used to survive a logout entirely.
+
+    Nothing is lost by shortening it: app.py's /api/refresh/silent
+    transparently mints a new access token from the still-valid refresh
+    cookie on any page navigation, so "stay logged in" keeps working
+    exactly as before -- it is the refresh token's 365 days that deliver
+    that, not the access token's.
+    """
+    access_expires = ACCESS_TOKEN_TTL
+    refresh_expires = REMEMBER_ME_REFRESH_TTL if remember_me else DEFAULT_REFRESH_TTL
 
     access_token = create_access_token(
         identity=str(user_data["id"]),
@@ -566,6 +658,8 @@ def send_otp():
 @auth_bp.route("/verify-otp", methods=["POST"])
 @_limit("10 per minute")
 @_limit("30 per hour")
+@_limit("10 per minute", key_func=otp_phone_key)
+@_limit("30 per hour", key_func=otp_phone_key)
 def verify_otp():
     """Verify OTP using Message Central VerifyNow API."""
     from flask_jwt_extended import create_access_token, create_refresh_token, set_access_cookies, set_refresh_cookies
@@ -617,21 +711,54 @@ def verify_otp():
             increment_attempts(full_phone)
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
-        # OTP verified successfully - delete the record
+        # The OTP is correct from here on, and Message Central has now
+        # marked this verificationId as used on their side -- so it can
+        # never be verified a second time even though our own row still
+        # exists for a few more lines.
+        #
+        # Account resolution is therefore wrapped: if it fails, the code
+        # really is spent, and the user must be TOLD to request a new one
+        # rather than being handed a bare 500 (the old behaviour) or a
+        # misleading "Incorrect OTP" on their retry. The row is cleaned
+        # up so the next attempt starts from a clean state.
+        try:
+            referrer_id, ref_error = resolve_referrer_id_for_signup(phone, data)
+            if ref_error:
+                delete_verification(full_phone)
+                return jsonify({"success": False, "message": ref_error}), 400
+
+            # Create or login the user
+            user_data, status = get_or_create_user(
+                phone,
+                ip_address=request.remote_addr,
+                latitude=data.get("latitude"),
+                longitude=data.get("longitude"),
+                referrer_id=referrer_id,
+            )
+        except Exception:
+            logger.exception("verify_otp: account resolution failed after a valid OTP")
+            try:
+                delete_verification(full_phone)
+            except Exception:
+                logger.exception("verify_otp: cleanup of spent verification failed")
+            return jsonify({
+                "success": False,
+                "message": "We could not finish signing you in. Please request a new OTP and try again.",
+                "reason": "ACCOUNT_RESOLUTION_FAILED",
+            }), 503
+
+        # Refuse a banned/deactivated account BEFORE any cookie is set.
+        if not account_is_usable(user_data):
+            delete_verification(full_phone)
+            logger.warning("Blocked/inactive account attempted login: user_id=%s", user_data.get("id"))
+            return jsonify({
+                "success": False,
+                "message": "This account has been suspended. Please contact support.",
+                "reason": "ACCOUNT_SUSPENDED",
+            }), 403
+
+        # Account resolved and allowed -- now the code has been spent.
         delete_verification(full_phone)
-
-        referrer_id, ref_error = resolve_referrer_id_for_signup(phone, data)
-        if ref_error:
-            return jsonify({"success": False, "message": ref_error}), 400
-
-        # Create or login the user
-        user_data, status = get_or_create_user(
-            phone,
-            ip_address=request.remote_addr,
-            latitude=data.get("latitude"),
-            longitude=data.get("longitude"),
-            referrer_id=referrer_id,
-        )
 
         with engine.connect() as conn:
             try:
@@ -651,32 +778,26 @@ def verify_otp():
             finally:
                 clear_pending_referral(phone)
 
-            # Generate JWT tokens
-            if remember_me:
-                access_expires = timedelta(days=30)
-                refresh_expires = timedelta(days=365)
-            else:
-                access_expires = timedelta(hours=2)
-                refresh_expires = timedelta(days=7)
+            # Single source of truth for token lifetimes -- the inline
+            # copy that used to live here drifted from
+            # generate_jwt_tokens() and issued a 30-day ACCESS token on
+            # "remember me". See generate_jwt_tokens' docstring.
+            access_token, refresh_token, access_expires, refresh_expires = (
+                generate_jwt_tokens(user_data, remember_me=remember_me)
+            )
 
-            access_token = create_access_token(
-                identity=str(user_data["id"]),
-                additional_claims={
-                    "role": user_data["role"],
-                    "phone": user_data["phone"],
-                    "remember_me": remember_me,
-                },
-                expires_delta=access_expires,
-            )
-            refresh_token = create_refresh_token(
-                identity=str(user_data["id"]),
-                additional_claims={"remember_me": remember_me},
-                expires_delta=refresh_expires,
-            )
+            # A brand-new account has no name yet (the INSERT stores '').
+            # The client uses this to send first-time users through the
+            # /welcome step, which is the ONLY place the name has ever
+            # actually been persisted -- the old register form collected
+            # it before the OTP and silently discarded it.
+            needs_profile = not (user_data.get("name") or "").strip()
 
             response_data = {
                 "status": status,
-                "user": user_data,
+                "user": public_user(user_data),
+                "needs_profile": needs_profile,
+                "next": WELCOME_PATH if needs_profile else DASHBOARD_PATH,
                 "referral_link": referral_link_for(user_data.get("referral_code")),
             }
             if _wants_json_tokens():
@@ -717,17 +838,27 @@ def _current_request_is_authenticated_user():
 
 @auth_bp.route("/public/login", methods=["GET"])
 def public_login_page():
-    """Public user login page.
+    """Legacy login URL — now a redirect to the canonical /login.
 
-    An already-authenticated user (admin or regular) must never be shown a
-    fresh OTP form here — otherwise Chrome's back button (or a bookmark/
-    autocomplete hit on this exact URL) always looks like a lost session
-    even when the cookies are still perfectly valid. Anyone else (no
-    session, or an expired one) sees the normal login form.
+    This used to render the login page itself, which left THREE surfaces
+    serving the same OTP form (/register, /public/login and this one),
+    two of which had drifted apart on whether an already-authenticated
+    visitor gets bounced to the dashboard. The page now lives in exactly
+    one place; this endpoint is kept only so old bookmarks, cached
+    service-worker entries and any client still holding the old URL keep
+    working.
+
+    The ?ref code is carried through so a referral can survive an old
+    link. The authenticated-visitor check is not repeated here -- /login
+    performs it, and doing it twice just means two places to get it wrong.
+
+    Deliberately a 302, not a 301: this is a PWA with a service worker,
+    and a permanently-cached redirect on an auth URL is unrecoverable
+    from the server side if the flow ever needs to change again.
     """
-    if _current_request_is_authenticated_user():
-        return redirect("/dashboard")
-    return render_template("public/login.html")
+    ref = (request.args.get("ref") or "").strip()
+    target = LOGIN_PATH + ("?ref=" + quote(ref, safe="") if ref else "")
+    return redirect(target)
 
 @auth_bp.route("/resend-otp", methods=["POST"])
 @_limit("5 per minute")

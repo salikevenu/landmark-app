@@ -1,0 +1,627 @@
+{% extends "layouts/layout_public.html" %}
+
+{#
+  ONE page for both /signup and /login.
+
+  `mode` ("signup" | "login") changes the heading and the footer link and
+  nothing else. The form, the validation and all three API calls are
+  identical, because the server has never distinguished the two:
+  /api/auth/verify-otp creates the account if the phone is new and signs
+  it in if it isn't.
+
+  Deliberately NOT here: the geolocation prompt the old login page fired
+  before verifying the OTP. It put a browser permission dialog in the
+  middle of the login step -- a well-known conversion killer -- and the
+  coordinates were discarded for existing users anyway, since
+  get_or_create_user only stores them on INSERT.
+#}
+
+{% set is_signup = (mode == 'signup') %}
+
+{% block title %}{{ 'Sign up' if is_signup else 'Log in' }} | LANDMARK{% endblock %}
+
+{% block content %}
+
+<style>
+* { box-sizing: border-box; }
+
+.auth-wrapper {
+    width: calc(100% - 20px);
+    max-width: 420px;
+    margin: 0 auto;
+    background: rgba(12, 18, 28, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    border-radius: 32px;
+    padding: 32px 24px;
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
+}
+
+.auth-title {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #0ff;
+    text-shadow: 0 0 5px #0ff;
+    margin-bottom: 8px;
+}
+
+.page-subtitle {
+    color: #8aaee0;
+    margin-bottom: 20px;
+    font-size: 0.95rem;
+}
+
+.input-group { position: relative; margin-bottom: 12px; }
+.phone-row { display: flex; gap: 8px; align-items: stretch; }
+
+.country-code {
+    width: 64px;
+    flex: 0 0 64px;
+    padding: 12px 8px;
+    border-radius: 30px;
+    border: 1px solid #2a4c7a;
+    background: #000;
+    color: #8aaee0;
+    text-align: center;
+    font-size: 1rem;
+    pointer-events: none;
+    user-select: none;
+}
+
+input {
+    width: 100%;
+    padding: 12px 16px;
+    border-radius: 30px;
+    border: 1px solid #2a4c7a;
+    background: #000;
+    color: white;
+    transition: 0.2s;
+    font-size: 1rem;
+}
+
+input:focus { outline: none; border-color: #0ff; box-shadow: 0 0 8px #0ff; }
+input:disabled { opacity: 0.5; cursor: not-allowed; }
+input::placeholder { color: #556; }
+
+.btn-primary {
+    width: 100%;
+    padding: 12px;
+    border-radius: 30px;
+    background: #0ff;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 1rem;
+    transition: 0.2s;
+    color: #000;
+    position: relative;
+}
+
+.btn-primary:hover:not(:disabled) { background: #0fa; box-shadow: 0 0 12px #0ff; }
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
+
+.btn-primary .spinner {
+    display: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #000;
+    border-top: 2px solid #0ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto;
+}
+
+.btn-primary.loading .spinner { display: inline-block; }
+.btn-primary.loading .btn-text { display: none; }
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.status-text { min-height: 30px; margin-top: 10px; font-size: 0.9rem; }
+.status-text.error { color: #ff6b6b; }
+.status-text.success { color: #5dffb0; }
+.status-text.info { color: #4fc3f7; }
+
+.link-row {
+    margin-top: 8px;
+    font-size: 0.85rem;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+}
+
+.link-row button {
+    background: none;
+    border: none;
+    color: #0ff;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 4px 8px;
+    transition: 0.2s;
+}
+
+.link-row button:hover:not(:disabled) { color: #0fa; text-shadow: 0 0 8px #0ff; }
+.link-row button:disabled { color: #557; cursor: not-allowed; text-decoration: none; }
+.link-row span { color: #557; }
+
+.mode-switch {
+    margin-top: 18px;
+    font-size: 0.85rem;
+    color: #8aaee0;
+}
+.mode-switch a { color: #0ff; text-decoration: none; font-weight: 600; }
+.mode-switch a:hover { text-decoration: underline; }
+
+/* ----- NEON CUSTOM CHECKBOX (Remember Me) ----- */
+.remember-me-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    justify-content: flex-start;
+}
+
+#rememberMe {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+
+.custom-checkbox {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    border: 2px solid #0ff;
+    border-radius: 4px;
+    background: rgba(0, 20, 40, 0.8);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: 0.2s;
+    box-shadow: 0 0 2px #0ff;
+    cursor: pointer;
+    color: #000;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+#rememberMe:checked + .custom-checkbox { background: #0ff; box-shadow: 0 0 8px #0ff; }
+#rememberMe:checked + .custom-checkbox::after { content: "✓"; color: #000; }
+.custom-checkbox:hover { border-color: #0fa; box-shadow: 0 0 6px #0fa; }
+#rememberMe:focus-visible + .custom-checkbox { outline: 2px solid #0ff; outline-offset: 2px; }
+
+.remember-label {
+    color: #ccf;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: 0.2s;
+    user-select: none;
+}
+.remember-label:hover { text-shadow: 0 0 4px #0ff; color: #fff; }
+
+#otpGroup { display: none; animation: fadeIn 0.3s ease; }
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 480px) {
+    .auth-wrapper { padding: 24px 16px; border-radius: 24px; }
+    .auth-title { font-size: 1.6rem; }
+    input { font-size: 0.95rem; padding: 10px 14px; }
+    .btn-primary { font-size: 0.95rem; padding: 10px; }
+}
+
+@media (max-width: 380px) {
+    .auth-wrapper { padding: 20px 12px; }
+    .auth-title { font-size: 1.4rem; }
+    .page-subtitle { font-size: 0.85rem; }
+}
+</style>
+
+<div class="container">
+    <div class="auth-wrapper">
+        <h2 class="auth-title">
+            {{ 'Create your account' if is_signup else 'Welcome back' }}
+        </h2>
+        <p class="page-subtitle" id="stepLabel">
+            {{ 'Enter your mobile number to get started' if is_signup else 'Enter your mobile number' }}
+        </p>
+
+        <div class="input-group">
+            <div class="phone-row">
+                <div class="country-code">+91</div>
+                <input
+                    type="tel"
+                    id="phoneInput"
+                    placeholder="10-digit mobile number"
+                    maxlength="10"
+                    autocomplete="tel-national"
+                    inputmode="numeric"
+                    aria-label="Phone number"
+                >
+            </div>
+        </div>
+
+        <div id="otpGroup">
+            <div class="input-group">
+                <input
+                    type="text"
+                    id="otpInput"
+                    placeholder="Enter 6-digit OTP"
+                    maxlength="6"
+                    autocomplete="one-time-code"
+                    inputmode="numeric"
+                    aria-label="OTP code"
+                >
+            </div>
+
+            <div class="remember-me-wrapper">
+                <input type="checkbox" id="rememberMe">
+                <label for="rememberMe" class="custom-checkbox"></label>
+                <label for="rememberMe" class="remember-label">
+                    Keep me signed in on this device
+                </label>
+            </div>
+        </div>
+
+        <button class="btn-primary" id="actionBtn" type="button">
+            <span class="btn-text">Send OTP</span>
+            <span class="spinner"></span>
+        </button>
+
+        <div id="otpActions" class="link-row" style="display:none;">
+            <button type="button" id="resendBtn">Resend OTP</button>
+            <span>&middot;</span>
+            <button type="button" id="changeNumberBtn">Change number</button>
+        </div>
+
+        <p id="statusMessage" class="status-text" aria-live="polite"></p>
+
+        <p class="mode-switch">
+            {% if is_signup %}
+                Already have an account?
+                <a href="/login" id="modeSwitchLink">Log in</a>
+            {% else %}
+                New to LANDMARK?
+                <a href="/signup" id="modeSwitchLink">Create an account</a>
+            {% endif %}
+        </p>
+    </div>
+</div>
+
+<script>
+// ========================================
+// LANDMARK — unified signup / login (OTP)
+// ========================================
+
+const RESEND_COOLDOWN_SECONDS = 60;   // matches RESEND_COOLDOWN_SECONDS server-side
+const PHONE_REGEX = /^[6-9]\d{9}$/;   // real Indian mobile numbers only
+const OTP_REGEX = /^\d{6}$/;
+const DASHBOARD_URL = "/dashboard";
+const ADMIN_DASHBOARD_URL = "/admin/dashboard";
+const WELCOME_URL = "/welcome";
+
+function referralCode() {
+    const ref = new URLSearchParams(window.location.search).get("ref");
+    if (!ref || !ref.trim()) return "";
+    return ref.trim();
+}
+
+function referralQuery() {
+    const ref = referralCode();
+    return ref ? "?ref=" + encodeURIComponent(ref) : "";
+}
+
+// Keep ?ref on the signup <-> login switch, so a referred user who
+// realises they already have an account does not lose the attribution.
+(function carryRefAcrossModeSwitch() {
+    const ref = referralCode();
+    if (!ref) return;
+    const link = document.getElementById("modeSwitchLink");
+    if (link) link.href = link.getAttribute("href") + "?ref=" + encodeURIComponent(ref);
+})();
+
+// DOM
+const phoneInput = document.getElementById("phoneInput");
+const otpGroup = document.getElementById("otpGroup");
+const otpInput = document.getElementById("otpInput");
+const actionBtn = document.getElementById("actionBtn");
+const statusMsg = document.getElementById("statusMessage");
+const stepLabel = document.getElementById("stepLabel");
+const rememberMeCheckbox = document.getElementById("rememberMe");
+const otpActions = document.getElementById("otpActions");
+const resendBtn = document.getElementById("resendBtn");
+const changeNumberBtn = document.getElementById("changeNumberBtn");
+
+// STATE
+let currentStep = "phone";
+let pendingPhone = "";
+let isSubmitting = false;
+let resendTimer = null;
+
+function setStatus(message, type = null) {
+    statusMsg.innerText = message || '';
+    statusMsg.classList.remove("error", "success", "info");
+    if (type) statusMsg.classList.add(type);
+}
+
+function setLoading(loading) {
+    isSubmitting = loading;
+    actionBtn.disabled = loading;
+    actionBtn.classList.toggle('loading', loading);
+}
+
+function showOtpStep() {
+    currentStep = "otp";
+    otpGroup.style.display = "block";
+    otpActions.style.display = "flex";
+    actionBtn.querySelector('.btn-text').textContent = "Verify OTP";
+    phoneInput.disabled = true;
+    stepLabel.textContent = "Enter the 6-digit code sent to +91 " + pendingPhone;
+    setStatus("OTP sent! Check your phone.", "success");
+    setTimeout(() => otpInput.focus(), 100);
+}
+
+function resetToPhoneStep() {
+    currentStep = "phone";
+    otpGroup.style.display = "none";
+    otpActions.style.display = "none";
+    otpInput.value = "";
+    actionBtn.querySelector('.btn-text').textContent = "Send OTP";
+    phoneInput.disabled = false;
+    stepLabel.textContent = "Enter your mobile number";
+    setStatus("", null);
+    pendingPhone = "";
+
+    if (resendTimer) {
+        clearInterval(resendTimer);
+        resendTimer = null;
+    }
+    resendBtn.disabled = false;
+    resendBtn.textContent = "Resend OTP";
+    phoneInput.focus();
+}
+
+function startResendCooldown() {
+    let remaining = RESEND_COOLDOWN_SECONDS;
+    resendBtn.disabled = true;
+    resendBtn.textContent = `Resend OTP (${remaining}s)`;
+
+    if (resendTimer) clearInterval(resendTimer);
+    resendTimer = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+            clearInterval(resendTimer);
+            resendTimer = null;
+            resendBtn.disabled = false;
+            resendBtn.textContent = 'Resend OTP';
+        } else {
+            resendBtn.textContent = `Resend OTP (${remaining}s)`;
+        }
+    }, 1000);
+}
+
+// ========================================
+// CORE
+// ========================================
+
+async function sendOTP() {
+    const phone = phoneInput.value.trim();
+
+    if (!PHONE_REGEX.test(phone)) {
+        setStatus('Enter a valid 10-digit mobile number (starting 6-9)', 'error');
+        phoneInput.focus();
+        return false;
+    }
+
+    setLoading(true);
+    setStatus('Sending OTP...', 'info');
+
+    try {
+        const response = await fetch('/api/auth/send-otp' + referralQuery(), {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone, ref: referralCode() })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            pendingPhone = phone;
+            return true;
+        }
+
+        setStatus(result.message || 'Failed to send OTP. Please try again.', 'error');
+        return false;
+    } catch (error) {
+        console.error('sendOTP error:', error);
+        setStatus('Network error. Please check your connection and try again.', 'error');
+        return false;
+    } finally {
+        setLoading(false);
+    }
+}
+
+async function verifyOTP() {
+    const otp = otpInput.value.trim();
+
+    if (!OTP_REGEX.test(otp)) {
+        setStatus('Please enter a valid 6-digit OTP', 'error');
+        otpInput.focus();
+        return;
+    }
+
+    if (!pendingPhone) {
+        setStatus('Session expired. Please request a new OTP.', 'error');
+        resetToPhoneStep();
+        return;
+    }
+
+    setLoading(true);
+    setStatus('Verifying OTP...', 'info');
+
+    try {
+        const response = await fetch('/api/auth/verify-otp', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                phone: pendingPhone,
+                otp: otp,
+                remember_me: rememberMeCheckbox.checked,
+                ref: referralCode()
+            })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            // Tokens are httpOnly cookies set server-side — nothing to store here.
+            const data = result.data || {};
+            const role = (data.user || {}).role;
+
+            // The server decides where a verified user goes next: a
+            // brand-new account (no name yet) is sent to /welcome to
+            // finish the profile; everyone else goes straight in.
+            let target;
+            if (role === 'admin') {
+                target = ADMIN_DASHBOARD_URL;
+            } else if (data.needs_profile) {
+                target = WELCOME_URL;
+            } else {
+                target = data.next || DASHBOARD_URL;
+            }
+
+            setStatus(
+                data.status === 'new' ? 'Account created! Redirecting...' : 'Signed in! Redirecting...',
+                'success'
+            );
+            setTimeout(() => window.location.replace(target), 700);
+            return;
+        }
+
+        // A suspended account is terminal — do not leave the OTP box
+        // sitting there inviting a retry that cannot succeed.
+        if (response.status === 403) {
+            setStatus(result.message || 'This account has been suspended.', 'error');
+            actionBtn.disabled = true;
+            otpInput.disabled = true;
+            setLoading(false);
+            return;
+        }
+
+        setStatus(result.message || 'Verification failed. Please try again.', 'error');
+        otpInput.value = '';
+        otpInput.focus();
+        setLoading(false);
+    } catch (error) {
+        console.error('verifyOTP error:', error);
+        setStatus('Network error. Please try again.', 'error');
+        setLoading(false);
+    }
+}
+
+async function handleResend() {
+    if (isSubmitting || resendBtn.disabled) return;
+
+    if (!pendingPhone) {
+        setStatus('Please enter your phone number first.', 'error');
+        return;
+    }
+
+    setLoading(true);
+    setStatus('Resending OTP...', 'info');
+
+    try {
+        const response = await fetch('/api/auth/resend-otp' + referralQuery(), {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: pendingPhone, ref: referralCode() })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            setStatus('New OTP sent!', 'success');
+            otpInput.value = '';
+            otpInput.focus();
+            startResendCooldown();
+        } else {
+            setStatus(result.message || 'Failed to resend OTP.', 'error');
+        }
+    } catch (error) {
+        console.error('handleResend error:', error);
+        setStatus('Network error. Please try again.', 'error');
+    } finally {
+        setLoading(false);
+    }
+}
+
+async function handleAction() {
+    if (isSubmitting) return;
+
+    if (currentStep === 'phone') {
+        const sent = await sendOTP();
+        if (sent) {
+            showOtpStep();
+            startResendCooldown();
+        }
+    } else {
+        await verifyOTP();
+    }
+}
+
+// ========================================
+// EVENTS
+// ========================================
+
+actionBtn.addEventListener('click', handleAction);
+resendBtn.addEventListener('click', handleResend);
+changeNumberBtn.addEventListener('click', resetToPhoneStep);
+
+phoneInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && currentStep === 'phone') {
+        event.preventDefault();
+        handleAction();
+    }
+});
+
+otpInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && currentStep === 'otp') {
+        event.preventDefault();
+        handleAction();
+    }
+});
+
+phoneInput.addEventListener('input', function () {
+    this.value = this.value.replace(/\D/g, '').slice(0, 10);
+});
+
+otpInput.addEventListener('input', function () {
+    this.value = this.value.replace(/\D/g, '').slice(0, 6);
+    if (this.value.length === 6 && currentStep === 'otp' && !isSubmitting) {
+        handleAction();
+    }
+});
+
+phoneInput.focus();
+
+window.addEventListener('beforeunload', () => {
+    if (resendTimer) {
+        clearInterval(resendTimer);
+        resendTimer = null;
+    }
+});
+</script>
+
+{% endblock %}
