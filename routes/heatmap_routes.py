@@ -11,7 +11,6 @@ heatmap_bp = Blueprint("heatmap", __name__)
 @jwt_required()
 @rate_limit
 def heatmap():
-    conn = get_db_connection()
     category = request.args.get("category")
     try:
         limit = int(request.args.get("limit", 100) or 100)
@@ -28,11 +27,12 @@ def heatmap():
         LIMIT :limit
     """)
 
-    rows = conn.execute(query, {
-        "category": category,
-        "cat": category,
-        "limit": limit,
-    }).fetchall()
+    with get_db_connection() as conn:
+        rows = conn.execute(query, {
+            "category": category,
+            "cat": category,
+            "limit": limit,
+        }).fetchall()
 
     return jsonify([
         {"lat": r._mapping["latitude"], "lng": r._mapping["longitude"]}

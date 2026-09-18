@@ -19,46 +19,46 @@ def analytics_page():
 @jwt_required()
 def get_analytics_data():
     user_id = get_jwt_identity()
-    conn = get_db_connection()
 
-    # 1. Get Total Views, Clicks, and Calls for user's listings
-    totals = conn.execute(text("""
-        SELECT 
-            COALESCE(SUM(views), 0) as total_views,
-            COALESCE(SUM(clicks), 0) as total_clicks,
-            COALESCE(SUM(whatsapp_clicks), 0) as total_whatsapp
-        FROM listings 
-        WHERE user_id = :uid
-    """), {"uid": user_id}).fetchone()
+    with get_db_connection() as conn:
+        # 1. Get Total Views, Clicks, and Calls for user's listings
+        totals = conn.execute(text("""
+            SELECT
+                COALESCE(SUM(views), 0) as total_views,
+                COALESCE(SUM(clicks), 0) as total_clicks,
+                COALESCE(SUM(whatsapp_clicks), 0) as total_whatsapp
+            FROM listings
+            WHERE user_id = :uid
+        """), {"uid": user_id}).fetchone()
 
-    # 2. Get Daily stats for the last 7 days (for Chart.js)
-    daily_stats = []
-    for i in range(6, -1, -1):
-        date = datetime.now() - timedelta(days=i)
-        date_str = date.strftime('%Y-%m-%d')
-        
-        row = conn.execute(text("""
-            SELECT 
-                COALESCE(SUM(views), 0) as views,
-                COALESCE(SUM(clicks), 0) as clicks
-            FROM listings 
-            WHERE user_id = :uid AND DATE(created_at) = :date
-        """), {"uid": user_id, "date": date_str}).fetchone()
-        
-        daily_stats.append({
-            'date': date_str,
-            'views': row._mapping['views'],
-            'clicks': row._mapping['clicks']
-        })
+        # 2. Get Daily stats for the last 7 days (for Chart.js)
+        daily_stats = []
+        for i in range(6, -1, -1):
+            date = datetime.now() - timedelta(days=i)
+            date_str = date.strftime('%Y-%m-%d')
 
-    # 3. Top performing listings
-    top_listings = conn.execute(text("""
-        SELECT id, business_name, views, clicks, whatsapp_clicks
-        FROM listings
-        WHERE user_id = :uid
-        ORDER BY views DESC
-        LIMIT 5
-    """), {"uid": user_id}).fetchall()
+            row = conn.execute(text("""
+                SELECT
+                    COALESCE(SUM(views), 0) as views,
+                    COALESCE(SUM(clicks), 0) as clicks
+                FROM listings
+                WHERE user_id = :uid AND DATE(created_at) = :date
+            """), {"uid": user_id, "date": date_str}).fetchone()
+
+            daily_stats.append({
+                'date': date_str,
+                'views': row._mapping['views'],
+                'clicks': row._mapping['clicks']
+            })
+
+        # 3. Top performing listings
+        top_listings = conn.execute(text("""
+            SELECT id, business_name, views, clicks, whatsapp_clicks
+            FROM listings
+            WHERE user_id = :uid
+            ORDER BY views DESC
+            LIMIT 5
+        """), {"uid": user_id}).fetchall()
 
     return jsonify({
         'totals': {

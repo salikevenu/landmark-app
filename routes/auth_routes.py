@@ -209,7 +209,11 @@ def cache_landing_referral_code(ref_code):
     referral QR and installing the PWA before ever submitting a phone
     number (see resolve_referrer_id_for_signup's session fallback below).
     """
-    referrer = fetch_referrer_by_code(ref_code)
+    try:
+        referrer = fetch_referrer_by_code(ref_code)
+    except Exception:
+        logger.exception("cache_landing_referral_code: referrer lookup failed")
+        return False
     if not referrer:
         return False
     session.permanent = True
@@ -921,11 +925,11 @@ def logout():
 @jwt_required()
 def get_current_user():
     user_id = get_jwt_identity()
-    conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT id, phone, name, role, referral_code FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
+    with get_db_connection() as conn:
+        user = conn.execute(
+            text("SELECT id, phone, name, role, referral_code FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
 
     if not user:
         return jsonify({"error": "User not found"}), 404

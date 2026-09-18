@@ -24,7 +24,14 @@ bind = f"0.0.0.0:{port}"
 # Postgres, and the two in-process fallbacks above are already lock-guarded.
 workers = 1
 worker_class = "gthread"
-threads = 8
+# INVARIANT: database/init_db.py's pool_size + max_overflow must comfortably
+# exceed this number -- every thread can hold a DB connection concurrently,
+# and start.sh must not pass --workers/--worker-class/--threads flags of its
+# own (CLI flags override this config file), or this setting silently stops
+# being the one actually in effect. tests/test_pool_sizing.py asserts the
+# pool-vs-threads half of this; there is no automated guard for the
+# start.sh half short of reading it here too, which this comment does by hand.
+threads = 4
 # Generous timeout so a slow (but finite) boot is not mistaken for a hang loop
 timeout = 120
 graceful_timeout = 30

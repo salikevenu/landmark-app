@@ -457,6 +457,12 @@ class OrgConn:
     def close(self):
         return None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 # Every module that calls get_db_connection() anywhere on a Business Power
 # V2 request path, bound to ONE shared store per test.

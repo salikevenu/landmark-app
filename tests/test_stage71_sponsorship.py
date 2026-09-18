@@ -78,6 +78,12 @@ class SponsorStore:
     def close(self):
         return None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 class AdminSponsorCasTests(unittest.TestCase):
     def test_approved_active_can_be_sponsored_unpaid(self):

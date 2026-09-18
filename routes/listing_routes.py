@@ -97,120 +97,120 @@ def api_create_listing():
         claims = get_jwt()
         user_phone = claims.get("phone")
 
-        conn = get_db_connection()
-        user_dict, err = _paid_listing_user(conn, user_id, for_update=True)
-        if err:
-            return err
+        with get_db_connection() as conn:
+            user_dict, err = _paid_listing_user(conn, user_id, for_update=True)
+            if err:
+                return err
 
-        listing_count = conn.execute(
-            text("SELECT COUNT(*) as cnt FROM listings WHERE user_id = :uid"),
-            {"uid": user_id}
-        ).fetchone()._mapping["cnt"]
+            listing_count = conn.execute(
+                text("SELECT COUNT(*) as cnt FROM listings WHERE user_id = :uid"),
+                {"uid": user_id}
+            ).fetchone()._mapping["cnt"]
 
-        # Single authoritative limit check (see get_business_limit_for_user) —
-        # do not re-derive this from plan strings here. is_subscription_active
-        # (already enforced above by _paid_listing_user) guarantees plan is
-        # one of the recognized paid plans by this point.
-        max_allowed = get_business_limit_for_user(user_dict)
-        if max_allowed is not None and listing_count >= max_allowed:
-            return jsonify({"error": "Business limit reached. Upgrade your plan to add more listings."}), 403
+            # Single authoritative limit check (see get_business_limit_for_user) —
+            # do not re-derive this from plan strings here. is_subscription_active
+            # (already enforced above by _paid_listing_user) guarantees plan is
+            # one of the recognized paid plans by this point.
+            max_allowed = get_business_limit_for_user(user_dict)
+            if max_allowed is not None and listing_count >= max_allowed:
+                return jsonify({"error": "Business limit reached. Upgrade your plan to add more listings."}), 403
 
-        business_name = request.form.get("business_name")
-        category = request.form.get("category")
-        try:
-            latitude = _parse_coord(request.form.get("latitude"), -90, 90, "latitude")
-            longitude = _parse_coord(request.form.get("longitude"), -180, 180, "longitude")
-        except ValueError as exc:
-            return jsonify({"success": False, "error": str(exc)}), 400
+            business_name = request.form.get("business_name")
+            category = request.form.get("category")
+            try:
+                latitude = _parse_coord(request.form.get("latitude"), -90, 90, "latitude")
+                longitude = _parse_coord(request.form.get("longitude"), -180, 180, "longitude")
+            except ValueError as exc:
+                return jsonify({"success": False, "error": str(exc)}), 400
 
-        listing_type = (request.form.get("listing_type") or "business").strip().lower()
-        if listing_type not in ("business", "service"):
-            listing_type = "business"
+            listing_type = (request.form.get("listing_type") or "business").strip().lower()
+            if listing_type not in ("business", "service"):
+                listing_type = "business"
 
-        if not business_name or not category:
-            return jsonify({"success": False, "error": "Business name and category required"}), 400
+            if not business_name or not category:
+                return jsonify({"success": False, "error": "Business name and category required"}), 400
 
-        # Owner and status are server-controlled. Ignore client user_id/status/premium flags.
-        result = conn.execute(text("""
-            INSERT INTO listings (
-                user_id, user_phone, listing_type, business_name, category,
-                city, state, latitude, longitude,
-                description, whatsapp, website, status, is_active,
-                is_premium, is_featured, is_sponsored, is_verified
-            ) VALUES (
-                :user_id, :user_phone, :listing_type, :business_name, :category,
-                :city, :state, :latitude, :longitude,
-                :description, :whatsapp, :website, 'pending', 1,
-                0, 0, 0, 0
-            )
-            RETURNING id
-        """), {
-            "user_id": user_id,
-            "user_phone": user_phone,
-            "listing_type": listing_type,
-            "business_name": business_name,
-            "category": category,
-            "city": request.form.get("city", ""),
-            "state": request.form.get("state", ""),
-            "latitude": latitude,
-            "longitude": longitude,
-            "description": request.form.get("description", ""),
-            "whatsapp": request.form.get("whatsapp", ""),
-            "website": request.form.get("website", ""),
-        })
-        listing_id = result.fetchone()[0]
+            # Owner and status are server-controlled. Ignore client user_id/status/premium flags.
+            result = conn.execute(text("""
+                INSERT INTO listings (
+                    user_id, user_phone, listing_type, business_name, category,
+                    city, state, latitude, longitude,
+                    description, whatsapp, website, status, is_active,
+                    is_premium, is_featured, is_sponsored, is_verified
+                ) VALUES (
+                    :user_id, :user_phone, :listing_type, :business_name, :category,
+                    :city, :state, :latitude, :longitude,
+                    :description, :whatsapp, :website, 'pending', 1,
+                    0, 0, 0, 0
+                )
+                RETURNING id
+            """), {
+                "user_id": user_id,
+                "user_phone": user_phone,
+                "listing_type": listing_type,
+                "business_name": business_name,
+                "category": category,
+                "city": request.form.get("city", ""),
+                "state": request.form.get("state", ""),
+                "latitude": latitude,
+                "longitude": longitude,
+                "description": request.form.get("description", ""),
+                "whatsapp": request.form.get("whatsapp", ""),
+                "website": request.form.get("website", ""),
+            })
+            listing_id = result.fetchone()[0]
 
-        # Image uploads
-        upload_dir = current_app.config['UPLOAD_FOLDER']
-        images = request.files.getlist("images")
-        for img in images:
-            if img and img.filename:
-                if not _listing_upload_allowed(img, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
+            # Image uploads
+            upload_dir = current_app.config['UPLOAD_FOLDER']
+            images = request.files.getlist("images")
+            for img in images:
+                if img and img.filename:
+                    if not _listing_upload_allowed(img, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
+                        return jsonify({
+                            "success": False,
+                            "error": "Invalid image type. Use jpg, jpeg, png, or webp"
+                        }), 400
+                    safe = secure_filename(img.filename)
+                    ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "jpg"
+                    filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
+                    os.makedirs(upload_dir, exist_ok=True)
+                    path = os.path.join(upload_dir, filename)
+                    img.save(path)
+                    conn.execute(text(
+                        "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
+                    ), {
+                        "lid": listing_id,
+                        "url": f"/static/uploads/{filename}",
+                        "type": "shop"
+                    })
+
+            # Optional video (mp4 / mov)
+            video = request.files.get("video")
+            if video and video.filename:
+                if not _listing_upload_allowed(video, ALLOWED_LISTING_VIDEO_EXTS, ALLOWED_LISTING_VIDEO_MIMES):
                     return jsonify({
                         "success": False,
-                        "error": "Invalid image type. Use jpg, jpeg, png, or webp"
+                        "error": "Invalid video type. Use mp4 or mov"
                     }), 400
-                safe = secure_filename(img.filename)
-                ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "jpg"
+                safe = secure_filename(video.filename)
+                ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "mp4"
                 filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
                 os.makedirs(upload_dir, exist_ok=True)
                 path = os.path.join(upload_dir, filename)
-                img.save(path)
+                video.save(path)
                 conn.execute(text(
-                    "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
+                    "UPDATE listings SET video = :video WHERE id = :lid"
                 ), {
-                    "lid": listing_id,
-                    "url": f"/static/uploads/{filename}",
-                    "type": "shop"
+                    "video": f"/static/uploads/{filename}",
+                    "lid": listing_id
                 })
 
-        # Optional video (mp4 / mov)
-        video = request.files.get("video")
-        if video and video.filename:
-            if not _listing_upload_allowed(video, ALLOWED_LISTING_VIDEO_EXTS, ALLOWED_LISTING_VIDEO_MIMES):
-                return jsonify({
-                    "success": False,
-                    "error": "Invalid video type. Use mp4 or mov"
-                }), 400
-            safe = secure_filename(video.filename)
-            ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else "mp4"
-            filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
-            os.makedirs(upload_dir, exist_ok=True)
-            path = os.path.join(upload_dir, filename)
-            video.save(path)
-            conn.execute(text(
-                "UPDATE listings SET video = :video WHERE id = :lid"
-            ), {
-                "video": f"/static/uploads/{filename}",
-                "lid": listing_id
-            })
-
-        conn.commit()
-        return jsonify({
-            "success": True,
-            "message": "Listing submitted for review",
-            "listing_id": listing_id
-        }), 201
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "message": "Listing submitted for review",
+                "listing_id": listing_id
+            }), 201
 
     except Exception as e:
         logger.error(traceback.format_exc())
@@ -225,8 +225,8 @@ def api_create_listing():
 def admin_listings():
     if not db_user_is_admin(get_jwt_identity()):
         return jsonify({"error": "Admin access required"}), 403
-    conn = get_db_connection()
-    listings = conn.execute(text("SELECT * FROM listings WHERE status='pending'")).fetchall()
+    with get_db_connection() as conn:
+        listings = conn.execute(text("SELECT * FROM listings WHERE status='pending'")).fetchall()
     return render_template("admin/listings.html", listings=[dict(r._mapping) for r in listings])
 
 
@@ -265,20 +265,20 @@ def my_listings():
     limit = max(1, min(limit, MAX_MY_LISTINGS_PAGE_SIZE))
     offset = (page - 1) * limit
 
-    conn = get_db_connection()
-    total = conn.execute(
-        text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
-        {"uid": user_id}
-    ).scalar() or 0
+    with get_db_connection() as conn:
+        total = conn.execute(
+            text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
+            {"uid": user_id}
+        ).scalar() or 0
 
-    rows = conn.execute(text("""
-        SELECT l.*,
-            (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as image_url
-        FROM listings l
-        WHERE l.user_id = :uid
-        ORDER BY l.id DESC
-        LIMIT :limit OFFSET :offset
-    """), {"uid": user_id, "limit": limit, "offset": offset}).fetchall()
+        rows = conn.execute(text("""
+            SELECT l.*,
+                (SELECT image_url FROM listing_images WHERE listing_id = l.id LIMIT 1) as image_url
+            FROM listings l
+            WHERE l.user_id = :uid
+            ORDER BY l.id DESC
+            LIMIT :limit OFFSET :offset
+        """), {"uid": user_id, "limit": limit, "offset": offset}).fetchall()
 
     listings = [dict(r._mapping) for r in rows]
     pages = (total + limit - 1) // limit if total else 1
@@ -300,31 +300,31 @@ def update_listing(listing_id):
     user_id = get_jwt_identity()
     data = request.get_json(silent=True) or request.form.to_dict()
 
-    conn = get_db_connection()
-    _, err = _paid_listing_user(conn, user_id)
-    if err:
-        return err
-    listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid AND is_active = 1"),
-        {"lid": listing_id, "uid": user_id}
-    ).fetchone()
-    if not listing:
-        return jsonify({"error": "Not found or unauthorized"}), 404
+    with get_db_connection() as conn:
+        _, err = _paid_listing_user(conn, user_id)
+        if err:
+            return err
+        listing = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid AND is_active = 1"),
+            {"lid": listing_id, "uid": user_id}
+        ).fetchone()
+        if not listing:
+            return jsonify({"error": "Not found or unauthorized"}), 404
 
-    conn.execute(text("""
-        UPDATE listings
-        SET business_name = :bname, category = :cat, city = :city, state = :state, description = :desc
-        WHERE id = :lid AND user_id = :uid
-    """), {
-        "bname": data.get("business_name"),
-        "cat": data.get("category"),
-        "city": data.get("city"),
-        "state": data.get("state"),
-        "desc": data.get("description"),
-        "lid": listing_id,
-        "uid": user_id,
-    })
-    conn.commit()
+        conn.execute(text("""
+            UPDATE listings
+            SET business_name = :bname, category = :cat, city = :city, state = :state, description = :desc
+            WHERE id = :lid AND user_id = :uid
+        """), {
+            "bname": data.get("business_name"),
+            "cat": data.get("category"),
+            "city": data.get("city"),
+            "state": data.get("state"),
+            "desc": data.get("description"),
+            "lid": listing_id,
+            "uid": user_id,
+        })
+        conn.commit()
     return jsonify({"message": "Listing updated"})
 
 
@@ -335,20 +335,20 @@ def update_listing(listing_id):
 @jwt_required()
 def delete_listing(listing_id):
     user_id = get_jwt_identity()
-    conn = get_db_connection()
-    _, err = _paid_listing_user(conn, user_id)
-    if err:
-        return err
-    listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
-        {"lid": listing_id, "uid": user_id}
-    ).fetchone()
-    if not listing:
-        return jsonify({"error": "Not found or unauthorized"}), 404
+    with get_db_connection() as conn:
+        _, err = _paid_listing_user(conn, user_id)
+        if err:
+            return err
+        listing = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
+            {"lid": listing_id, "uid": user_id}
+        ).fetchone()
+        if not listing:
+            return jsonify({"error": "Not found or unauthorized"}), 404
 
-    conn.execute(text("DELETE FROM listing_images WHERE listing_id = :lid"), {"lid": listing_id})
-    conn.execute(text("DELETE FROM listings WHERE id = :lid AND user_id = :uid"), {"lid": listing_id, "uid": user_id})
-    conn.commit()
+        conn.execute(text("DELETE FROM listing_images WHERE listing_id = :lid"), {"lid": listing_id})
+        conn.execute(text("DELETE FROM listings WHERE id = :lid AND user_id = :uid"), {"lid": listing_id, "uid": user_id})
+        conn.commit()
     return jsonify({"message": "Listing deleted"})
 
 
@@ -370,35 +370,35 @@ def upload_listing_image():
     if not _listing_upload_allowed(image, ALLOWED_LISTING_IMAGE_EXTS, ALLOWED_LISTING_IMAGE_MIMES):
         return jsonify({"error": "Invalid image type. Use jpg, jpeg, png, or webp"}), 400
 
-    conn = get_db_connection()
-    _, err = _paid_listing_user(conn, user_id)
-    if err:
-        return err
-    owned = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
-        {"lid": listing_id, "uid": user_id},
-    ).fetchone()
-    if not owned:
-        return jsonify({"error": "Not found or unauthorized"}), 404
+    with get_db_connection() as conn:
+        _, err = _paid_listing_user(conn, user_id)
+        if err:
+            return err
+        owned = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND user_id = :uid"),
+            {"lid": listing_id, "uid": user_id},
+        ).fetchone()
+        if not owned:
+            return jsonify({"error": "Not found or unauthorized"}), 404
 
-    image.stream.seek(0, os.SEEK_END)
-    size = image.stream.tell()
-    image.stream.seek(0)
-    if size > 10 * 1024 * 1024:
-        return jsonify({"error": "Image must be 10 MB or smaller"}), 400
+        image.stream.seek(0, os.SEEK_END)
+        size = image.stream.tell()
+        image.stream.seek(0)
+        if size > 10 * 1024 * 1024:
+            return jsonify({"error": "Image must be 10 MB or smaller"}), 400
 
-    ext = secure_filename(image.filename).rsplit(".", 1)[-1].lower()
-    filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
-    upload_subfolder = os.path.join(current_app.root_path, "static", "images", "listings")
-    os.makedirs(upload_subfolder, exist_ok=True)
-    filepath = os.path.join(upload_subfolder, filename)
-    image.save(filepath)
-    image_url = f"/static/images/listings/{filename}"
+        ext = secure_filename(image.filename).rsplit(".", 1)[-1].lower()
+        filename = f"{listing_id}_{int(time.time()*1000)}_{secrets.token_hex(4)}.{ext}"
+        upload_subfolder = os.path.join(current_app.root_path, "static", "images", "listings")
+        os.makedirs(upload_subfolder, exist_ok=True)
+        filepath = os.path.join(upload_subfolder, filename)
+        image.save(filepath)
+        image_url = f"/static/images/listings/{filename}"
 
-    conn.execute(text(
-        "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
-    ), {"lid": listing_id, "url": image_url, "type": image_type})
-    conn.commit()
+        conn.execute(text(
+            "INSERT INTO listing_images (listing_id, image_url, image_type) VALUES (:lid, :url, :type)"
+        ), {"lid": listing_id, "url": image_url, "type": image_type})
+        conn.commit()
     return jsonify({"success": True, "image_url": image_url})
 
 
@@ -409,15 +409,15 @@ def upload_listing_image():
 @jwt_required()
 def get_listing(listing_id):
     user_id = get_jwt_identity()
-    conn = get_db_connection()
-    _, err = _paid_listing_user(conn, user_id)
-    if err:
-        return err
-    row = conn.execute(text("""
-        SELECT id, business_name, category, city, state, latitude, longitude, description
-        FROM listings
-        WHERE id = :lid AND user_id = :uid
-    """), {"lid": listing_id, "uid": user_id}).fetchone()
+    with get_db_connection() as conn:
+        _, err = _paid_listing_user(conn, user_id)
+        if err:
+            return err
+        row = conn.execute(text("""
+            SELECT id, business_name, category, city, state, latitude, longitude, description
+            FROM listings
+            WHERE id = :lid AND user_id = :uid
+        """), {"lid": listing_id, "uid": user_id}).fetchone()
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(dict(row._mapping))
@@ -442,22 +442,22 @@ def rate_business():
 # =========================
 @listing_bp.route("/click-call/<int:listing_id>", methods=["POST"])
 def track_call_click(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("""
-        UPDATE listings SET clicks = COALESCE(clicks, 0) + 1
-        WHERE id = :lid AND status = 'approved' AND is_active = 1
-    """), {"lid": listing_id})
-    conn.commit()
+    with get_db_connection() as conn:
+        conn.execute(text("""
+            UPDATE listings SET clicks = COALESCE(clicks, 0) + 1
+            WHERE id = :lid AND status = 'approved' AND is_active = 1
+        """), {"lid": listing_id})
+        conn.commit()
     return jsonify({"status": "ok"})
 
 @listing_bp.route("/click-whatsapp/<int:listing_id>", methods=["POST"])
 def track_whatsapp_click(listing_id):
-    conn = get_db_connection()
-    conn.execute(text("""
-        UPDATE listings SET whatsapp_clicks = COALESCE(whatsapp_clicks, 0) + 1
-        WHERE id = :lid AND status = 'approved' AND is_active = 1
-    """), {"lid": listing_id})
-    conn.commit()
+    with get_db_connection() as conn:
+        conn.execute(text("""
+            UPDATE listings SET whatsapp_clicks = COALESCE(whatsapp_clicks, 0) + 1
+            WHERE id = :lid AND status = 'approved' AND is_active = 1
+        """), {"lid": listing_id})
+        conn.commit()
     return jsonify({"status": "ok"})
 
 
@@ -466,17 +466,17 @@ def track_whatsapp_click(listing_id):
 # =========================
 @listing_bp.route("/listing-images/<int:listing_id>")
 def get_listing_images(listing_id):
-    conn = get_db_connection()
-    listing = conn.execute(
-        text("SELECT id FROM listings WHERE id = :lid AND status = 'approved'"),
-        {"lid": listing_id},
-    ).fetchone()
-    if not listing:
-        return jsonify({"images": []}), 404
-    rows = conn.execute(
-        text("SELECT image_url, image_type FROM listing_images WHERE listing_id = :lid"),
-        {"lid": listing_id}
-    ).fetchall()
+    with get_db_connection() as conn:
+        listing = conn.execute(
+            text("SELECT id FROM listings WHERE id = :lid AND status = 'approved'"),
+            {"lid": listing_id},
+        ).fetchone()
+        if not listing:
+            return jsonify({"images": []}), 404
+        rows = conn.execute(
+            text("SELECT image_url, image_type FROM listing_images WHERE listing_id = :lid"),
+            {"lid": listing_id}
+        ).fetchall()
     return jsonify({
         "images": [{"image_url": r._mapping["image_url"], "type": r._mapping["image_type"]} for r in rows]
     })
@@ -514,7 +514,6 @@ def browse_api():
         limit = 10
         offset = (page - 1) * limit
 
-        conn = get_db_connection()
         live = public_is_sponsored_sql("l")
         rank = sponsorship_rank_sql("l")
 
@@ -558,7 +557,8 @@ def browse_api():
             "offset": offset
         }
 
-        rows = conn.execute(query, params).fetchall()
+        with get_db_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
         listings = []
         for r in rows:
             rm = r._mapping
@@ -634,23 +634,23 @@ def delete_review(review_id):
 # =========================
 @listing_bp.route("/api/listing/<int:listing_id>")
 def public_listing_detail(listing_id):
-    conn = get_db_connection()
     live = public_is_sponsored_sql("")
-    listing = conn.execute(text(f"""
-        SELECT id, business_name, category, city, state, latitude, longitude,
-               description, whatsapp, website, rating, rating_count,
-               is_verified, is_premium, is_featured, user_phone,
-               CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
-        FROM listings
-        WHERE id = :lid AND status = 'approved'
-    """), {"lid": listing_id}).fetchone()
-    if not listing:
-        return jsonify({"error": "Listing not found"}), 404
+    with get_db_connection() as conn:
+        listing = conn.execute(text(f"""
+            SELECT id, business_name, category, city, state, latitude, longitude,
+                   description, whatsapp, website, rating, rating_count,
+                   is_verified, is_premium, is_featured, user_phone,
+                   CASE WHEN {live} THEN 1 ELSE 0 END AS is_sponsored
+            FROM listings
+            WHERE id = :lid AND status = 'approved'
+        """), {"lid": listing_id}).fetchone()
+        if not listing:
+            return jsonify({"error": "Listing not found"}), 404
 
-    image_row = conn.execute(
-        text("SELECT image_url FROM listing_images WHERE listing_id = :lid LIMIT 1"),
-        {"lid": listing_id}
-    ).fetchone()
+        image_row = conn.execute(
+            text("SELECT image_url FROM listing_images WHERE listing_id = :lid LIMIT 1"),
+            {"lid": listing_id}
+        ).fetchone()
 
     data = dict(listing._mapping)
     data["image"] = image_row._mapping["image_url"] if image_row else None

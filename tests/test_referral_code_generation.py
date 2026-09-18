@@ -592,6 +592,12 @@ class ReferralInfoServiceTests(unittest.TestCase):
                         return Row()
                 return R()
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         with patch.object(referral_service, "get_db_connection", return_value=Conn()):
             info = referral_service.get_referral_info(42)
         self.assertEqual(info["referral_code"], "ABCD1234")

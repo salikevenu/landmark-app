@@ -60,6 +60,12 @@ class AdminPrivilegeTests(unittest.TestCase):
             def close(self):
                 return None
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         with patch("services.admin_service.get_db_connection", return_value=Conn()):
             out = change_user_role(9, "user", 1, "999", "1")
         self.assertEqual(out.get("_http"), 403)

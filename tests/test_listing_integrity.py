@@ -101,6 +101,12 @@ class ListingIdorHttpTests(unittest.TestCase):
             def close(self):
                 return None
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         self_owners = self.owners
         return Conn()
 
@@ -149,6 +155,12 @@ class ListingIdorHttpTests(unittest.TestCase):
                 res = MagicMock()
                 res.fetchone.return_value = None
                 return res
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
         with patch("routes.listing_routes.get_db_connection", return_value=Conn()):
             res = self.client.get("/api/listing/api/listing/3")
         self.assertEqual(res.status_code, 404)

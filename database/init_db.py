@@ -1,6 +1,7 @@
 import os
 import logging
 logger = logging.getLogger(__name__)
+from urllib.parse import urlparse
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
@@ -12,21 +13,58 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Small bounded pool: this app runs a single Gunicorn sync worker on Render
-# Free, so pool_size never needs to be large — it only needs to tolerate a
-# connection or two not being returned promptly. pool_pre_ping guards against
-# Neon silently closing an idle connection; pool_recycle proactively retires
+_LOCAL_POSTGRES_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_local_postgres_url(url):
+    """True only for a DATABASE_URL whose host is a local loopback address.
+    A local Postgres (e.g. a dev Docker container) typically isn't
+    configured for SSL at all, unlike production's Neon endpoint, which
+    requires it -- this is the only thing that should ever flip sslmode."""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+    except ValueError:
+        return False
+    return host in _LOCAL_POSTGRES_HOSTS
+
+
+_IS_LOCAL_POSTGRES = _is_local_postgres_url(DATABASE_URL)
+
+# INVARIANT: pool_size + max_overflow must comfortably exceed
+# gunicorn.conf.py's `threads` -- every thread in the single worker can
+# hold a connection concurrently (workers=1, worker_class="gthread"), so a
+# pool sized for fewer connections than there are threads means the
+# (threads - pool capacity) extra threads block on checkout and, past
+# pool_timeout, fail with a pool-exhaustion TimeoutError.
+#
+# 04f51c1 raised threads to 8 without resizing this pool (it was 2+1=3),
+# but start.sh's own hardcoded --worker-class sync/--workers 1 CLI flags
+# silently overrode gunicorn.conf.py's worker_class="gthread" the whole
+# time (gunicorn precedence is CLI > config file) -- so that specific
+# mismatch never actually ran in production. Both are fixed now
+# (start.sh no longer passes conflicting flags; threads=4 here matches
+# the actually-deployed concurrency). The live production outage this
+# pool size was widened for looked instead like a small number of
+# connections leaked by call sites that never returned them to the pool
+# (see the get_db_connection()/engine.connect() audit) -- a bug that a
+# 3-connection pool has almost no slack to absorb under any concurrency
+# model, threaded or not. tests/test_pool_sizing.py asserts the
+# pool-vs-threads invariant above against both config files so it can't
+# silently drift out of sync again. pool_pre_ping guards against Neon
+# silently closing an idle connection; pool_recycle proactively retires
 # connections before that can happen.
 engine = create_engine(
     DATABASE_URL,
     poolclass=QueuePool,
-    pool_size=2,
-    max_overflow=1,
+    pool_size=5,
+    max_overflow=5,
     pool_timeout=10,
     pool_recycle=280,
     pool_pre_ping=True,
     connect_args={
-        "sslmode": "require",
+        "sslmode": "disable" if _IS_LOCAL_POSTGRES else "require",
         "connect_timeout": 10,
         "options": "-c statement_timeout=15000",
         "keepalives": 1,

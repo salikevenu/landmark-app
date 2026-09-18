@@ -14,16 +14,16 @@ logger = logging.getLogger(__name__)
 @referral_bp.route("/api/referral-leaderboard", methods=["GET"])
 def referral_leaderboard():
     try:
-        conn = get_db_connection()
-        rows = conn.execute(text("""
-            SELECT users.name,
-                   COUNT(referral_transactions.id) AS total_referrals
-            FROM referral_transactions
-            JOIN users ON users.id = referral_transactions.referrer_id
-            GROUP BY referral_transactions.referrer_id, users.name
-            ORDER BY total_referrals DESC
-            LIMIT 20
-        """)).fetchall()
+        with get_db_connection() as conn:
+            rows = conn.execute(text("""
+                SELECT users.name,
+                       COUNT(referral_transactions.id) AS total_referrals
+                FROM referral_transactions
+                JOIN users ON users.id = referral_transactions.referrer_id
+                GROUP BY referral_transactions.referrer_id, users.name
+                ORDER BY total_referrals DESC
+                LIMIT 20
+            """)).fetchall()
 
         return jsonify([dict(r._mapping) for r in rows])
 
@@ -64,32 +64,31 @@ def invite_business():
 
     try:
         user_id = int(get_jwt_identity())
-        conn = get_db_connection()
+        with get_db_connection() as conn:
+            # Duplicate check
+            existing = conn.execute(
+                text("SELECT id FROM business_leads WHERE phone = :phone"),
+                {"phone": phone}
+            ).fetchone()
+            if existing:
+                return jsonify({"error": "Business already invited"}), 409
 
-        # Duplicate check
-        existing = conn.execute(
-            text("SELECT id FROM business_leads WHERE phone = :phone"),
-            {"phone": phone}
-        ).fetchone()
-        if existing:
-            return jsonify({"error": "Business already invited"}), 409
-
-        conn.execute(text("""
-            INSERT INTO business_leads
-            (business_name, phone, category, city, latitude, longitude, lat_grid, lng_grid, invited_by)
-            VALUES (:bname, :phone, :cat, :city, :lat, :lng, :lat_grid, :lng_grid, :invited_by)
-        """), {
-            "bname": business_name,
-            "phone": phone,
-            "cat": category,
-            "city": city,
-            "lat": latitude,
-            "lng": longitude,
-            "lat_grid": int(latitude * 100),
-            "lng_grid": int(longitude * 100),
-            "invited_by": user_id
-        })
-        conn.commit()
+            conn.execute(text("""
+                INSERT INTO business_leads
+                (business_name, phone, category, city, latitude, longitude, lat_grid, lng_grid, invited_by)
+                VALUES (:bname, :phone, :cat, :city, :lat, :lng, :lat_grid, :lng_grid, :invited_by)
+            """), {
+                "bname": business_name,
+                "phone": phone,
+                "cat": category,
+                "city": city,
+                "lat": latitude,
+                "lng": longitude,
+                "lat_grid": int(latitude * 100),
+                "lng_grid": int(longitude * 100),
+                "invited_by": user_id
+            })
+            conn.commit()
 
         return jsonify({
             "success": True,

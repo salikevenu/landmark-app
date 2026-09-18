@@ -247,11 +247,11 @@ def create_order():
 @jwt_required()
 def wallet_balance():
     user_id = get_jwt_identity()
-    conn = get_db_connection()
-    row = conn.execute(
-        text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
-        {"uid": user_id},
-    ).fetchone()
+    with get_db_connection() as conn:
+        row = conn.execute(
+            text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
+            {"uid": user_id},
+        ).fetchone()
     balance = row._mapping["balance"] if row else 0
     return jsonify({"wallet_balance": balance})
 
@@ -261,12 +261,12 @@ def wallet_balance():
 @jwt_required()
 def wallet_transactions():
     user_id = get_jwt_identity()
-    conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT * FROM wallet_transactions
-        WHERE user_id = :uid
-        ORDER BY created_at DESC
-    """), {"uid": user_id}).fetchall()
+    with get_db_connection() as conn:
+        rows = conn.execute(text("""
+            SELECT * FROM wallet_transactions
+            WHERE user_id = :uid
+            ORDER BY created_at DESC
+        """), {"uid": user_id}).fetchall()
     return jsonify([dict(r._mapping) for r in rows])
 
 

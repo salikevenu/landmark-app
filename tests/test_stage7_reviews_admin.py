@@ -81,6 +81,12 @@ class FakeListingConn:
     def close(self):
         return None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 class AdminApprovalCasTests(unittest.TestCase):
     def test_pending_active_approves_once(self):

@@ -92,6 +92,12 @@ class ListingIdorTests(unittest.TestCase):
             def close(self):
                 return None
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         return Conn()
 
     def test_user_cannot_upload_image_to_other_listing(self):

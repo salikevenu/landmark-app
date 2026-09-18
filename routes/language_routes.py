@@ -17,9 +17,9 @@ def set_language():
     # Persist to DB for logged-in users
     user_id = get_jwt_identity()
     if user_id:
-        conn = get_db_connection()
-        conn.execute(text("UPDATE users SET language = :lang WHERE id = :uid"), {"lang": lang, "uid": user_id})
-        conn.commit()
+        with get_db_connection() as conn:
+            conn.execute(text("UPDATE users SET language = :lang WHERE id = :uid"), {"lang": lang, "uid": user_id})
+            conn.commit()
 
     # Set a cookie so it persists even for anonymous users
     resp = make_response(jsonify({"message": "Language updated"}))

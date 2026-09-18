@@ -332,28 +332,28 @@ def api_reset_subscription(user_id):
 @admin_bp.route("/api/admin/users/<int:user_id>/referral-tree")
 @admin_required
 def user_referral_tree(user_id):
-    conn = get_db_connection()
-    # Get the user
-    user = conn.execute(
-        text("SELECT id, phone, name, referral_code, referred_by FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
-    # Find referrer
-    referrer = None
-    if user._mapping["referred_by"]:
-        referrer = conn.execute(
-            text("SELECT id, phone, name FROM users WHERE id = :ref_id"),
-            {"ref_id": user._mapping["referred_by"]}
+    with get_db_connection() as conn:
+        # Get the user
+        user = conn.execute(
+            text("SELECT id, phone, name, referral_code, referred_by FROM users WHERE id = :uid"),
+            {"uid": user_id}
         ).fetchone()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
 
-    # Find direct referrals (users who were referred by this user's code)
-    referrals = conn.execute(
-        text("SELECT id, phone, name, created_at FROM users WHERE referred_by = :uid ORDER BY created_at DESC"),
-        {"uid": user_id}
-    ).fetchall()
+        # Find referrer
+        referrer = None
+        if user._mapping["referred_by"]:
+            referrer = conn.execute(
+                text("SELECT id, phone, name FROM users WHERE id = :ref_id"),
+                {"ref_id": user._mapping["referred_by"]}
+            ).fetchone()
+
+        # Find direct referrals (users who were referred by this user's code)
+        referrals = conn.execute(
+            text("SELECT id, phone, name, created_at FROM users WHERE referred_by = :uid ORDER BY created_at DESC"),
+            {"uid": user_id}
+        ).fetchall()
 
     return jsonify({
         "user": dict(user._mapping),
@@ -578,11 +578,11 @@ def admin_trigger_payout():
 @admin_bp.route("/api/admin/users/<int:user_id>/impersonate", methods=["POST"])
 @admin_required
 def impersonate_user(user_id):
-    conn = get_db_connection()
-    user = conn.execute(
-        text("SELECT id, phone, role FROM users WHERE id = :uid"),
-        {"uid": user_id}
-    ).fetchone()
+    with get_db_connection() as conn:
+        user = conn.execute(
+            text("SELECT id, phone, role FROM users WHERE id = :uid"),
+            {"uid": user_id}
+        ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
     if (user._mapping.get("role") or "") == "admin":
@@ -609,38 +609,38 @@ def impersonate_user(user_id):
 @admin_bp.route("/api/admin/stats/chart")
 @admin_required
 def admin_chart_data():
-    conn = get_db_connection()
     days = 7
     dates = []
     user_counts = []
     listing_counts = []
     revenue_daily = []
 
-    for i in range(days - 1, -1, -1):
-        date_obj = datetime.utcnow() - timedelta(days=i)
-        date_str = date_obj.strftime("%Y-%m-%d")
-        dates.append(date_str)
+    with get_db_connection() as conn:
+        for i in range(days - 1, -1, -1):
+            date_obj = datetime.utcnow() - timedelta(days=i)
+            date_str = date_obj.strftime("%Y-%m-%d")
+            dates.append(date_str)
 
-        # Users registered on that day
-        uc = conn.execute(
-            text("SELECT COUNT(*) FROM users WHERE DATE(created_at) = :date"),
-            {"date": date_str}
-        ).scalar()
-        user_counts.append(uc)
+            # Users registered on that day
+            uc = conn.execute(
+                text("SELECT COUNT(*) FROM users WHERE DATE(created_at) = :date"),
+                {"date": date_str}
+            ).scalar()
+            user_counts.append(uc)
 
-        # Listings created on that day
-        lc = conn.execute(
-            text("SELECT COUNT(*) FROM listings WHERE DATE(created_at) = :date"),
-            {"date": date_str}
-        ).scalar()
-        listing_counts.append(lc)
+            # Listings created on that day
+            lc = conn.execute(
+                text("SELECT COUNT(*) FROM listings WHERE DATE(created_at) = :date"),
+                {"date": date_str}
+            ).scalar()
+            listing_counts.append(lc)
 
-        # Revenue (sum of payments on that day)
-        rev = conn.execute(
-            text("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status='verified' AND DATE(created_at) = :date"),
-            {"date": date_str}
-        ).scalar()
-        revenue_daily.append(rev)
+            # Revenue (sum of payments on that day)
+            rev = conn.execute(
+                text("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status='verified' AND DATE(created_at) = :date"),
+                {"date": date_str}
+            ).scalar()
+            revenue_daily.append(rev)
 
     return jsonify({
         "labels": dates,
@@ -656,14 +656,14 @@ def api_audit_log():
     limit = request.args.get('limit', 50, type=int)
     offset = (page - 1) * limit
 
-    conn = get_db_connection()
-    rows = conn.execute(text("""
-        SELECT * FROM admin_audit_log
-        ORDER BY created_at DESC
-        LIMIT :limit OFFSET :offset
-    """), {"limit": limit, "offset": offset}).fetchall()
+    with get_db_connection() as conn:
+        rows = conn.execute(text("""
+            SELECT * FROM admin_audit_log
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+        """), {"limit": limit, "offset": offset}).fetchall()
 
-    total = conn.execute(text("SELECT COUNT(*) FROM admin_audit_log")).scalar()
+        total = conn.execute(text("SELECT COUNT(*) FROM admin_audit_log")).scalar()
 
     logs = [dict(r._mapping) for r in rows]
     return jsonify({"logs": logs, "total": total, "page": page})

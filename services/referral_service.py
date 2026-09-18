@@ -18,13 +18,13 @@ PLAN_REWARDS = {
 
 
 def get_referral_info(user_id):
-    conn = get_db_connection()
-    row = conn.execute(text("""
-        SELECT u.referral_code, COALESCE(wb.balance, 0) AS wallet_balance
-        FROM users u
-        LEFT JOIN wallet_balance wb ON wb.user_id = u.id
-        WHERE u.id = :uid
-    """), {"uid": user_id}).fetchone()
+    with get_db_connection() as conn:
+        row = conn.execute(text("""
+            SELECT u.referral_code, COALESCE(wb.balance, 0) AS wallet_balance
+            FROM users u
+            LEFT JOIN wallet_balance wb ON wb.user_id = u.id
+            WHERE u.id = :uid
+        """), {"uid": user_id}).fetchone()
 
     if not row:
         return None

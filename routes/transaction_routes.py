@@ -60,38 +60,38 @@ def list_transactions():
     offset = (page - 1) * PAGE_SIZE
 
     try:
-        conn = get_db_connection()
         where_sql, params = _list_filters(user_id)
         params["limit"] = PAGE_SIZE
         params["offset"] = offset
 
-        total = conn.execute(
-            text(f"""
-                SELECT COUNT(*)::int AS cnt
-                FROM wallet_transactions
-                WHERE {where_sql}
-            """),
-            {k: v for k, v in params.items() if k not in ("limit", "offset")},
-        ).scalar() or 0
+        with get_db_connection() as conn:
+            total = conn.execute(
+                text(f"""
+                    SELECT COUNT(*)::int AS cnt
+                    FROM wallet_transactions
+                    WHERE {where_sql}
+                """),
+                {k: v for k, v in params.items() if k not in ("limit", "offset")},
+            ).scalar() or 0
 
-        rows = conn.execute(
-            text(f"""
-                SELECT
-                    id,
-                    amount,
-                    type,
-                    source,
-                    reference_id,
-                    status,
-                    unlock_at,
-                    created_at
-                FROM wallet_transactions
-                WHERE {where_sql}
-                ORDER BY created_at DESC, id DESC
-                LIMIT :limit OFFSET :offset
-            """),
-            params,
-        ).fetchall()
+            rows = conn.execute(
+                text(f"""
+                    SELECT
+                        id,
+                        amount,
+                        type,
+                        source,
+                        reference_id,
+                        status,
+                        unlock_at,
+                        created_at
+                    FROM wallet_transactions
+                    WHERE {where_sql}
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                params,
+            ).fetchall()
 
         transactions = []
         for row in rows:
@@ -128,22 +128,22 @@ def transaction_stats():
     """Total credits, debits, and locked/pending amounts for the current user."""
     user_id = get_jwt_identity()
     try:
-        conn = get_db_connection()
-        row = conn.execute(
-            text("""
-                SELECT
-                    COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0) AS total_credits,
-                    COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0) AS total_debits,
-                    COALESCE(SUM(amount) FILTER (
-                        WHERE status IN ('locked', 'pending')
-                           OR type = 'lock'
-                    ), 0) AS total_locked,
-                    COUNT(*)::int AS total_count
-                FROM wallet_transactions
-                WHERE user_id = :uid
-            """),
-            {"uid": user_id},
-        ).fetchone()
+        with get_db_connection() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT
+                        COALESCE(SUM(amount) FILTER (WHERE type = 'credit'), 0) AS total_credits,
+                        COALESCE(SUM(amount) FILTER (WHERE type = 'debit'), 0) AS total_debits,
+                        COALESCE(SUM(amount) FILTER (
+                            WHERE status IN ('locked', 'pending')
+                               OR type = 'lock'
+                        ), 0) AS total_locked,
+                        COUNT(*)::int AS total_count
+                    FROM wallet_transactions
+                    WHERE user_id = :uid
+                """),
+                {"uid": user_id},
+            ).fetchone()
 
         m = row._mapping
         return jsonify({

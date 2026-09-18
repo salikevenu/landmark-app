@@ -45,7 +45,17 @@ class RenderBlueprintTests(unittest.TestCase):
 
     def test_gunicorn_single_sync_worker(self):
         self.assertIn("workers = 1", self.gunicorn)
-        self.assertIn("--workers 1", self.start)
+        # start.sh must NOT pass --workers/--worker-class/--threads itself --
+        # gunicorn's CLI-over-config-file precedence would silently override
+        # gunicorn.conf.py's worker_class="gthread"/threads setting back to
+        # sync/1, exactly the bug that let 04f51c1's concurrency change never
+        # actually take effect in production (see tests/test_pool_sizing.py).
+        # gunicorn.conf.py alone is the single source of truth for these.
+        # (Checked against just the exec command, not the whole file, since
+        # start.sh's own comments mention these flag names by name.)
+        exec_block = self.start[self.start.index("exec gunicorn"):]
+        self.assertNotIn("--workers", exec_block)
+        self.assertNotIn("--worker-class", exec_block)
         self.assertIn("app:app", self.start)
         self.assertIn("--timeout 120", self.start)
 

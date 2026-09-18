@@ -153,6 +153,12 @@ class _CreateListingConn:
     def close(self):
         return None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 class UnlimitedBusinessCreationTests(unittest.TestCase):
     def setUp(self):
@@ -294,6 +300,12 @@ class BusinessPowerOwnershipTests(unittest.TestCase):
             def close(self):
                 return None
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         return Conn()
 
     def test_owner_can_reach_own_listing(self):
@@ -357,6 +369,12 @@ class BusinessPowerAnalyticsIsolationTests(unittest.TestCase):
                 res.fetchall.return_value = []
                 return res
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
         with patch("routes.analytics_routes.get_db_connection", return_value=Conn()):
             res = self.client.get(
                 "/api/analytics/data",
@@ -389,6 +407,12 @@ class _UserExistsConn:
 
     def close(self):
         return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class _ActivateWriteConn:

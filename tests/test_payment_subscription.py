@@ -819,6 +819,7 @@ class CreateListingFlowTests(unittest.TestCase):
             "extra_businesses_purchased": 0, "business_limit": 1,
         })
         conn = MagicMock()
+        conn.__enter__.return_value = conn
 
         def execute(query, params=None):
             qs = str(query)
@@ -881,6 +882,7 @@ class CreateListingFlowTests(unittest.TestCase):
             "extra_businesses_purchased": 0, "business_limit": 10,
         })
         conn = MagicMock()
+        conn.__enter__.return_value = conn
 
         def execute(query, params=None):
             qs = str(query)
