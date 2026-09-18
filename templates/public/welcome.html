@@ -1,0 +1,237 @@
+{% extends "layouts/layout_public.html" %}
+
+{#
+  First-run profile step. Shown once, right after a new account's OTP is
+  verified.
+
+  This is where the display name is collected and, unlike the old
+  registration form, actually SAVED. That form asked for a name before
+  the OTP and discarded it: neither send-otp nor verify-otp read the
+  field, and get_or_create_user hardcodes name = '' on INSERT.
+
+  Saving goes through the existing PUT /api/user/profile/update endpoint
+  via LandmarkSession.authFetch, which attaches the X-CSRF-TOKEN header
+  (JWT_COOKIE_CSRF_PROTECT is on, so a raw fetch would 401) and retries
+  once through /api/refresh if the access cookie has expired.
+#}
+
+{% block title %}Welcome | LANDMARK{% endblock %}
+
+{% block content %}
+
+<style>
+.welcome-wrapper {
+    width: calc(100% - 20px);
+    max-width: 420px;
+    margin: 0 auto;
+    background: rgba(12, 18, 28, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    border-radius: 32px;
+    padding: 32px 24px;
+    text-align: center;
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
+}
+
+.welcome-title {
+    font-size: 1.9rem;
+    font-weight: 700;
+    color: #0ff;
+    text-shadow: 0 0 5px #0ff;
+    margin-bottom: 8px;
+}
+
+.welcome-sub {
+    color: #8aaee0;
+    margin-bottom: 22px;
+    font-size: 0.95rem;
+}
+
+#nameInput {
+    width: 100%;
+    padding: 12px 16px;
+    border-radius: 30px;
+    border: 1px solid #2a4c7a;
+    background: #000;
+    color: white;
+    font-size: 1rem;
+    text-align: center;
+    transition: 0.2s;
+}
+
+#nameInput:focus { outline: none; border-color: #0ff; box-shadow: 0 0 8px #0ff; }
+#nameInput::placeholder { color: #556; }
+
+.btn-primary {
+    width: 100%;
+    padding: 12px;
+    margin-top: 14px;
+    border-radius: 30px;
+    background: #0ff;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+    font-size: 1rem;
+    color: #000;
+    transition: 0.2s;
+}
+
+.btn-primary:hover:not(:disabled) { background: #0fa; box-shadow: 0 0 12px #0ff; }
+.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.status-text { min-height: 26px; margin-top: 10px; font-size: 0.9rem; }
+.status-text.error { color: #ff6b6b; }
+.status-text.success { color: #5dffb0; }
+.status-text.info { color: #4fc3f7; }
+
+.skip-link {
+    display: inline-block;
+    margin-top: 10px;
+    color: #8aaee0;
+    font-size: 0.85rem;
+    text-decoration: underline;
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+.skip-link:hover { color: #0ff; }
+
+#welcomeCard { visibility: hidden; }
+
+@media (max-width: 480px) {
+    .welcome-wrapper { padding: 24px 16px; border-radius: 24px; }
+    .welcome-title { font-size: 1.5rem; }
+}
+</style>
+
+<div class="container">
+    <div class="welcome-wrapper" id="welcomeCard">
+        <h2 class="welcome-title">You're in 🎉</h2>
+        <p class="welcome-sub">What should we call you?</p>
+
+        <input
+            type="text"
+            id="nameInput"
+            placeholder="Your name"
+            maxlength="100"
+            autocomplete="name"
+            aria-label="Your name"
+        >
+
+        <button class="btn-primary" id="saveBtn" type="button">Continue</button>
+
+        <p id="statusMessage" class="status-text" aria-live="polite"></p>
+
+        <button type="button" class="skip-link" id="skipBtn">Skip for now</button>
+    </div>
+</div>
+
+<script>
+(function () {
+    const DASHBOARD_URL = "/dashboard";
+    const MAX_NAME_LENGTH = 100;   // matches the server-side limit
+
+    const card = document.getElementById("welcomeCard");
+    const nameInput = document.getElementById("nameInput");
+    const saveBtn = document.getElementById("saveBtn");
+    const skipBtn = document.getElementById("skipBtn");
+    const statusMsg = document.getElementById("statusMessage");
+
+    let submitting = false;
+
+    function setStatus(message, type) {
+        statusMsg.innerText = message || "";
+        statusMsg.classList.remove("error", "success", "info");
+        if (type) statusMsg.classList.add(type);
+    }
+
+    function goToDashboard() {
+        window.location.replace(DASHBOARD_URL);
+    }
+
+    // Guard: this page is only meaningful for an account that has no
+    // name yet. Someone who bookmarks /welcome, or hits back after
+    // finishing, is forwarded straight through rather than being asked
+    // to name themselves again. The card stays hidden until we know,
+    // so the form never flashes on screen for a returning user.
+    (async function gate() {
+        try {
+            const res = await LandmarkSession.authFetch("/api/auth/me", { authRedirect: false });
+            if (!res.ok) {
+                // No usable session — the page is pointless without one.
+                LandmarkSession.redirectToLogin();
+                return;
+            }
+            const user = await res.json();
+            if ((user.name || "").trim()) {
+                goToDashboard();
+                return;
+            }
+            card.style.visibility = "visible";
+            nameInput.focus();
+        } catch (error) {
+            console.error("welcome gate error:", error);
+            // Never trap the user here on a transient failure — show the
+            // form; the worst case is being asked for a name twice.
+            card.style.visibility = "visible";
+            nameInput.focus();
+        }
+    })();
+
+    async function saveName() {
+        if (submitting) return;
+
+        const name = nameInput.value.trim();
+
+        if (!name) {
+            setStatus("Please enter your name, or skip for now.", "error");
+            nameInput.focus();
+            return;
+        }
+        if (name.length > MAX_NAME_LENGTH) {
+            setStatus("Name must be 100 characters or fewer.", "error");
+            return;
+        }
+
+        submitting = true;
+        saveBtn.disabled = true;
+        setStatus("Saving...", "info");
+
+        try {
+            const res = await LandmarkSession.authFetch("/api/user/profile/update", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: name })
+            });
+
+            if (res.ok) {
+                setStatus("Saved! Taking you in...", "success");
+                setTimeout(goToDashboard, 500);
+                return;
+            }
+
+            const result = await res.json().catch(function () { return {}; });
+            setStatus(result.error || "Could not save your name. Please try again.", "error");
+            submitting = false;
+            saveBtn.disabled = false;
+        } catch (error) {
+            console.error("saveName error:", error);
+            setStatus("Network error. Please try again.", "error");
+            submitting = false;
+            saveBtn.disabled = false;
+        }
+    }
+
+    saveBtn.addEventListener("click", saveName);
+    skipBtn.addEventListener("click", goToDashboard);
+
+    nameInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            saveName();
+        }
+    });
+})();
+</script>
+
+{% endblock %}

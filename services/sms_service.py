@@ -11,6 +11,47 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
+# Message Central verificationStatus values. Only the first one means the
+# submitted code was actually correct; every other value (and the absence
+# of the field) must be treated as a failed verification.
+_VERIFIED_STATUS = "VERIFICATION_COMPLETED"
+_SUCCESS_RESPONSE_CODES = {200, "200"}
+
+
+def _verification_succeeded(data) -> bool:
+    """True only on an explicit, positive success signal in the body.
+
+    Fails closed on anything ambiguous -- an unexpected shape, a missing
+    status field, a non-dict payload. A wrong OTP must never be able to
+    reach the caller as success, and an unrecognised response shape is
+    not evidence that the user typed the right code. If Message Central
+    ever changes its payload, this returns False and the rejection is
+    logged with the full body by the caller, so the mismatch surfaces as
+    "nobody can log in" (loud, immediately diagnosable) rather than
+    "anybody can log in" (silent, catastrophic).
+    """
+    if not isinstance(data, dict):
+        return False
+
+    payload = data.get("data")
+    if isinstance(payload, dict):
+        status = str(payload.get("verificationStatus") or "").strip().upper()
+        if status:
+            # The authoritative field. Trust it in both directions.
+            return status == _VERIFIED_STATUS
+
+    # No verificationStatus present: fall back to the envelope's response
+    # code, which Message Central sets to 200 only on success (702 =
+    # verification failed, 705 = expired, 703 = already verified, ...).
+    if "responseCode" in data:
+        code = data.get("responseCode")
+        if isinstance(code, str):
+            code = code.strip()
+        return code in _SUCCESS_RESPONSE_CODES
+
+    return False
+
+
 class MessageCentralSMS:
     """Message Central SMS Service using permanent Auth Token"""
     
@@ -154,23 +195,38 @@ class MessageCentralSMS:
             logger.info("Response Status: %s", response.status_code)
             logger.info("Response Body: %s", response.text)
 
-            if response.status_code == 200:
+            if response.status_code != 200:
                 try:
-                    data = response.json()
+                    error_data = response.json()
                 except ValueError:
-                    logger.error("Invalid JSON returned by Message Central on verify_otp")
-                    return False, {"error": "Invalid response from Message Central"}
-
-                logger.info(f"OTP verified successfully for ID {verification_id}")
-                return True, data
+                    error_data = {"error": response.text}
+                logger.error("Verification failed: %s - %s", response.status_code, error_data)
+                return False, error_data
 
             try:
-                error_data = response.json()
+                data = response.json()
             except ValueError:
-                error_data = {"error": response.text}
+                logger.error("Invalid JSON returned by Message Central on verify_otp")
+                return False, {"error": "Invalid response from Message Central"}
 
-            logger.error("Verification failed: %s - %s", response.status_code, error_data)
-            return False, error_data
+            # SECURITY: HTTP 200 is a transport result, NOT a verification
+            # result. Message Central returns 200 with a FAILURE body for a
+            # wrong or expired code (responseCode 702/705,
+            # verificationStatus VERIFICATION_FAILED). Treating any 200 as
+            # success -- as this function previously did -- means any
+            # six-digit string authenticates any phone number. Success is
+            # therefore asserted only by _verification_succeeded() below,
+            # which reads the body and fails closed.
+            if _verification_succeeded(data):
+                logger.info("OTP verified successfully for ID %s", verification_id)
+                return True, data
+
+            logger.warning(
+                "OTP verification rejected for ID %s (HTTP 200, non-success body): %s",
+                verification_id,
+                data,
+            )
+            return False, data
 
         except Exception as e:
             logger.exception("verify_otp failed")

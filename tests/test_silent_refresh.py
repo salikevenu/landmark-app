@@ -141,7 +141,7 @@ class SilentRefreshOnPageLoadTests(unittest.TestCase):
     def test_silent_refresh_with_no_refresh_cookie_goes_to_login(self):
         res = self.client.get("/api/refresh/silent?next=%2Fanalytics%2F", follow_redirects=False)
         self.assertEqual(res.status_code, 302)
-        self.assertIn("/api/auth/public/login", res.headers["Location"])
+        self.assertIn("/login", res.headers["Location"])
 
 
 class SafeRelativePathTests(unittest.TestCase):

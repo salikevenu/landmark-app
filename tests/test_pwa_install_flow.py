@@ -1,10 +1,17 @@
-"""Post-OTP "Install LANDMARK App" screen.
+"""Pre-authentication "Install LANDMARK App" screen, and the single real
+/dashboard entry point.
 
 Complements, and does NOT duplicate, tests/test_pwa_installability.py
-(manifest/icon/service-worker contracts, 20 tests already covering those)
-and tests/test_critical_contracts.py (route/file existence guards). This
-file covers the new /install route and its dedicated install screen,
-inserted into the flow as: OTP verified -> Install App -> Dashboard.
+(manifest/icon/service-worker contracts) and tests/test_critical_contracts.py
+(route/file existence guards). This file covers /install and its screen, and
+the /dashboard route, wired into the flow as:
+
+    QR/link -> /install -> Register/Login -> OTP -> /dashboard
+
+An already-authenticated visitor to /install, /register, or / is sent
+straight to /dashboard rather than shown any of those screens again --
+/install is a pre-authentication onboarding step, never a recurring
+interruption, and is never visited again after OTP.
 """
 import os
 import sys
@@ -79,17 +86,21 @@ class InstallScreenSourceTests(unittest.TestCase):
         dismissed_branch = click_fn.split("'dismissed'")[1].split("} else {")[0]
         self.assertIn("fallbackHint.hidden = false", dismissed_branch)
 
-    # 6. appinstalled event
-    def test_appinstalled_is_handled_and_navigates_to_dashboard(self):
+    # 6. appinstalled event continues the session onward (to signup --
+    # never a fresh, second authentication mechanism).
+    def test_appinstalled_is_handled_and_continues_the_session(self):
         fn = self.html.split("addEventListener('appinstalled'")[1].split("});")[0]
-        self.assertIn("goToDashboard", fn)
+        self.assertIn("continueToSignup", fn)
+        continue_fn = self.html.split("function continueToSignup")[1].split("\n  }")[0]
+        self.assertIn("/signup", continue_fn)
 
-    # 7. already-installed detection
+    # 7. already-running-standalone (installed, not currently signed in)
+    # skips straight to the same next step as a normal "Continue".
     def test_detects_standalone_display_mode_and_skips_screen(self):
         self.assertIn("display-mode: standalone", self.html)
         self.assertIn("navigator.standalone", self.html)
         block = self.html.split("isStandalone")[-1]
-        self.assertIn("goToDashboard()", block.split("}")[0])
+        self.assertIn("continueToSignup()", block.split("}")[0])
 
     # 8 / 15. fallback when beforeinstallprompt is unavailable
     def test_fallback_shown_when_prompt_never_fires(self):
@@ -109,27 +120,32 @@ class InstallScreenSourceTests(unittest.TestCase):
 
     def test_never_fabricates_or_forces_installation(self):
         self.assertNotIn("localStorage", self.html)
+        self.assertNotIn("sessionStorage", self.html)
 
-    # 16. Continue to LANDMARK exists
+    # 16. Continue to LANDMARK exists, and (post-install-page redesign)
+    # leads onward to signup -- this screen is pre-authentication, so
+    # there is no session yet to land a dashboard visit on.
     def test_continue_link_always_present_as_an_escape_hatch(self):
         self.assertIn('id="continueLink"', self.html)
         self.assertIn("Continue to LANDMARK", self.html)
-        self.assertIn('href="/dashboard?onboarded=1"', self.html)
+        self.assertIn('href="/signup"', self.html)
 
-    # 17. dashboard is the final destination (both the plain <a> fallback
-    # and the JS-driven goToDashboard() agree on the same target). The
-    # "?onboarded=1" is a one-shot signal the dashboard route reads to
-    # trust this exact hop -- not a persisted/session marker (see
-    # DashboardEntryGateTests for why that distinction matters).
-    def test_dashboard_is_the_single_final_destination(self):
-        self.assertIn('href="/dashboard?onboarded=1"', self.html)
-        self.assertIn("window.location.replace('/dashboard?onboarded=1')", self.html)
+    # 17. /signup is the single agreed destination (both the plain <a>
+    # fallback and the JS-driven continueToSignup() target it) -- never
+    # /dashboard, since a visitor who is actually authenticated never sees
+    # this rendered screen at all (routes/public_routes.py redirects them
+    # away before it renders).
+    def test_signup_is_the_single_next_destination(self):
+        self.assertIn('href="/signup"', self.html)
+        self.assertIn("window.location.replace('/signup')", self.html)
 
 
 class InstallRouteAuthGateTests(unittest.TestCase):
-    """Authenticated session must remain valid throughout, and the route
-    must only ever read the existing auth check -- never mutate cookies,
-    JWT config, or CSRF behavior."""
+    """/install is a pre-authentication onboarding step: an unauthenticated
+    visitor sees the screen; an already-authenticated visitor is sent
+    straight to /dashboard so this page never becomes a recurring
+    interruption. The route only ever reads the existing auth check --
+    never mutates cookies, JWT config, or CSRF behavior."""
 
     def setUp(self):
         from app import app as flask_app
@@ -141,42 +157,16 @@ class InstallRouteAuthGateTests(unittest.TestCase):
         with self.app.app_context():
             return create_access_token(identity=str(uid), additional_claims={"role": role})
 
-    def test_unauthenticated_install_redirects_to_login(self):
-        res = self.client.get("/install", follow_redirects=False)
-        self.assertEqual(res.status_code, 302)
-        self.assertIn("/api/auth/public/login", res.headers.get("Location", ""))
-
-    def test_authenticated_install_renders_the_screen(self):
-        self.client.set_cookie("access_token", self._token(1, role="free"))
+    def test_unauthenticated_visitor_sees_the_install_screen(self):
         res = self.client.get("/install")
         self.assertEqual(res.status_code, 200)
         self.assertIn(b"Install LANDMARK App", res.data)
 
-    def test_same_session_reaches_dashboard_after_install_screen(self):
-        """Dashboard loads after the install screen, using the same
-        cookie -- no re-authentication required. Follows the same
-        "?onboarded=1" hop the real install.html sends the browser to, and
-        confirms it lands on the actual dashboard (not the entry gate)."""
-        token = self._token(2, role="free")
-        self.client.set_cookie("access_token", token)
-        install_res = self.client.get("/install")
-        self.assertEqual(install_res.status_code, 200)
-        dash_res = self.client.get("/dashboard?onboarded=1", follow_redirects=True)
-        self.assertEqual(dash_res.status_code, 200)
-        self.assertIn(b"LANDMARK-HUB", dash_res.data)
-
-    def test_dashboard_without_the_onboarded_hop_renders_the_entry_gate_not_the_dashboard(self):
-        """A plain /dashboard visit (fresh tab, bookmark, sidebar link --
-        anything other than the one-shot hop from /install) must still go
-        through the gate, even with a perfectly valid session. Visiting
-        /install once must never grant a lasting bypass."""
-        token = self._token(5, role="free")
-        self.client.set_cookie("access_token", token)
-        self.client.get("/install")
-        dash_res = self.client.get("/dashboard", follow_redirects=True)
-        self.assertEqual(dash_res.status_code, 200)
-        self.assertNotIn(b"LANDMARK-HUB", dash_res.data)
-        self.assertIn(b"isStandalone", dash_res.data)
+    def test_authenticated_visitor_is_redirected_to_dashboard(self):
+        self.client.set_cookie("access_token", self._token(1, role="free"))
+        res = self.client.get("/install", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        self.assertIn("/dashboard", res.headers.get("Location", ""))
 
     def test_expired_token_does_not_crash_install_route(self):
         with self.app.app_context():
@@ -185,165 +175,146 @@ class InstallRouteAuthGateTests(unittest.TestCase):
         res = self.client.get("/install")
         self.assertIn(res.status_code, (200, 302, 401, 422))
 
+    def test_install_captures_ref_code_for_unauthenticated_visitor(self):
+        """The install page is now the first stop for a shared QR/link, so
+        it must capture ?ref=CODE itself -- otherwise a referral entering
+        via /install would be silently lost before the user ever reaches
+        /signup. The actual capture now lives in the shared _capture_ref()
+        helper (also used by /signup and /login) rather than being
+        duplicated inline in install_app_page() itself."""
+        src = (ROOT / "routes" / "public_routes.py").read_text(encoding="utf-8")
+        install_fn = src.split("def install_app_page")[1].split("def register_page_legacy")[0]
+        self.assertIn("_capture_ref()", install_fn)
+        capture_fn = src.split("def _capture_ref")[1].split("\ndef ")[0]
+        self.assertIn("cache_landing_referral_code", capture_fn)
+        self.assertIn('request.args.get("ref")', capture_fn)
+
 
 class PostOtpNavigationTests(unittest.TestCase):
-    """OTP verified -> Install App -> Dashboard for regular users; admin
-    is unchanged (straight to /admin/dashboard)."""
+    """OTP verified -> Dashboard directly for regular users; admin is
+    unchanged (straight to /admin/dashboard). /install must never appear
+    after OTP -- it is a pre-authentication step only."""
 
-    def test_register_navigates_to_install_after_success(self):
+    def test_register_navigates_to_dashboard_after_success(self):
         html = (ROOT / "templates" / "public" / "register.html").read_text(encoding="utf-8")
-        self.assertIn('window.location.replace("/install")', html)
-        self.assertNotIn('window.location.href = "/dashboard"', html)
+        self.assertIn('window.location.replace("/dashboard")', html)
+        self.assertNotIn('window.location.replace("/install")', html)
 
-    def test_login_navigates_regular_user_to_install_admin_unchanged(self):
+    def test_login_navigates_regular_user_to_dashboard_admin_unchanged(self):
         html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
-        self.assertIn("'/admin/dashboard' : '/install'", html)
+        self.assertIn("'/admin/dashboard' : '/dashboard'", html)
 
-    def test_admin_login_still_routes_to_admin_dashboard_not_install(self):
-        """Administrators must never be routed through the PWA install
-        screen -- same assertion as above, named for direct traceability
-        to that specific requirement."""
+    def test_admin_login_still_routes_to_admin_dashboard_not_regular_dashboard(self):
+        """Administrators must never be routed through the regular-user
+        dashboard -- same assertion as above, named for direct
+        traceability to that specific requirement."""
         html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
         navigation_line = html.split("window.location.replace(")[1].split(";")[0]
         self.assertIn("role === 'admin'", navigation_line)
         self.assertIn("'/admin/dashboard'", navigation_line)
 
+    def test_neither_post_otp_navigation_ever_targets_install(self):
+        login_html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
+        register_html = (ROOT / "templates" / "public" / "register.html").read_text(encoding="utf-8")
+        self.assertNotIn("/install", login_html)
+        self.assertNotIn("/install", register_html)
 
-class DashboardEntryGateTests(unittest.TestCase):
-    """Universal authenticated PWA onboarding: every authenticated regular
-    user who has not installed the app (not running standalone) must see
-    /install before the dashboard, on every visit -- never silently
-    bypassed by having merely visited /install once before.
 
-    Architecture: routes/user_routes.py's user_dashboard() never renders
-    the real dashboard.html unless the request carries "?onboarded=1" -- a
-    one-shot, per-navigation signal, not a persisted marker. Otherwise it
-    renders dashboard_gate.html, a blank interstitial whose only job is to
-    run the standalone check (in <head>, before any dashboard content
-    exists) and either continue straight to the real dashboard (if
-    already standalone) or send the browser to /install. No dashboard
-    markup is ever sent to the browser ahead of that decision, and no
-    sessionStorage/localStorage/server-side "installed" flag is used
-    anywhere, so revisiting /install can never grant a lasting bypass."""
+class DashboardRouteTests(unittest.TestCase):
+    """/dashboard (app.py) is the single real, authenticated dashboard
+    entry point and the PWA's start_url. /api/user/dashboard is kept only
+    as a compatibility redirect for existing internal links (404/500 pages,
+    payment-flow pages, admin impersonation) -- it renders nothing itself."""
 
     def setUp(self):
         from app import app as flask_app
         flask_app.config["TESTING"] = True
         self.app = flask_app
         self.client = flask_app.test_client()
-        self.gate_html = (ROOT / "templates" / "users" / "dashboard_gate.html").read_text(encoding="utf-8")
-        self.route_src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
-        self.dashboard_fn = self.route_src.split("def user_dashboard")[1].split("\n@user_bp.route")[0]
 
     def _token(self, uid, role="free"):
         with self.app.app_context():
             return create_access_token(identity=str(uid), additional_claims={"role": role})
 
-    # 1 / 6. The real dashboard template is never rendered without the
-    # one-shot signal -- the standalone check runs first, in a page with
-    # no dashboard content at all.
-    def test_dashboard_route_renders_the_blank_gate_not_the_dashboard_by_default(self):
-        self.assertIn('"users/dashboard_gate.html"', self.dashboard_fn)
-        self.assertIn('request.args.get("onboarded") == "1"', self.dashboard_fn)
-        self.assertNotIn("LANDMARK-HUB", self.gate_html)
-        self.assertNotIn("walletBalance", self.gate_html)
-
-    def test_gate_performs_standalone_check_before_any_body_content(self):
-        head, _, body = self.gate_html.partition("<body>")
-        self.assertIn("display-mode: standalone", head)
-        self.assertIn("navigator.standalone", head)
-        self.assertEqual(body.split("</body>")[0].strip(), "")
-
-    # 7. The gate's own redirects are loop-free: non-standalone goes to
-    # /install; standalone goes home via the one-shot signal, never back
-    # to the gate.
-    def test_gate_sends_non_standalone_to_install_and_standalone_home(self):
-        self.assertIn("'/install'", self.gate_html)
-        self.assertIn("/dashboard?onboarded=1", self.gate_html)
-
-    # 2 / 3 / 4. No persisted marker anywhere in this flow -- visiting
-    # /install (or reloading/reopening the dashboard) can never grant an
-    # indefinite bypass the way a sessionStorage/localStorage flag would.
-    def test_no_persisted_marker_anywhere_in_the_onboarding_flow(self):
-        install_html = (ROOT / "templates" / "public" / "install.html").read_text(encoding="utf-8")
-        dashboard_html = (ROOT / "templates" / "users" / "dashboard.html").read_text(encoding="utf-8")
-        for name, html in (
-            ("install.html", install_html),
-            ("dashboard.html", dashboard_html),
-            ("dashboard_gate.html", self.gate_html),
-        ):
-            self.assertNotIn("sessionStorage", html, name)
-            self.assertNotIn("localStorage", html, name)
-
-    # 5. No server-side "installed" flag was invented -- the route only
-    # ever branches on the one-shot request parameter, nothing DB-backed.
-    def test_no_server_side_installed_flag_was_added(self):
-        for needle in ("is_installed", "pwa_installed", "installed_at", "installed = "):
-            self.assertNotIn(needle, self.dashboard_fn)
-
-    # A plain, un-onboarded dashboard visit (authenticated) resolves to
-    # the gate over HTTP, and the gate carries no dashboard content.
-    def test_authenticated_plain_dashboard_request_gets_the_gate(self):
-        self.client.set_cookie("access_token", self._token(6, role="free"))
-        res = self.client.get("/api/user/dashboard")
-        self.assertEqual(res.status_code, 200)
+    def test_unauthenticated_dashboard_request_does_not_render_private_content(self):
+        res = self.client.get("/dashboard", follow_redirects=False)
+        self.assertNotEqual(res.status_code, 200)
         self.assertNotIn(b"LANDMARK-HUB", res.data)
 
-    # The one-shot signal must actually survive the /dashboard ->
-    # /api/user/dashboard redirect hop in app.py, or install.html's exit
-    # would silently land back on the gate instead of the dashboard.
-    def test_app_dashboard_redirect_preserves_the_onboarded_query_string(self):
+    def test_authenticated_dashboard_request_renders_the_real_dashboard(self):
+        self.client.set_cookie("access_token", self._token(2, role="free"))
+        res = self.client.get("/dashboard")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(b"LANDMARK-HUB", res.data)
+
+    def test_dashboard_route_is_jwt_protected_not_a_bare_redirect(self):
         app_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        fn = app_src.split("def redirect_dashboard")[1].split("\n@app.route")[0]
-        self.assertIn("request.query_string", fn)
+        fn_block = app_src.split('@app.route("/dashboard")')[1].split("\n@app.route")[0]
+        self.assertIn("@jwt_required()", fn_block)
+        self.assertIn('"users/dashboard.html"', fn_block)
 
-    # 8. This is purely a full-page-navigation concern -- JSON API routes
-    # are untouched, and the gate/guard machinery lives only in the
-    # dashboard entry point, never the shared layout used by AJAX-driven
-    # authenticated pages.
-    def test_gate_machinery_is_scoped_to_dashboard_entry_only(self):
-        layout_html = (ROOT / "templates" / "layouts" / "layout_app.html").read_text(encoding="utf-8")
-        self.assertNotIn("dashboard_gate", layout_html)
-        pwa_install_js = (ROOT / "static" / "js" / "pwa-install.js").read_text(encoding="utf-8")
-        self.assertNotIn("dashboard_gate", pwa_install_js)
+    def test_api_user_dashboard_redirects_to_dashboard_and_renders_nothing_itself(self):
+        src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
+        fn = src.split("def user_dashboard")[1].split("\n@user_bp.route")[0]
+        self.assertIn('redirect("/dashboard")', fn)
+        self.assertNotIn("render_template", fn)
 
-    # 9. Admin is unaffected -- separate route, separate template, no
-    # gate/onboarding reference of any kind.
-    def test_admin_dashboard_template_has_no_gate_or_onboarding_reference(self):
-        admin_html = (ROOT / "templates" / "admin" / "admin_dashboard.html").read_text(encoding="utf-8")
-        self.assertNotIn("dashboard_gate", admin_html)
-        self.assertNotIn("onboarded", admin_html)
+    def test_api_user_dashboard_forwards_an_authenticated_session(self):
+        self.client.set_cookie("access_token", self._token(3, role="free"))
+        res = self.client.get("/api/user/dashboard", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(b"LANDMARK-HUB", res.data)
+
+    def test_no_onboarded_query_param_dependency_remains(self):
+        for path in ("app.py", "routes/user_routes.py"):
+            src = (ROOT / path).read_text(encoding="utf-8")
+            self.assertNotIn("onboarded", src, path)
+
+    def test_dashboard_gate_template_no_longer_exists(self):
+        self.assertFalse((ROOT / "templates" / "users" / "dashboard_gate.html").exists())
 
 
-class OnboardingGuardRegressionSafetyTests(unittest.TestCase):
-    """The new dashboard gate must not disturb any existing, already-
-    proven behavior: /install's own standalone detection, OTP->/install
-    navigation, and unauthenticated /install access denial."""
+class RootAndRegisterAuthenticatedRedirectTests(unittest.TestCase):
+    """An already-authenticated visitor to / or /register is sent straight
+    to /dashboard rather than shown the public homepage or the
+    registration form again. An unauthenticated visitor is unaffected."""
 
-    # /install's own standalone detection is untouched by this change.
-    def test_install_screen_standalone_detection_still_intact(self):
-        install_html = (ROOT / "templates" / "public" / "install.html").read_text(encoding="utf-8")
-        self.assertIn("display-mode: standalone", install_html)
-        self.assertIn("navigator.standalone", install_html)
-        self.assertIn("goToDashboard()", install_html)
-
-    # Post-OTP navigation to /install (register + regular-user login)
-    # remains exactly as it was.
-    def test_post_otp_navigation_to_install_remains_intact(self):
-        login_html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
-        register_html = (ROOT / "templates" / "public" / "register.html").read_text(encoding="utf-8")
-        self.assertIn("'/admin/dashboard' : '/install'", login_html)
-        self.assertIn('window.location.replace("/install")', register_html)
-
-    # Unauthenticated access to /install is still denied -- the dashboard
-    # gate does not touch, weaken, or duplicate this server-side auth gate.
-    def test_unauthenticated_user_is_still_denied_install_access(self):
+    def setUp(self):
         from app import app as flask_app
         flask_app.config["TESTING"] = True
-        client = flask_app.test_client()
-        res = client.get("/install", follow_redirects=False)
+        self.app = flask_app
+        self.client = flask_app.test_client()
+
+    def _token(self, uid, role="free"):
+        with self.app.app_context():
+            return create_access_token(identity=str(uid), additional_claims={"role": role})
+
+    def test_unauthenticated_root_sees_the_public_homepage(self):
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(b"Get Started", res.data)
+
+    def test_authenticated_root_is_redirected_to_dashboard(self):
+        self.client.set_cookie("access_token", self._token(4, role="free"))
+        res = self.client.get("/", follow_redirects=False)
         self.assertEqual(res.status_code, 302)
-        self.assertIn("/api/auth/public/login", res.headers.get("Location", ""))
+        self.assertIn("/dashboard", res.headers.get("Location", ""))
+
+    def test_unauthenticated_register_sees_the_registration_form(self):
+        # /register is now an unconditional 302 alias to /signup (the
+        # already-authenticated check moved to /signup itself) -- two
+        # hops, not one. See routes/public_routes.py's
+        # register_page_legacy().
+        res = self.client.get("/register", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/signup")
+        self.assertIn(b"Create your account", res.data)
+
+    def test_authenticated_register_is_redirected_to_dashboard(self):
+        self.client.set_cookie("access_token", self._token(5, role="free"))
+        res = self.client.get("/register", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/dashboard")
 
 
 class InstallPageInheritsPwaContractTests(unittest.TestCase):

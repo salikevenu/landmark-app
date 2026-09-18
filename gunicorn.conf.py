@@ -7,9 +7,24 @@ def _cfg_log(msg):
 # Prefer Render-injected PORT; never hardcode the listen port alone.
 port = os.environ.get("PORT") or "10000"
 bind = f"0.0.0.0:{port}"
+# One worker keeps memory flat and keeps the in-process fallbacks (the
+# rate limiter and the JWT revocation blocklist, both of which degrade to
+# process memory when Redis is unreachable) consistent -- a second worker
+# would silently double every "3 per hour" limit and let a logged-out
+# token stay valid on the other worker. Concurrency is therefore bought
+# with THREADS, not processes.
+#
+# Threads matter on the auth path specifically: every OTP send is a
+# blocking outbound HTTPS call to Message Central with a (5, 15) timeout,
+# and OTP verify retries that up to 3 times. With threads = 1 a single
+# slow provider call stalls EVERY other request on the site -- dashboards,
+# listings, payments -- for up to ~20s. Threads let those requests keep
+# being served while an OTP call is in flight. Safe here because the
+# request path holds no shared mutable state: OTP state lives in
+# Postgres, and the two in-process fallbacks above are already lock-guarded.
 workers = 1
-worker_class = "sync"
-threads = 1
+worker_class = "gthread"
+threads = 8
 # Generous timeout so a slow (but finite) boot is not mistaken for a hang loop
 timeout = 120
 graceful_timeout = 30
@@ -21,7 +36,10 @@ capture_output = False
 preload_app = False
 reuse_port = False
 
-_cfg_log(f"PORT env={os.environ.get('PORT')!r} bind={bind!r} workers={workers} timeout={timeout}")
+_cfg_log(
+    f"PORT env={os.environ.get('PORT')!r} bind={bind!r} workers={workers} "
+    f"worker_class={worker_class} threads={threads} timeout={timeout}"
+)
 
 
 def on_starting(server):

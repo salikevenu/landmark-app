@@ -80,7 +80,7 @@
 
     <p id="installStatus" role="status" aria-live="polite"></p>
 
-    <a href="/dashboard?onboarded=1" id="continueLink">Continue to LANDMARK</a>
+    <a href="/signup" id="continueLink">Continue to LANDMARK</a>
   </div>
 </div>
 
@@ -93,26 +93,31 @@
   var deferredPrompt = null;
   var navigated = false;
 
-  // "?onboarded=1" is a one-shot, per-navigation signal read only by the
-  // dashboard route (routes/user_routes.py's user_dashboard()) to trust
-  // this exact hop back from the install screen -- nothing is written to
-  // the browser's own storage and nothing is recorded server-side.
-  // Landing on /dashboard any other way (a fresh tab, a bookmark, the
-  // sidebar link) carries no such parameter, so the guard applies again
-  // -- visiting this screen once is never treated as "installed".
-  function goToDashboard() {
+  // This screen is only ever reached before authentication (the server
+  // route redirects an already-authenticated visitor straight to
+  // /dashboard, see routes/public_routes.py's install_app_page()) -- so
+  // the next step from here, whether the app was actually installed or
+  // the user just clicks through, is always /signup, never /dashboard
+  // directly. The current browser session/cookies carry forward
+  // untouched; no new auth mechanism is introduced here.
+  //
+  // Named for what it does, not where it used to go: the old name
+  // (goToDashboard) had not matched its destination for some time.
+  function continueToSignup() {
     if (navigated) return;
     navigated = true;
-    window.location.replace('/dashboard?onboarded=1');
+    window.location.replace('/signup');
   }
 
-  // Already installed (running standalone)? Skip this screen entirely --
-  // do not assume; ask the browser directly.
+  // Already running standalone (installed previously, just not currently
+  // signed in)? The install UI would be pointless -- skip straight to
+  // the same next step as a normal "Continue". Do not assume this from
+  // anything other than the browser's own display-mode signal.
   var isStandalone =
     (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
     window.navigator.standalone === true;
   if (isStandalone) {
-    goToDashboard();
+    continueToSignup();
     return;
   }
 
@@ -128,7 +133,7 @@
   // simulated, and is the only thing that navigates onward as "installed".
   window.addEventListener('appinstalled', function () {
     statusEl.textContent = 'LANDMARK installed!';
-    goToDashboard();
+    continueToSignup();
   });
 
   // If the browser never offers a real install prompt (already decided
@@ -158,7 +163,7 @@
         installBtn.disabled = false;
       } else {
         statusEl.textContent = 'Installing…';
-        // appinstalled (above) navigates to the dashboard once Chrome
+        // appinstalled (above) continues to registration once Chrome
         // actually confirms installation -- never claimed here early.
       }
     });

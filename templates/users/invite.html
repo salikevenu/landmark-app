@@ -311,7 +311,7 @@
         // reconstruct it client-side, so the QR (also server-generated from
         // this same code) and the shared link can never drift apart.
         currentLinkValue = data.referral_link || "";
-        linkInput.value = currentLinkValue || (window.location.origin + "/register?ref=" + data.referral_code);
+        linkInput.value = currentLinkValue || (window.location.origin + "/install?ref=" + data.referral_code);
         refCode.textContent = data.referral_code;
         qrImage.src = "/qr/" + encodeURIComponent(data.referral_code);
         qrImage.hidden = false;

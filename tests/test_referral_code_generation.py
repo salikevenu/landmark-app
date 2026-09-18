@@ -65,7 +65,7 @@ class ReferralLinkTests(unittest.TestCase):
     def test_referral_link_uses_existing_base_url_config(self):
         link = referral_link_for("LMK7X4P2")
         self.assertTrue(link.startswith(BASE_URL.rstrip("/")))
-        self.assertIn("/register?ref=LMK7X4P2", link)
+        self.assertIn("/install?ref=LMK7X4P2", link)
 
     def test_referral_link_for_empty_code_is_empty(self):
         self.assertEqual(referral_link_for(""), "")
@@ -487,12 +487,16 @@ class QrCodeEndpointTests(unittest.TestCase):
         from app import app as flask_app
         flask_app.config["TESTING"] = True
         client = flask_app.test_client()
-        res = client.get("/qr/SOMECODE123", headers={"Host": "landmarkvts.in"})
+        # Built from BASE_URL (config/payment_config.py), not this request's
+        # own Host -- so the encoded domain is the same regardless of what
+        # host the QR happened to be requested from.
+        res = client.get("/qr/SOMECODE123")
         img = Image.open(io.BytesIO(res.data))
         decoded = _decode(img)
         self.assertTrue(decoded)
         payload = decoded[0].data.decode("utf-8")
-        self.assertIn("/register?ref=SOMECODE123", payload)
+        self.assertIn("/install?ref=SOMECODE123", payload)
+        self.assertTrue(payload.startswith(BASE_URL.rstrip("/")))
 
     def test_qr_center_has_the_landmark_logo_without_disturbing_finder_patterns(self):
         """No pyzbar needed: build a plain (no-logo) reference QR with the
@@ -505,7 +509,7 @@ class QrCodeEndpointTests(unittest.TestCase):
         from qrcode.constants import ERROR_CORRECT_H
         from PIL import Image
         from app import app as flask_app
-        from routes.auth_routes import register_url_with_ref
+        from routes.auth_routes import referral_link_for
 
         flask_app.config["TESTING"] = True
         client = flask_app.test_client()
@@ -513,7 +517,7 @@ class QrCodeEndpointTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         actual = Image.open(io.BytesIO(res.data)).convert("RGB")
 
-        plain_url = "http://localhost" + register_url_with_ref("SOMECODE123")
+        plain_url = referral_link_for("SOMECODE123")
         qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
         qr.add_data(plain_url)
         qr.make(fit=True)
@@ -604,8 +608,12 @@ class VerifyOtpResponseTests(unittest.TestCase):
         verify_fn = src.split("def verify_otp")[1].split("\n@auth_bp.route")[0]
         self.assertIn('"referral_link": referral_link_for(user_data.get("referral_code"))', verify_fn)
         # The existing response shape (status/user) must still be present — additive only.
+        # "user" is now public_user(user_data), not the raw dict: 04f51c1 strips
+        # is_blocked/is_active (_INTERNAL_USER_FIELDS) so moderation state is
+        # never echoed to the client. referral_code (what this test cares
+        # about) is untouched by that filter.
         self.assertIn('"status": status', verify_fn)
-        self.assertIn('"user": user_data', verify_fn)
+        self.assertIn('"user": public_user(user_data)', verify_fn)
 
 
 if __name__ == "__main__":

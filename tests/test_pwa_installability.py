@@ -39,8 +39,12 @@ class ManifestValidityTests(unittest.TestCase):
         for field in ("name", "short_name", "start_url", "display", "icons"):
             self.assertIn(field, self.manifest, f"manifest missing required field: {field}")
 
-    def test_start_url_and_scope_are_site_root(self):
-        self.assertEqual(self.manifest["start_url"], "/")
+    def test_start_url_and_scope(self):
+        # start_url is the authenticated dashboard entry point (installed
+        # icon -> straight to the app, not the marketing homepage) --
+        # still same-origin and within scope, which stays the site root so
+        # the service worker/manifest cover the whole app.
+        self.assertEqual(self.manifest["start_url"], "/dashboard")
         self.assertEqual(self.manifest.get("scope"), "/")
 
     def test_display_is_installable_mode(self):

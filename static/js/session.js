@@ -1,7 +1,7 @@
 /* Canonical LANDMARK session: HttpOnly JWT cookies + CSRF header.
    Do not store access/refresh tokens in localStorage. */
 (function (global) {
-  var LOGIN_URL = "/api/auth/public/login";
+  var LOGIN_URL = "/login";
   var refreshInFlight = null;
 
   function getCookie(name) {
@@ -25,7 +25,12 @@
   }
 
   function redirectToLogin() {
-    if (window.location.pathname.indexOf("/login") !== -1) return;
+    // Never bounce a user who is already on an auth page -- that turns a
+    // failed refresh into a redirect loop. /signup counts: it is the same
+    // page as /login, and a visitor there is already being asked to
+    // authenticate.
+    var path = window.location.pathname;
+    if (path.indexOf("/login") !== -1 || path.indexOf("/signup") !== -1) return;
     window.location.replace(LOGIN_URL);
   }
 

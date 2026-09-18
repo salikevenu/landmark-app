@@ -178,9 +178,12 @@ def _auth_app(store):
 
 class ReferralHelperTests(unittest.TestCase):
     def test_register_url_with_ref_encodes_code(self):
-        self.assertEqual(register_url_with_ref("ABC123"), "/register?ref=ABC123")
-        self.assertEqual(register_url_with_ref("A B"), "/register?ref=A%20B")
-        self.assertEqual(register_url_with_ref(""), "/register")
+        # register_url_with_ref() now points at SIGNUP_PATH (/signup);
+        # /register is kept only as a permanent redirect alias to it
+        # (routes/public_routes.py), never generated as a URL any more.
+        self.assertEqual(register_url_with_ref("ABC123"), "/signup?ref=ABC123")
+        self.assertEqual(register_url_with_ref("A B"), "/signup?ref=A%20B")
+        self.assertEqual(register_url_with_ref(""), "/signup")
 
 
 class ReferralAttributionFlowTests(unittest.TestCase):
@@ -386,8 +389,13 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn("register_url_with_ref", app_src)
         self.assertIn('if ref:', app_src)
         self.assertNotIn("if ref:\n        pass", app_src)
-        self.assertIn("register_url_with_ref(referral_code)", app_src)
+        # The QR endpoint builds its URL via referral_link_for() (the same
+        # helper /api/user/api/invite uses for the copy-link text) rather
+        # than register_url_with_ref() -- see test_qr_encodes_install_url
+        # in test_referral_attribution.py's LandingRouteTests for the
+        # dedicated regression guard on that.
         qr_fn = app_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("referral_link_for(referral_code)", qr_fn)
         self.assertNotIn("cache_landing_referral_code", qr_fn)
         self.assertNotIn("/download-app?ref={referral_code}", app_src)
 
@@ -421,20 +429,33 @@ class LandingAndFrontendTests(unittest.TestCase):
         self.assertIn("icon-192.png", app_layout)
 
     def test_manifest_start_url_and_qr_generation_untouched(self):
-        """Regression guard (item 7): the manifest's start_url and the live
-        QR endpoint must be exactly what they were before this change —
-        referral preservation must not touch either."""
+        """Regression guard (item 7): the manifest's start_url is
+        intentionally /dashboard (see fix/onboarding-and-pwa: installed
+        icon -> app, not marketing homepage) — unrelated to referral
+        attribution, which is unaffected either way since referral
+        capture never depended on start_url's value.
+
+        The QR endpoint's URL construction was deliberately changed by a
+        later, explicitly-scoped task (share-link/QR now point at
+        /install via referral_link_for(), not /register via
+        request.host_url + register_url_with_ref()) -- that change only
+        touches the destination path/domain-source, never referral
+        attribution itself (persist_referral_for_phone,
+        resolve_referrer_id_for_signup, pending_referrals, session
+        ref_code are all untouched). See test_qr_encodes_install_url for
+        the dedicated guard on the current QR construction."""
         manifest = (ROOT / "static" / "manifest.json").read_text(encoding="utf-8")
-        self.assertIn('"start_url": "/"', manifest)
+        self.assertIn('"start_url": "/dashboard"', manifest)
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
+        qr_fn = qr_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("referral_link_for(referral_code)", qr_fn)
 
 
 class RegisterPageReferralCaptureTests(unittest.TestCase):
     """/register?ref=CODE must durably capture the code into the session on
     first page load — not just when the phone/OTP form is later submitted.
-    Covers the PWA-install-before-registering gap: manifest start_url is a
-    fixed "/", so a home-screen relaunch carries no ?ref= at all, and only
+    Covers the PWA-install-before-registering gap: a later home-screen
+    relaunch (start_url is /dashboard) carries no ?ref= at all, and only
     a session cache that survives a real browser/app close (see
     cache_landing_referral_code's session.permanent=True) can still
     attribute the referral once the user actually registers."""
@@ -468,14 +489,21 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
             patch.object(auth_routes, "get_sms_service", return_value=sms)
 
     # 1. GET /register?ref=VALID_CODE preserves referral
+    # /register is now an unconditional 302 alias to /signup (see
+    # routes/public_routes.py's register_page_legacy()) -- the actual
+    # ?ref capture (_capture_ref(), same helper /login and /install use)
+    # only runs at /signup itself, so these must follow the redirect to
+    # actually exercise it. Hitting /register?ref= directly (without
+    # following) would 302 before any capture happens at all.
     def test_register_with_valid_ref_returns_200(self):
-        res = self.client.get("/register?ref=REFCODE1")
+        res = self.client.get("/register?ref=REFCODE1", follow_redirects=True)
         self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/signup")
 
     # 2. Referral is available when registration begins later (no ref in
     # that later request at all — simulates a PWA install gap in between).
     def test_referral_survives_to_later_send_otp_with_no_ref_in_request(self):
-        get_res = self.client.get("/register?ref=REFCODE1")
+        get_res = self.client.get("/register?ref=REFCODE1", follow_redirects=True)
         self.assertEqual(get_res.status_code, 200)
         p1, p2, p3 = self._mock_send_otp("vid-later")
         with p1, p2, p3:
@@ -485,7 +513,7 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
 
     # 3. Invalid referral code is not persisted
     def test_register_with_invalid_ref_does_not_persist(self):
-        res = self.client.get("/register?ref=NOSUCHCODE")
+        res = self.client.get("/register?ref=NOSUCHCODE", follow_redirects=True)
         self.assertEqual(res.status_code, 200, "an invalid code must not break the page")
         p1, p2, p3 = self._mock_send_otp("vid-invalid")
         with p1, p2, p3:
@@ -506,8 +534,9 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
 
     # 5. Normal /register without ref still works exactly as before
     def test_register_without_ref_still_works(self):
-        res = self.client.get("/register")
+        res = self.client.get("/register", follow_redirects=True)
         self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/signup")
         p1, p2, p3 = self._mock_send_otp("vid-noref")
         with p1, p2, p3:
             self.client.post("/api/auth/send-otp", json={"phone": "9876500006"})
@@ -515,8 +544,8 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
 
     # 6. Referral cannot be incorrectly replaced by an unrelated later request
     def test_unrelated_later_request_does_not_replace_existing_session_referral(self):
-        self.client.get("/register?ref=REFCODE1")
-        self.client.get("/register")  # unrelated: no ref, must not clear/replace
+        self.client.get("/register?ref=REFCODE1", follow_redirects=True)
+        self.client.get("/register", follow_redirects=True)  # unrelated: no ref, must not clear/replace
         p1, p2, p3 = self._mock_send_otp("vid-unrelated")
         with p1, p2, p3:
             res = self.client.post("/api/auth/send-otp", json={"phone": "9876500003"})
@@ -526,7 +555,7 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
     # Full flow: landing -> (simulated install gap) -> send-otp -> verify-otp
     # -> new account created with referred_by correctly attributed.
     def test_full_flow_landing_before_registration_then_verify_otp(self):
-        self.client.get("/register?ref=REFCODE1")
+        self.client.get("/register?ref=REFCODE1", follow_redirects=True)
         p1, p2, p3 = self._mock_send_otp("vid-e2e")
         with p1, p2, p3:
             send_res = self.client.post("/api/auth/send-otp", json={"phone": "9876500004"})
@@ -555,7 +584,13 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
 
 
 class LandingRouteTests(unittest.TestCase):
-    def test_homepage_and_download_redirect_to_register(self):
+    # /, /join and /download-app all build their redirect target via
+    # register_url_with_ref(), which now points at SIGNUP_PATH (/signup)
+    # -- see routes/auth_routes.py. None of these three routes goes
+    # through /register at all; it's a separate, one-hop-further legacy
+    # alias (see RegisterPageReferralCaptureTests), not an intermediate
+    # step here.
+    def test_homepage_and_download_redirect_to_signup(self):
         store = ReferralStore()
         store.add_user("9998887777", "REFCODE1")
         engine = FakeEngine(store)
@@ -565,10 +600,10 @@ class LandingRouteTests(unittest.TestCase):
             client = flask_app.test_client()
             home = client.get("/?ref=REFCODE1")
             self.assertEqual(home.status_code, 302)
-            self.assertIn("/register?ref=REFCODE1", home.headers.get("Location", ""))
+            self.assertIn("/signup?ref=REFCODE1", home.headers.get("Location", ""))
             down = client.get("/download-app?ref=REFCODE1")
             self.assertEqual(down.status_code, 302)
-            self.assertIn("/register?ref=REFCODE1", down.headers.get("Location", ""))
+            self.assertIn("/signup?ref=REFCODE1", down.headers.get("Location", ""))
 
     def test_join_route_redirects_with_ref(self):
         store = ReferralStore()
@@ -580,15 +615,15 @@ class LandingRouteTests(unittest.TestCase):
             client = flask_app.test_client()
             join = client.get("/join?ref=REFCODE1")
             self.assertEqual(join.status_code, 302)
-            self.assertIn("/register?ref=REFCODE1", join.headers.get("Location", ""))
+            self.assertIn("/signup?ref=REFCODE1", join.headers.get("Location", ""))
 
-    def test_join_route_without_ref_goes_to_register(self):
+    def test_join_route_without_ref_goes_to_signup(self):
         from app import app as flask_app
         flask_app.config["TESTING"] = True
         client = flask_app.test_client()
         join = client.get("/join")
         self.assertEqual(join.status_code, 302)
-        self.assertIn("/register", join.headers.get("Location", ""))
+        self.assertIn("/signup", join.headers.get("Location", ""))
         self.assertNotIn("ref=", join.headers.get("Location", ""))
 
     def test_join_route_with_invalid_ref_does_not_attribute_but_still_redirects(self):
@@ -600,14 +635,21 @@ class LandingRouteTests(unittest.TestCase):
             client = flask_app.test_client()
             join = client.get("/join?ref=NOSUCHCODE")
             self.assertEqual(join.status_code, 302)
-            self.assertIn("/register?ref=NOSUCHCODE", join.headers.get("Location", ""))
+            self.assertIn("/signup?ref=NOSUCHCODE", join.headers.get("Location", ""))
 
-    def test_qr_encodes_register_url(self):
-        from routes.auth_routes import register_url_with_ref
-        self.assertTrue(register_url_with_ref("REFCODE1").startswith("/register?ref="))
+    def test_qr_encodes_install_url(self):
+        """The QR (and the copy-link text it must never drift from) point
+        at /install, not /register -- a shared referral link/QR is the
+        pre-authentication entry point for a brand-new user, matching the
+        QR/link -> /install -> register/login -> OTP -> dashboard flow.
+        register_url_with_ref() itself is untouched (still used by /,
+        /join, /download-app for their own unrelated browser-redirect
+        behavior, covered above)."""
+        from routes.auth_routes import referral_link_for
+        self.assertIn("/install?ref=REFCODE1", referral_link_for("REFCODE1"))
         qr_src = (ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn("signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)", qr_src)
         qr_fn = qr_src.split("def generate_qr")[1].split("\n@app.route")[0]
+        self.assertIn("signup_url = referral_link_for(referral_code)", qr_fn)
         self.assertNotIn("cache_landing_referral_code", qr_fn)
 
 

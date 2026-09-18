@@ -282,24 +282,29 @@ class UserLoginSessionRedirectTests(unittest.TestCase):
             return create_access_token(identity=str(uid), additional_claims={"role": role})
 
     # 1. Unauthenticated -> OTP login page, HTTP 200
+    # /api/auth/public/login is now a bare, unconditional 302 to /login
+    # (see routes/auth_routes.py's public_login_page()) -- the
+    # already-authenticated check moved to /login itself, so reaching the
+    # OTP form is two hops now, not one.
     def test_unauthenticated_public_login_still_renders_otp_form(self):
-        res = self.client.get("/api/auth/public/login")
+        res = self.client.get("/api/auth/public/login", follow_redirects=True)
         self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/login")
 
-    # 2. Authenticated regular user -> HTTP 302 to /dashboard
+    # 2. Authenticated regular user -> ends up at /dashboard (via /login)
     def test_authenticated_regular_user_is_redirected_to_dashboard(self):
         self.client.set_cookie("access_token", self._token(1, role="free"))
-        res = self.client.get("/api/auth/public/login", follow_redirects=False)
-        self.assertEqual(res.status_code, 302)
-        self.assertIn("/dashboard", res.headers.get("Location", ""))
+        res = self.client.get("/api/auth/public/login", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/dashboard")
 
     # 3. Authenticated non-admin still treated as a regular user -> /dashboard
     def test_authenticated_non_admin_redirected_to_dashboard_not_admin(self):
         self.client.set_cookie("access_token", self._token(2, role="business_basic"))
-        res = self.client.get("/api/auth/public/login", follow_redirects=False)
-        self.assertEqual(res.status_code, 302)
-        self.assertIn("/dashboard", res.headers.get("Location", ""))
-        self.assertNotIn("/admin/dashboard", res.headers.get("Location", ""))
+        res = self.client.get("/api/auth/public/login", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/dashboard")
+        self.assertNotEqual(res.request.path, "/admin/dashboard")
 
     # 4. Expired/invalid JWT: existing global handling remains intact, no crash
     def test_expired_token_does_not_crash_public_login(self):
@@ -316,14 +321,13 @@ class UserLoginSessionRedirectTests(unittest.TestCase):
 
     # 5. Source-level: successful public login navigation uses .replace, not .href
     def test_login_success_navigation_uses_location_replace(self):
-        # Regular users now land on /install (the post-OTP "Install
-        # LANDMARK App" step, see tests/test_pwa_install_flow.py) before
-        # /dashboard; admin is unchanged. The requirement this test guards
-        # -- .replace, not .href, so the login page drops out of history
-        # -- still holds for both destinations.
+        # Regular users land directly on /dashboard after OTP; admin is
+        # unchanged. The requirement this test guards -- .replace, not
+        # .href, so the login page drops out of history -- still holds
+        # for both destinations.
         html = (ROOT / "templates" / "public" / "login.html").read_text(encoding="utf-8")
         self.assertIn(
-            "window.location.replace((role === 'admin') ? '/admin/dashboard' : '/install');",
+            "window.location.replace((role === 'admin') ? '/admin/dashboard' : '/dashboard');",
             html,
         )
         self.assertNotIn("window.location.href = (role === 'admin')", html)
@@ -340,9 +344,10 @@ class UserLoginSessionRedirectTests(unittest.TestCase):
         self.client.set_cookie("access_token", token)
         dash = self.client.get("/dashboard", follow_redirects=True)
         self.assertEqual(dash.status_code, 200)
-        res = self.client.get("/api/auth/public/login", follow_redirects=False)
-        self.assertEqual(res.status_code, 302)
-        self.assertIn("/dashboard", res.headers.get("Location", ""))
+        # /api/auth/public/login -> /login -> (still authenticated) -> /dashboard.
+        res = self.client.get("/api/auth/public/login", follow_redirects=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.request.path, "/dashboard")
 
     def test_current_request_is_authenticated_user_does_not_swallow_expired_or_invalid_tokens(self):
         """Only a genuinely MISSING token may be treated as 'not logged in'

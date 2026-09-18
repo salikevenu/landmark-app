@@ -75,6 +75,26 @@ _boot("database.init_db imported OK")
 _boot("Flask(__name__)")
 app = Flask(__name__)
 
+# ==================== TRUSTED PROXY ====================
+# On Render every request arrives via the platform load balancer, so
+# request.remote_addr is the proxy, not the caller. Without this, ALL
+# users share a single rate-limit bucket (Flask-Limiter keys on
+# get_remote_address), which both lets an attacker hide in the crowd and
+# lets one attacker exhaust the OTP limits for the entire user base --
+# and users.ip_address records the proxy IP for every signup, making the
+# fraud signal worthless.
+#
+# Deliberately gated on RENDER: X-Forwarded-For is attacker-controlled
+# unless something trusted is guaranteed to overwrite it, so this must
+# NEVER be enabled when the app is exposed directly. x_for=1 trusts
+# exactly one hop -- Render's own proxy -- and nothing further upstream.
+if os.getenv("RENDER") == "true":
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=0)
+    _boot("ProxyFix enabled (x_for=1) — real client IPs for rate limiting")
+else:
+    _boot("ProxyFix disabled (not on Render) — remote_addr used as-is")
+
 def _run_init_db_async():
     """Schema init only AFTER the worker has finished importing the app."""
     try:
@@ -288,6 +308,9 @@ def before_request_actions():
 # ==================== WEB ROUTES ====================
 @app.route("/")
 def index():
+    from routes.auth_routes import _current_request_is_authenticated_user
+    if _current_request_is_authenticated_user():
+        return redirect("/dashboard")
     ref = (request.args.get("ref") or "").strip()
     if ref:
         from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
@@ -300,21 +323,34 @@ def index():
 @app.route("/join")
 def join():
     """Referral entry point: /join?ref=CODE. Same capture-and-redirect
-    pattern as '/' and '/download-app' — canonical signup URL stays
-    /register?ref=CODE, this is just a friendlier shareable alias."""
+    pattern as '/' and '/download-app' — the canonical signup URL is
+    /signup?ref=CODE, this is just a friendlier shareable alias."""
+    from routes.auth_routes import (
+        SIGNUP_PATH,
+        cache_landing_referral_code,
+        register_url_with_ref,
+    )
     ref = (request.args.get("ref") or "").strip()
     if ref:
-        from routes.auth_routes import cache_landing_referral_code, register_url_with_ref
         cache_landing_referral_code(ref)
         return redirect(register_url_with_ref(ref))
-    return redirect("/register")
+    return redirect(SIGNUP_PATH)
 
 @app.route("/dashboard")
+@jwt_required()
 def redirect_dashboard():
-    target = "/api/user/dashboard"
-    if request.query_string:
-        target += "?" + request.query_string.decode("utf-8")
-    return redirect(target)
+    """The PWA's start_url and the app's single dashboard entry point.
+
+    Name kept for git-history continuity (it used to redirect to
+    /api/user/dashboard). Now renders the dashboard directly, gated by the
+    same @jwt_required() used by every other protected HTML page: a
+    missing/expired/invalid access token is caught by the app's existing
+    global JWT loaders, which -- for a normal browser page request -- send
+    the browser through the existing silent-refresh flow
+    (/api/refresh/silent) before ever falling back to the login page. No
+    new authentication mechanism is introduced here.
+    """
+    return render_template("users/dashboard.html", wallet=0, user=None)
 
 @app.route('/download/android')
 def download_apk():
@@ -483,7 +519,10 @@ def refresh_silent():
     here (which would recurse back to this same route).
     """
     next_url = _safe_relative_path(request.args.get("next"))
-    login_url = "/api/auth/public/login"
+    # Canonical login page. Imported rather than hardcoded so this cannot
+    # drift from the routes that actually serve it.
+    from routes.auth_routes import LOGIN_PATH
+    login_url = LOGIN_PATH
 
     try:
         verify_jwt_in_request(refresh=True)
@@ -562,8 +601,13 @@ def _overlay_logo_center(qr_img, logo_path):
 
 @app.route('/qr/<referral_code>')
 def generate_qr(referral_code):
-    from routes.auth_routes import register_url_with_ref
-    signup_url = request.host_url.rstrip('/') + register_url_with_ref(referral_code)
+    # referral_link_for() is the single source of truth for the shareable
+    # referral URL (also used by /api/user/api/invite's copy-link text) --
+    # built from the BASE_URL config, never from this request's own host,
+    # so the QR can never encode a different domain (e.g. localhost) than
+    # what was copied/shared as text.
+    from routes.auth_routes import referral_link_for
+    signup_url = referral_link_for(referral_code)
 
     qr = qrcode.QRCode(error_correction=ERROR_CORRECT_H, box_size=10, border=4)
     qr.add_data(signup_url)
