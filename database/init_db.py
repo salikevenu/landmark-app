@@ -1,8 +1,9 @@
 import os
+import threading
 import logging
 logger = logging.getLogger(__name__)
 from urllib.parse import urlparse
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from dotenv import load_dotenv
@@ -52,9 +53,38 @@ _IS_LOCAL_POSTGRES = _is_local_postgres_url(DATABASE_URL)
 # 3-connection pool has almost no slack to absorb under any concurrency
 # model, threaded or not. tests/test_pool_sizing.py asserts the
 # pool-vs-threads invariant above against both config files so it can't
-# silently drift out of sync again. pool_pre_ping guards against Neon
-# silently closing an idle connection; pool_recycle proactively retires
-# connections before that can happen.
+# silently drift out of sync again.
+#
+# pool_pre_ping guards only against a connection that is ALREADY idle in
+# the pool and has gone stale before the next checkout -- it does nothing
+# for a connection that goes stale WHILE actively checked out (e.g. mid
+# query, or the one held by the background init_db thread below). Nothing
+# in connect_args used to bound that case at all: connect_timeout only
+# covers the initial TCP handshake, and statement_timeout is enforced by
+# the Postgres SERVER, which never starts that clock if the query's bytes
+# never reach it because the underlying socket is already dead. That gap
+# is exactly what let engine.connect()/conn.execute() hang indefinitely in
+# production (readiness, refresh/silent, create-listing, wallet all shared
+# this one failure mode). tcp_user_timeout is a libpq/kernel-level bound
+# instead of an application- or server-level one: it tells the OS to give
+# up on a TCP connection if data sent on it goes unacknowledged for this
+# long, which is exactly the case a dead-but-not-closed socket can't
+# otherwise be detected in. Set comfortably above statement_timeout so a
+# legitimately slow-but-alive 15s query is never cut off by the TCP layer
+# before Postgres's own timeout has a chance to report back cleanly.
+# Requires libpq >= 12 (bundled psycopg2-binary here is far newer); if a
+# platform's libpq predates this, psycopg2.connect() raises immediately at
+# checkout with an "invalid connection option" error rather than silently
+# ignoring it, so an incompatible environment fails loudly, not quietly.
+#
+# pool_recycle=280 (under 5 minutes) is deliberately shorter than the idle
+# connection cutoffs commonly used by managed Postgres providers,
+# including Neon, so a pooled-but-idle connection is proactively closed
+# and replaced by SQLAlchemy before the far side can silently drop it out
+# from under the app. Left unchanged here -- it already sits comfortably
+# below that class of cutoff, and raising it would only widen the window
+# in which pool_pre_ping's before-handout check is the sole remaining
+# defense against exactly the staleness this value exists to avoid.
 engine = create_engine(
     DATABASE_URL,
     poolclass=QueuePool,
@@ -71,8 +101,55 @@ engine = create_engine(
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        # Bounds an established-but-silently-dead socket, which none of
+        # the settings above cover -- see the comment block above this.
+        "tcp_user_timeout": 30000,
     }
 )
+
+
+# ---------------------------------------------------------------------
+# Pool observability + invalidation (diagnostic only, no secrets logged)
+# ---------------------------------------------------------------------
+# checkout/checkin are logged at DEBUG so they produce no output under the
+# app's default INFO level (every single query checks a connection out and
+# back in, so INFO here would be constant production noise) -- an operator
+# can still turn DEBUG on for this logger specifically when diagnosing a
+# pool issue. invalidate is logged at WARNING since it's rare and always
+# operationally significant. Only the exception TYPE name is logged, never
+# str(exception) -- psycopg2/libpq error messages can echo back parts of
+# the DSN, which must never reach logs.
+_pool_logger = logging.getLogger("database.pool")
+
+
+@event.listens_for(engine, "checkout")
+def _on_pool_checkout(dbapi_connection, connection_record, connection_proxy):
+    _pool_logger.debug("pool checkout: checked_out=%s", engine.pool.checkedout())
+
+
+@event.listens_for(engine, "checkin")
+def _on_pool_checkin(dbapi_connection, connection_record):
+    _pool_logger.debug("pool checkin: checked_out=%s", engine.pool.checkedout())
+
+
+@event.listens_for(engine, "invalidate")
+def _on_pool_invalidate(dbapi_connection, connection_record, exception):
+    _pool_logger.warning(
+        "pool connection invalidated: reason=%s",
+        type(exception).__name__ if exception is not None else "manual",
+    )
+
+
+@event.listens_for(engine, "handle_error")
+def _invalidate_on_disconnect(exception_context):
+    """Belt-and-suspenders alongside SQLAlchemy's own built-in disconnect
+    detection: a connection whose error is disconnect-like must never be
+    silently returned to the pool as if still healthy -- explicitly
+    invalidating it here guarantees the next checkout gets a fresh
+    connection instead of the same broken one. Never retries the failed
+    operation itself -- that decision stays with the caller."""
+    if exception_context.is_disconnect and exception_context.connection is not None:
+        exception_context.connection.invalidate(exception_context.original_exception)
 
 def get_db_connection():
     """Return a fresh database connection."""
@@ -87,6 +164,82 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+# Ceiling for how long worker boot will wait on schema init before serving
+# traffic anyway -- generous for ~130 statement templates against an empty
+# or already-migrated database (fast either way: CREATE ... IF NOT EXISTS
+# is a cheap no-op once the schema already exists), while still being a
+# small fraction of gunicorn's own worker timeout (120s, gunicorn.conf.py),
+# so a stuck init_db is caught and logged here well before gunicorn would
+# otherwise SIGKILL the whole worker with no diagnostic of its own.
+INIT_DB_STARTUP_TIMEOUT_SECONDS = 60
+
+
+def run_init_db_in_background(timeout_seconds=INIT_DB_STARTUP_TIMEOUT_SECONDS, thread_name="init_db"):
+    """Run init_db() on a background daemon thread, but block the CALLER
+    (worker boot) until it finishes or timeout_seconds elapses, whichever
+    is first.
+
+    This replaces a pure fire-and-forget thread start: previously nothing
+    ever waited on this thread, so request handling could -- and did --
+    race freely against the full schema-init transaction for the entire
+    life of the worker process. Waiting here (bounded) means normal
+    request handling no longer starts concurrently with schema init under
+    the common case where init_db finishes well inside the timeout.
+
+    The bound exists so a stuck database can never hang worker boot (and
+    therefore Render's deploy) indefinitely: past timeout_seconds this
+    still returns, worker boot still proceeds, and requests are still
+    served -- degraded-but-alive, matching how /api/readiness already
+    reports "not ready" rather than crashing the process. The thread
+    itself is daemon and is deliberately left running rather than killed
+    (Python cannot safely force-stop a thread mid-statement); it will
+    still eventually error out on its own once tcp_user_timeout (see the
+    engine's connect_args above) fires on whatever call it's stuck on, at
+    which point init_db()'s own finally: conn.close() releases its pooled
+    connection exactly as it would on any other exception.
+
+    Called from exactly one place (app.py, RENDER-gated) -- this function
+    does not call itself or otherwise start a second thread on its own.
+
+    If the thread is still running when timeout_seconds elapses, the
+    caller (this function) gives up and returns "timeout" -- but the
+    thread itself, once it eventually finishes, logs its own late outcome
+    (see _run below) so that result is never silently lost. Only the
+    exception TYPE name is ever logged, never str(exception) -- same rule
+    as the pool-event listeners above, for the same reason (driver error
+    text can echo back parts of the DSN).
+
+    Returns (status, error): status is "done", "failed", or "timeout";
+    error is the caught exception for "failed", else None.
+    """
+    outcome = {"status": "timeout", "error": None}
+    gave_up_waiting = threading.Event()
+
+    def _run():
+        try:
+            init_db()
+            outcome["status"] = "done"
+        except Exception as e:
+            outcome["status"] = "failed"
+            outcome["error"] = e
+        if gave_up_waiting.is_set():
+            if outcome["status"] == "done":
+                logger.info("[BOOT] background init_db: completed after startup timeout")
+            else:
+                logger.warning(
+                    "[BOOT] background init_db: FAILED after startup timeout (%s)",
+                    type(outcome["error"]).__name__,
+                )
+
+    thread = threading.Thread(target=_run, daemon=True, name=thread_name)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        gave_up_waiting.set()
+        return "timeout", None
+    return outcome["status"], outcome["error"]
 
 
 def _init_db_body(conn):

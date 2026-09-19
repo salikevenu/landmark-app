@@ -68,7 +68,7 @@ _boot(f"DATABASE_URL set={bool(os.getenv('DATABASE_URL'))} host_hint={str(os.get
 # (A previous trailing block in database/init_db.py called init_db() when RENDER=true
 #  and hung the gunicorn worker before it could finish booting.)
 _boot("import database.init_db (must be non-blocking)")
-from database.init_db import get_db_connection, init_db
+from database.init_db import get_db_connection, run_init_db_in_background, INIT_DB_STARTUP_TIMEOUT_SECONDS
 _boot("database.init_db imported OK")
 
 # Initialize Flask app
@@ -95,20 +95,27 @@ if os.getenv("RENDER") == "true":
 else:
     _boot("ProxyFix disabled (not on Render) — remote_addr used as-is")
 
-def _run_init_db_async():
-    """Schema init only AFTER the worker has finished importing the app."""
-    try:
-        _boot("background init_db: starting")
-        init_db()
-        _boot("background init_db: done")
-    except Exception as e:
-        _boot(f"background init_db: FAILED (app continues): {e}")
-
-# Defer DB work — never block module import / worker boot
+# Schema init runs on its own daemon thread (never inline at import time --
+# see the comment above this import), but worker boot now waits on it up to
+# INIT_DB_STARTUP_TIMEOUT_SECONDS so normal request handling doesn't start
+# racing the full schema-init transaction from the very first request, the
+# way it previously could for the whole life of the worker process. Past
+# that bound, boot still proceeds -- a stuck database must never be able to
+# hang worker startup (and therefore a Render deploy) indefinitely. See
+# database/init_db.py::run_init_db_in_background for the full rationale.
 if os.getenv("RENDER") == "true":
-    import threading
-    threading.Thread(target=_run_init_db_async, daemon=True, name="init_db").start()
-    _boot("scheduled background init_db thread")
+    _boot("starting init_db (bounded wait; worker boot proceeds regardless)")
+    _init_db_status, _init_db_error = run_init_db_in_background()
+    if _init_db_status == "done":
+        _boot("background init_db: done")
+    elif _init_db_status == "failed":
+        _boot(f"background init_db: FAILED (app continues): {type(_init_db_error).__name__}")
+    else:
+        _boot(
+            f"background init_db: still running after {INIT_DB_STARTUP_TIMEOUT_SECONDS}s "
+            "-- continuing worker boot; schema init or a DB connection may be stuck "
+            "(see the database.pool logger for checkout/invalidate diagnostics)"
+        )
 else:
     _boot("local mode — skipping init_db")
 
