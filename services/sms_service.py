@@ -146,6 +146,33 @@ class MessageCentralSMS:
                 logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
                 return True, data, verification_id
 
+            # Message Central rejects a resend inside its own cooldown window
+            # with HTTP 400 / responseCode 506 "REQUEST_ALREADY_EXISTS" --
+            # this means the ORIGINAL OTP is still valid and usable, not that
+            # anything failed. Recover its verificationId from this same
+            # error body and report success, so the caller can keep using
+            # the still-valid original code instead of surfacing a false
+            # failure (which was pushing users to hammer /send-otp and burn
+            # through their 3-per-hour rate limit). Every other non-200
+            # status/responseCode falls through unchanged below.
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = None
+            if isinstance(error_body, dict):
+                response_code = error_body.get("responseCode")
+                if isinstance(response_code, str):
+                    response_code = response_code.strip()
+                message = str(error_body.get("message") or "").strip().upper()
+                if response_code in (506, "506") and message == "REQUEST_ALREADY_EXISTS":
+                    existing_verification_id = (error_body.get("data") or {}).get("verificationId")
+                    if existing_verification_id:
+                        logger.info(
+                            f"OTP already in flight for {full_phone} "
+                            f"(Verification ID: {existing_verification_id}) — treating resend as success"
+                        )
+                        return True, error_body, existing_verification_id
+
             logger.error(f"Status: {response.status_code} - Response: {response.text}")
             return False, {"error": response.text}, None
 

@@ -903,7 +903,20 @@ def resend_otp():
 
         if success and verification_id:
             store_verification(full_phone, verification_id)
-            return jsonify({"success": True, "message": "OTP resent successfully"})
+            # send_otp() reports success here even when Message Central
+            # rejected the resend as REQUEST_ALREADY_EXISTS (responseCode
+            # 506) -- the ORIGINAL OTP is still valid, but no new SMS went
+            # out. Say so explicitly rather than implying a fresh text was
+            # just sent.
+            message = "OTP resent successfully"
+            if isinstance(response, dict):
+                response_code = response.get("responseCode")
+                if isinstance(response_code, str):
+                    response_code = response_code.strip()
+                already_exists = str(response.get("message") or "").strip().upper() == "REQUEST_ALREADY_EXISTS"
+                if response_code in (506, "506") and already_exists:
+                    message = "An OTP is already on its way — please check your messages"
+            return jsonify({"success": True, "message": message})
 
         return jsonify({"success": False, "message": "Failed to resend OTP"}), 502
 
