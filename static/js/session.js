@@ -84,6 +84,22 @@
         clearLegacyClientTokens();
         redirectToLogin();
       }
+    } else if (res.status === 403 && !isRefreshCall) {
+      // A 403 here (unlike 401) means a VALID token for the wrong
+      // identity, not a missing/expired one -- exactly the state an
+      // admin's own tab is left in after impersonating a user (that
+      // token shares the one access_token cookie with the admin's own
+      // session). A silent refresh restores the real identity from the
+      // untouched refresh-token cookie when that's the cause; a
+      // genuinely unauthorized-but-correctly-identified caller just gets
+      // the same 403 back after one extra round trip. Never redirects to
+      // login here -- being denied is not the same failure as not being
+      // authenticated.
+      var refreshedFor403 = await tryRefresh();
+      if (refreshedFor403) {
+        headers = withCsrf(Object.assign({}, options.headers || {}), method, false);
+        res = await fetch(url, Object.assign({}, fetchOpts, { headers: headers }));
+      }
     }
     return res;
   }
