@@ -577,9 +577,16 @@ class QrCodeEndpointTests(unittest.TestCase):
 
 
 class ReferralInfoServiceTests(unittest.TestCase):
-    """services/referral_service.get_referral_info now also returns referral_link."""
+    """services/referral_service.get_referral_info returns only
+    referral_code and wallet_balance. It used to also build its own
+    referral_link (/register?ref=...), which diverged from the canonical
+    builder (routes/auth_routes.py's referral_link_for(), which points at
+    /install?ref=... and is the only source of truth for this URL) -- that
+    field was removed rather than fixed in place, since nothing live ever
+    consumed it (routes/referral_routes.py's /api/referral/info is not
+    called from any frontend)."""
 
-    def test_get_referral_info_includes_referral_link(self):
+    def test_get_referral_info_does_not_include_a_divergent_referral_link(self):
         from services import referral_service
 
         class Row:
@@ -601,8 +608,8 @@ class ReferralInfoServiceTests(unittest.TestCase):
         with patch.object(referral_service, "get_db_connection", return_value=Conn()):
             info = referral_service.get_referral_info(42)
         self.assertEqual(info["referral_code"], "ABCD1234")
-        self.assertIn("ABCD1234", info["referral_link"])
-        self.assertTrue(info["referral_link"].startswith(BASE_URL.rstrip("/")))
+        self.assertEqual(info["wallet_balance"], 12.5)
+        self.assertNotIn("referral_link", info)
 
 
 class VerifyOtpResponseTests(unittest.TestCase):

@@ -67,14 +67,19 @@
     <button id="installBtn" type="button" class="btn-primary" hidden style="width:100%; margin-top:14px;">
       Install LANDMARK App
     </button>
-    <p class="install-hint" id="installHint" hidden>You can also install it from Chrome's menu.</p>
+    <p class="install-hint" id="installHint" hidden>You can also install it from your browser's menu.</p>
 
     <div id="fallbackHint" hidden>
       <p class="install-hint" style="margin-top:14px;">To install manually:</p>
-      <ol class="fallback-steps">
-        <li>Open Chrome's <strong>⋮</strong> menu</li>
+      <ol class="fallback-steps" id="fallbackStepsGeneric">
+        <li>Open your browser's menu (<strong>⋮</strong> or <strong>Share</strong> icon)</li>
         <li>Choose <strong>Install app</strong> or <strong>Add to Home screen</strong></li>
         <li>Confirm installation</li>
+      </ol>
+      <ol class="fallback-steps" id="fallbackStepsIOS" hidden>
+        <li>Tap the <strong>Share</strong> icon in Safari's toolbar</li>
+        <li>Scroll down and choose <strong>Add to Home Screen</strong></li>
+        <li>Tap <strong>Add</strong> to confirm</li>
       </ol>
     </div>
 
@@ -89,9 +94,22 @@
   var installBtn = document.getElementById('installBtn');
   var installHint = document.getElementById('installHint');
   var fallbackHint = document.getElementById('fallbackHint');
+  var fallbackStepsGeneric = document.getElementById('fallbackStepsGeneric');
+  var fallbackStepsIOS = document.getElementById('fallbackStepsIOS');
   var statusEl = document.getElementById('installStatus');
   var deferredPrompt = null;
   var navigated = false;
+
+  // iOS Safari never fires beforeinstallprompt, so it always falls through
+  // to the manual steps below -- and its actual install path (Share sheet
+  // -> Add to Home Screen) has nothing to do with a "⋮ menu", so it gets
+  // its own accurate steps instead of the generic wording every other
+  // fallback browser sees.
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  if (isIOS) {
+    fallbackStepsGeneric.hidden = true;
+    fallbackStepsIOS.hidden = false;
+  }
 
   // This screen is only ever reached before authentication (the server
   // route redirects an already-authenticated visitor straight to

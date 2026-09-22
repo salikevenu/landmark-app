@@ -301,6 +301,23 @@
     }, 1800);
   }
 
+  // No usable referral link was loaded (missing code, or the request
+  // itself failed) — disable every share action instead of leaving them
+  // clickable against a fake non-URL placeholder, which used to silently
+  // produce linkless (or, for WhatsApp, unattributed) shares. whatsappBtn
+  // is an <a>, which has no native disabled state, so it's neutralized via
+  // aria-disabled + pointer-events instead of the .disabled property.
+  function disableShareActions(message) {
+    copyBtn.disabled = true;
+    shareBtn.disabled = true;
+    shareQrBtn.disabled = true;
+    whatsappBtn.setAttribute("aria-disabled", "true");
+    whatsappBtn.style.pointerEvents = "none";
+    whatsappBtn.style.opacity = "0.5";
+    cardStatus.hidden = false;
+    cardStatus.textContent = message;
+  }
+
   async function loadReferral() {
     try {
       const res = await LandmarkSession.authFetch("/api/user/api/invite");
@@ -322,10 +339,12 @@
       } else {
         linkInput.value = "No referral code available";
         referralCount.innerHTML = "Referrals: <strong>0</strong>";
+        disableShareActions("Couldn't load your referral link — reload the page");
       }
     } catch (err) {
       linkInput.value = "Error loading referral code";
       referralCount.textContent = "Referrals: unavailable";
+      disableShareActions("Couldn't load your referral link — reload the page");
     }
     updateWhatsApp();
   }
@@ -600,6 +619,14 @@
         "Discover amazing local businesses near you.\n\n" +
         "Scan the QR code or use my referral link:\n" + currentLinkValue + "\n\n" +
         "Referral Code: " + currentCode;
+
+      // Safety net: some share targets drop the text caption and keep only
+      // the image, silently losing the link. Copying it to the clipboard
+      // first means it's still recoverable by pasting -- no UI change, no
+      // toast, separate from copyLink()'s own user-initiated one.
+      try {
+        await navigator.clipboard.writeText(currentLinkValue);
+      } catch (err) { /* clipboard unavailable/denied — file share still proceeds */ }
 
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
