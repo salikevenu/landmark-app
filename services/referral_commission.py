@@ -54,6 +54,48 @@ FIRST_BONUS_BY_PLAN = {
     "business_premium": 150.0,
 }
 
+# admin_settings keys backing the constants above, so an admin can retune
+# commission without a deploy. Both helpers fall back to the hardcoded
+# constant on a missing row, unparseable value, or an out-of-range value —
+# a bad setting must never crash a payment webhook or silently zero out a
+# commission.
+_RECURRING_RATE_SETTING_KEY = "recurring_commission_percent"
+_FIRST_BONUS_SETTING_KEYS = {
+    "service_provider": "referral_first_bonus_service_provider",
+    "business_basic": "referral_first_bonus_business_basic",
+    "business_premium": "referral_first_bonus_business_premium",
+}
+
+
+def _setting_value(conn, key):
+    row = conn.execute(
+        text("SELECT value FROM admin_settings WHERE key = :key"), {"key": key}
+    ).fetchone()
+    return row._mapping["value"] if row else None
+
+
+def _current_recurring_rate(conn):
+    raw = _setting_value(conn, _RECURRING_RATE_SETTING_KEY)
+    try:
+        percent = float(raw)
+    except (TypeError, ValueError):
+        return RECURRING_RATE
+    if not (0 < percent <= 100):
+        return RECURRING_RATE
+    return percent / 100.0
+
+
+def _current_first_bonus(conn, plan_key):
+    default = FIRST_BONUS_BY_PLAN[plan_key]
+    raw = _setting_value(conn, _FIRST_BONUS_SETTING_KEYS[plan_key])
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < 0:
+        return default
+    return value
+
 
 class CommissionPlanLookupError(Exception):
     """Raised when the first-sale bonus plan cannot be safely determined.
@@ -245,8 +287,8 @@ def _first_commission_amount(conn, referred_user_id, razorpay_payment_id, amount
             f"match any known billing cycle; refusing to guess first-sale commission"
         )
     if cycle == "monthly":
-        return FIRST_BONUS_BY_PLAN[plan_key]
-    return round(float(amount) * RECURRING_RATE, 2)
+        return _current_first_bonus(conn, plan_key)
+    return round(float(amount) * _current_recurring_rate(conn), 2)
 
 
 def process_referral_commission(referred_user_id, payment_amount, razorpay_payment_id=None, conn=None):
@@ -364,7 +406,7 @@ def process_referral_commission(referred_user_id, payment_amount, razorpay_payme
             # first_sub_commission_paid change (it's already 1 here), and
             # the existing job retry/error path handles the failure safely.
             _load_activated_payment(conn, referred_user_id, razorpay_payment_id)
-            recurring = round(amount * RECURRING_RATE, 2)
+            recurring = round(amount * _current_recurring_rate(conn), 2)
             if recurring > 0:
                 if _insert_commission_tx(
                     conn, referrer_id, recurring, RECURRING_SOURCE,

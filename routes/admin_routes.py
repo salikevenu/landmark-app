@@ -26,7 +26,7 @@ from services.admin_service import (
     bulk_approve_withdrawals,
     get_admin_referrals,
     export_users_csv, export_payments_csv, export_withdrawals_csv,
-    get_settings, update_setting,
+    get_settings, update_setting, FROZEN_ADMIN_SETTINGS,
     log_admin_action
 )
 import logging
@@ -537,14 +537,7 @@ def api_update_setting():
     value = data.get('value')
     if not key:
         return jsonify({'error': 'Missing key'}), 400
-    frozen = {
-        "withdrawal_min_amount",
-        "withdrawal_max_amount",
-        "commission_rate",
-        "referral_bonus_percent",
-        "recurring_commission_percent",
-    }
-    if key in frozen:
+    if key in FROZEN_ADMIN_SETTINGS:
         return jsonify({
             "error": "This setting is frozen and cannot be changed from the admin API",
             "key": key,
@@ -552,6 +545,8 @@ def api_update_setting():
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = update_setting(key, value, admin_id, admin_phone, ip)
+    if result.get("error"):
+        return jsonify(result), 400
     return jsonify(result)
 
 # Legacy endpoints (for compatibility)

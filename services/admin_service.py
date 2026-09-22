@@ -733,8 +733,22 @@ FROZEN_ADMIN_SETTINGS = frozenset({
     "withdrawal_max_amount",
     "commission_rate",
     "referral_bonus_percent",
-    "recurring_commission_percent",
 })
+
+# (min, max) bounds for settings that back a live numeric constant --
+# services/referral_commission.py and routes/auth_routes.py fall back to
+# their hardcoded defaults on an out-of-range or unparseable value read
+# back from the table, but rejecting one here up front gives the admin an
+# immediate, clear error instead of a silent no-op.
+NUMERIC_SETTING_BOUNDS = {
+    "recurring_commission_percent": (0.0001, 100),
+    "referral_first_bonus_service_provider": (0, None),
+    "referral_first_bonus_business_basic": (0, None),
+    "referral_first_bonus_business_premium": (0, None),
+    "otp_verification_expiry_seconds": (30, None),
+    "otp_resend_cooldown_seconds": (1, None),
+    "otp_max_attempts": (1, None),
+}
 
 
 def update_setting(key, value, admin_id, admin_phone, ip):
@@ -744,8 +758,19 @@ def update_setting(key, value, admin_id, admin_phone, ip):
             "error": "This setting is frozen and cannot be changed from the admin API",
             "key": key,
         }
+    bounds = NUMERIC_SETTING_BOUNDS.get(key)
+    if bounds is not None:
+        low, high = bounds
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return {"status": "invalid", "error": "This setting must be a number", "key": key}
+        if numeric_value < low or (high is not None and numeric_value > high):
+            range_desc = f"{low}–{high}" if high is not None else f"at least {low}"
+            return {"status": "invalid", "error": f"This setting must be {range_desc}", "key": key}
     with get_db_connection() as conn:
         conn.execute(text("UPDATE admin_settings SET value = :value, updated_at = CURRENT_TIMESTAMP WHERE key = :key"), {"value": value, "key": key})
         conn.commit()
+    return {"status": "updated", "key": key, "value": value}
     log_admin_action(admin_id, admin_phone, 'update_setting', 'setting', key, f'Set {key}={value}', ip)
     return {'status': 'updated'}

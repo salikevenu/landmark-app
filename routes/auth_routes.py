@@ -91,6 +91,38 @@ MAX_OTP_ATTEMPTS = 5
 PENDING_REFERRAL_TTL = timedelta(days=7)
 REFERRAL_CODE_INSERT_ATTEMPTS = 8
 
+# admin_settings keys backing the three constants above, so OTP timing can
+# be retuned without a deploy. Each falls back to its hardcoded default on
+# a missing row, unparseable value, too-low a value, or a lookup failure --
+# OTP send/verify must never break because a settings read failed.
+
+
+def _otp_setting_int(key, default, minimum=1):
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT value FROM admin_settings WHERE key = :key"), {"key": key}
+            ).fetchone()
+        if row is None:
+            return default
+        value = int(float(row._mapping["value"]))
+        return value if value >= minimum else default
+    except Exception:
+        logger.exception("OTP setting lookup failed for key=%s; using default=%s", key, default)
+        return default
+
+
+def _verification_expiry_seconds():
+    return _otp_setting_int("otp_verification_expiry_seconds", VERIFICATION_EXPIRY_SECONDS, minimum=30)
+
+
+def _resend_cooldown_seconds():
+    return _otp_setting_int("otp_resend_cooldown_seconds", RESEND_COOLDOWN_SECONDS, minimum=1)
+
+
+def _max_otp_attempts():
+    return _otp_setting_int("otp_max_attempts", MAX_OTP_ATTEMPTS, minimum=1)
+
 # Token lifetimes. The access token is deliberately short and FIXED --
 # "remember me" must never lengthen it (see generate_jwt_tokens below for
 # why). Session longevity comes from the refresh token plus app.py's
@@ -533,7 +565,7 @@ def store_verification(phone, verification_id):
         """), {
             "phone": phone,
             "verification_id": verification_id,
-            "expiry_seconds": VERIFICATION_EXPIRY_SECONDS,
+            "expiry_seconds": _verification_expiry_seconds(),
         })
         conn.commit()
 
@@ -625,10 +657,11 @@ def send_otp():
         # for up to RESEND_COOLDOWN_SECONDS, never for the OTP's full
         # validity window.
         existing = get_verification(full_phone)
-        if existing and existing["seconds_since_created"] < RESEND_COOLDOWN_SECONDS:
+        cooldown_seconds = _resend_cooldown_seconds()
+        if existing and existing["seconds_since_created"] < cooldown_seconds:
             return jsonify({
                 "success": False,
-                "message": f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP."
+                "message": f"Please wait {cooldown_seconds} seconds before requesting another OTP."
             }), 429
 
         # Call the unified SMS service to send OTP
@@ -700,7 +733,7 @@ def verify_otp():
                 "reason": "ALREADY_CONSUMED"
             }), 401
 
-        if stored["attempts"] >= MAX_OTP_ATTEMPTS:
+        if stored["attempts"] >= _max_otp_attempts():
             delete_verification(full_phone)
             return jsonify({
                 "success": False,
@@ -891,10 +924,11 @@ def resend_otp():
         # Same resend cooldown as send_otp() -- see RESEND_COOLDOWN_SECONDS;
         # independent of VERIFICATION_EXPIRY_SECONDS.
         stored = get_verification(full_phone)
-        if stored and stored["seconds_since_created"] < RESEND_COOLDOWN_SECONDS:
+        cooldown_seconds = _resend_cooldown_seconds()
+        if stored and stored["seconds_since_created"] < cooldown_seconds:
             return jsonify({
                 "success": False,
-                "message": f"Please wait {RESEND_COOLDOWN_SECONDS} seconds before requesting another OTP."
+                "message": f"Please wait {cooldown_seconds} seconds before requesting another OTP."
             }), 429
 
         # Send a fresh OTP

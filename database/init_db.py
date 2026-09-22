@@ -709,7 +709,18 @@ def _init_db_body(conn):
         ('referral_bonus_percent', '10'),
         ('recurring_commission_percent', '10'),
         ('sponsor_price', '999'),
-        ('verify_price', '499')
+        ('verify_price', '499'),
+        # Defaults match the values these settings replace as hardcoded
+        # constants in services/referral_commission.py and
+        # routes/auth_routes.py -- see migrations/
+        # add_configurable_referral_and_otp_settings.py for the one-time
+        # fix applied to databases created before these existed.
+        ('referral_first_bonus_service_provider', '50'),
+        ('referral_first_bonus_business_basic', '100'),
+        ('referral_first_bonus_business_premium', '150'),
+        ('otp_verification_expiry_seconds', '300'),
+        ('otp_resend_cooldown_seconds', '60'),
+        ('otp_max_attempts', '5'),
     ]
     for key, val in defaults:
         conn.execute(text("""
