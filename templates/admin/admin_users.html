@@ -144,10 +144,14 @@ async function viewAsUser(userId) {
         const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/impersonate`, {
             method: "POST"
         });
-        if (!res.ok) throw new Error("Failed");
+        if (!res.ok) {
+            let data = {};
+            try { data = await res.json(); } catch (e) {}
+            throw new Error(data.error || "Failed");
+        }
         window.location.href = "/api/user/dashboard";
     } catch (err) {
-        alert("Impersonation failed");
+        alert(err.message || "Impersonation failed");
     }
 }
 

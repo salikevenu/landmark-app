@@ -588,13 +588,22 @@ def admin_trigger_payout():
 def impersonate_user(user_id):
     with get_db_connection() as conn:
         user = conn.execute(
-            text("SELECT id, phone, role FROM users WHERE id = :uid"),
+            text("SELECT id, phone, role, is_blocked, is_active FROM users WHERE id = :uid"),
             {"uid": user_id}
         ).fetchone()
     if not user:
         return jsonify({"error": "User not found"}), 404
     if (user._mapping.get("role") or "") == "admin":
         return jsonify({"error": "Cannot impersonate an admin"}), 403
+    # services/jwt_session.py's lookup_jwt_user() refuses to authenticate a
+    # blocked/inactive user's token (fails closed, by design) -- minting one
+    # here would look like it worked (200, token issued) but 401 on the very
+    # next request the impersonated session makes. Fail loudly here instead,
+    # before a token is ever issued.
+    if user._mapping.get("is_blocked"):
+        return jsonify({"error": "Cannot impersonate a banned user"}), 409
+    if user._mapping.get("is_active") == 0:
+        return jsonify({"error": "Cannot impersonate an inactive user"}), 409
 
     # Generate short-lived token (10 minutes)
     token = create_access_token(
