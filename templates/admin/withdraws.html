@@ -23,7 +23,7 @@
 <div style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">
     <label>From: <input type="date" id="startDate"></label>
     <label>To: <input type="date" id="endDate"></label>
-    <button onclick="loadData()">Apply</button>
+    <button onclick="loadWithdraws()">Apply</button>
 </div>
 
 <script>
@@ -39,13 +39,13 @@ function escapeHtml(str) {
 async function loadWithdraws() {
   const start = document.getElementById("startDate").value;
     const end = document.getElementById("endDate").value;
-    let url = "/api/admin/payments";
+    let url = "/api/admin/withdrawals";
     const params = new URLSearchParams();
     if (start) params.append("start_date", start);
     if (end) params.append("end_date", end);
     if (params.toString()) url += "?" + params.toString();
   try {
-    const res = await LandmarkSession.authFetch("/api/admin/withdrawals");
+    const res = await LandmarkSession.authFetch(url);
     if (!res.ok) {
       if (res.status === 401) {
         alert("Session expired. Please login again.");
@@ -58,10 +58,10 @@ async function loadWithdraws() {
     const data = await res.json();
     let html = "";
 
-    if (data.length === 0) {
+    if (!data || !data.withdrawals || data.withdrawals.length === 0) {
       html = "<tr><td colspan='7'>No withdraw requests found</td></tr>";
     } else {
-      data.forEach(w => {
+      data.withdrawals.forEach(w => {
         html += `
           <tr>
             <td>${w.id}</td>

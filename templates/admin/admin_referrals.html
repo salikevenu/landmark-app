@@ -32,10 +32,10 @@ async function loadReferrals() {
 
     const data = await res.json();
     let html = "";
-    if (!data || data.length === 0) {
+    if (!data || !data.referrals || data.referrals.length === 0) {
       html = "<tr><td colspan='6'>No referral transactions found.</td></tr>";
     } else {
-      data.forEach(r => {
+      data.referrals.forEach(r => {
         html += `
           <tr>
             <td>${r.id}</td>

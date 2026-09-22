@@ -578,15 +578,21 @@ def approve_payment_admin(payment_id, admin_id, admin_phone, ip):
 # -------------------------------
 # WITHDRAWAL MANAGEMENT
 # -------------------------------
-def get_withdraw_requests(page=1, limit=50, status_filter=''):
+def get_withdraw_requests(page=1, limit=50, status_filter='', start_date=None, end_date=None):
     offset = (page - 1) * limit
     params = {}
-    where_clause = ""
+    where_clauses = []
     if status_filter:
-        where_clause = "WHERE wr.status = :status"
+        where_clauses.append("wr.status = :status")
         params['status'] = status_filter
-    else:
-        where_clause = "WHERE 1=1"
+    if start_date:
+        where_clauses.append("wr.created_at >= :start_date")
+        params['start_date'] = start_date
+    if end_date:
+        where_clauses.append("wr.created_at <= :end_date")
+        params['end_date'] = end_date + " 23:59:59"
+
+    where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else "WHERE 1=1"
 
     with get_db_connection() as conn:
         count_query = f"SELECT COUNT(*) FROM withdraw_requests wr {where_clause}"

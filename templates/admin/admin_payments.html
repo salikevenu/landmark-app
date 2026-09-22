@@ -34,7 +34,7 @@
 
     const data = await res.json();
     let html = "";
-    data.forEach(p => {
+    (data.payments || []).forEach(p => {
       html += `
         <tr>
           <td>${p.id}</td>

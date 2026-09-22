@@ -454,7 +454,9 @@ def api_withdrawals():
     page = int(request.args.get('page', 1))
     limit = int(request.args.get('limit', 50))
     status = request.args.get('status', '')
-    result = get_withdraw_requests(page, limit, status)
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    result = get_withdraw_requests(page, limit, status, start_date, end_date)
     return jsonify(result)
 
 @admin_bp.route("/api/admin/withdrawals/<int:wid>/approve", methods=["POST"])
