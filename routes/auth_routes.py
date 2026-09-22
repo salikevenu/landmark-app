@@ -20,6 +20,7 @@ from flask_jwt_extended import (
     set_access_cookies,
     set_refresh_cookies,
     jwt_required,
+    get_jwt,
     get_jwt_identity,
     unset_jwt_cookies,
     verify_jwt_in_request,
@@ -934,4 +935,10 @@ def get_current_user():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    return jsonify(dict(user._mapping)), 200
+    data = dict(user._mapping)
+    # Surfaces impersonate_user()'s short-lived "impersonated" access-token
+    # claim (routes/admin_routes.py) so the client can show an "exit
+    # impersonation" banner -- false for every normal session, since the
+    # claim is absent unless an admin explicitly impersonated this user.
+    data["impersonated"] = bool(get_jwt().get("impersonated", False))
+    return jsonify(data), 200

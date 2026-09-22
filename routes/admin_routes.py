@@ -17,7 +17,7 @@ from flask_limiter.util import get_remote_address
 from services.sms_service import get_sms_service
 from services.audit_service import log_admin_action
 from services.admin_service import (
-    get_admin_stats, get_admin_users, ban_user, unban_user, change_user_role, reset_user_subscription,
+    get_admin_stats, get_admin_users, ban_user, unban_user, delete_user, change_user_role, reset_user_subscription,
     activate_business_power, activate_business_power_v2, get_admin_organization_detail,
     get_admin_listings, approve_listing_admin, disable_listing_admin, verify_listing_admin,
     delete_listing_admin, sponsor_listing_admin,
@@ -275,6 +275,14 @@ def api_unban_user(user_id):
     admin_id, admin_phone = get_admin_info()
     ip = request.remote_addr
     result = unban_user(user_id, admin_id, admin_phone, ip)
+    return jsonify(result)
+
+@admin_bp.route("/api/admin/users/<int:user_id>/delete", methods=["DELETE"])
+@admin_required
+def api_delete_user(user_id):
+    admin_id, admin_phone = get_admin_info()
+    ip = request.remote_addr
+    result = delete_user(user_id, admin_id, admin_phone, ip)
     return jsonify(result)
 
 @admin_bp.route("/api/admin/users/<int:user_id>/role", methods=["POST"])

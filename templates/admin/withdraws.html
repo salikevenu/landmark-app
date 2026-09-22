@@ -27,6 +27,15 @@
 </div>
 
 <script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 async function loadWithdraws() {
   const start = document.getElementById("startDate").value;
     const end = document.getElementById("endDate").value;
@@ -58,7 +67,7 @@ async function loadWithdraws() {
             <td>${w.id}</td>
             <td>${w.phone}</td>
             <td>₹${w.amount}</td>
-            <td>${w.upi_id}</td>
+            <td>${escapeHtml(w.upi_id)}</td>
             <td>${w.status}</td>
             <td>${w.created_at}</td>
             <td>${getActions(w)}</td>

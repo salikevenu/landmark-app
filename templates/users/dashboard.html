@@ -221,6 +221,10 @@
 </style>
 
 <div class="dash-container">
+  <div id="impersonationBanner" style="display:none; background:#fbbf24; color:#1e293b; padding:10px 16px; border-radius:8px; margin-bottom:16px; text-align:center; font-weight:600;">
+    👁️ Viewing as this user (impersonation)
+    <a href="/admin/users" id="exitImpersonationLink" style="margin-left:12px; color:#1e3a8a; text-decoration:underline;">Exit impersonation</a>
+  </div>
   <div class="dash-title">LANDMARK-HUB</div>
 
   <!-- ===== WALLET CARD ===== -->
@@ -353,8 +357,38 @@
     window.location.href = "/logout";
   };
 
+  // Shows the "exit impersonation" banner when this session's access
+  // token carries the short-lived "impersonated" claim set by
+  // routes/admin_routes.py's impersonate_user(). Reuses the existing
+  // /api/auth/me identity endpoint rather than adding a new one.
+  async function checkImpersonation() {
+    try {
+      const res = await LandmarkSession.authFetch("/api/auth/me");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.impersonated) {
+        document.getElementById("impersonationBanner").style.display = "block";
+      }
+    } catch (err) { /* non-critical — banner just stays hidden */ }
+  }
+
+  // The impersonated access-token cookie (not the admin's own) is what's
+  // live on this page, so a plain navigation to /admin/users would hit
+  // admin_required's role check and 403 -- there is no JWT error here for
+  // the app's usual silent-refresh loaders to catch, since the token is
+  // perfectly valid, just the wrong identity. Refreshing first exchanges
+  // it back for the admin's own access token from the still-intact
+  // refresh-token cookie (impersonate_user() never touches that one),
+  // then the navigation lands on a real admin session.
+  document.getElementById("exitImpersonationLink").addEventListener("click", async function (e) {
+    e.preventDefault();
+    await LandmarkSession.tryRefresh();
+    window.location.href = "/admin/users";
+  });
+
   document.addEventListener("DOMContentLoaded", () => {
     loadWallet();
+    checkImpersonation();
   });
 </script>
 

@@ -138,6 +138,15 @@
 <script>
 let netPage = 1;
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab-panel').forEach(function (el) { el.style.display = 'none'; });
   document.querySelectorAll('.tab-btn').forEach(function (el) { el.classList.remove('active'); });
@@ -298,7 +307,7 @@ async function loadNetwork(page) {
     } else {
       tbody.innerHTML = data.users.map(function (u) {
         const statusLabel = (u.is_blocked || !u.is_active) ? 'Inactive' : 'Active';
-        return '<tr><td>' + u.id + '</td><td>' + (u.name || '') + '</td><td>' + u.phone + '</td>' +
+        return '<tr><td>' + u.id + '</td><td>' + escapeHtml(u.name || '') + '</td><td>' + u.phone + '</td>' +
           '<td>' + u.rank + '</td><td>' + u.verified_users_count + '</td><td>' + u.active_subscribers_count + '</td>' +
           '<td>' + u.qualified_members_count + '</td><td>' + u.qualified_guides_count + '</td><td>' + u.qualified_leaders_count + '</td>' +
           '<td>' + statusLabel + '</td>' +

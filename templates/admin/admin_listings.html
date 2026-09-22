@@ -5,6 +5,15 @@
 <div id="listingContainer"></div>
 
 <script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 async function loadListings() {
   try {
     const res = await LandmarkSession.authFetch("/api/admin/listings");
@@ -26,7 +35,7 @@ async function loadListings() {
       data.forEach(item => {
         html += `
           <div class="card">
-            <h3>${item.business_name} ${item.is_verified ? "✔️" : ""}</h3>
+            <h3>${escapeHtml(item.business_name)} ${item.is_verified ? "✔️" : ""}</h3>
             <p><strong>Category:</strong> ${item.category}</p>
             <p><strong>City:</strong> ${item.city}</p>
             <p><strong>Phone:</strong> ${item.phone}</p>

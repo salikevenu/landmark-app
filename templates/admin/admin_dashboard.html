@@ -439,6 +439,15 @@
   // ... payout, stats, listings, audit log, recent users, quick activation ...
   // I'm including the essential ones for completeness
 
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   // Payout
   document.getElementById('runPayoutBtn').addEventListener('click', async () => {
     const btn = document.getElementById('runPayoutBtn');
@@ -505,7 +514,7 @@
       let html = '';
       data.listings.forEach(listing => {
         html += `<tr id="listing-${listing.id}">
-          <td>${listing.business_name}</td>
+          <td>${escapeHtml(listing.business_name)}</td>
           <td>${listing.category}</td>
           <td>
             <button class="btn btn-sm btn-success" onclick="approveListing(${listing.id})"><i class="fas fa-check"></i></button>

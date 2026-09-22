@@ -50,6 +50,15 @@
 </div>
 
 <script>
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 async function loadUsers() {
   const search = document.getElementById("searchInput").value.trim();
   const role = document.getElementById("roleFilter").value;
@@ -82,13 +91,13 @@ async function loadUsers() {
         html += `
           <tr>
             <td>${user.id}</td>
-            <td>${user.name || ""}</td>
+            <td>${escapeHtml(user.name || "")}</td>
             <td>${user.phone}</td>
             <td>${user.role}</td>
             <td>${user.is_active ? "Active" : "Disabled"}</td>
             <td>${user.created_at || ""}</td>
             <td>
-              <button onclick="toggleUser(${user.id})">${user.is_active ? "Disable" : "Activate"}</button>
+              <button onclick="toggleUser(${user.id}, ${user.is_active ? "true" : "false"})">${user.is_active ? "Disable" : "Activate"}</button>
               <button onclick="deleteUser(${user.id})" style="color:red;">Delete</button>
               <button onclick="viewAsUser(${user.id})" style="background:#3b82f6; color:white;">View As</button>
               <button onclick="showReferralTree(${user.id})" style="background:#8b5cf6; color:white;">Tree</button>
@@ -106,10 +115,11 @@ async function loadUsers() {
   }
 }
 
-async function toggleUser(userId) {
+async function toggleUser(userId, isActive) {
   if (!confirm("Change user status?")) return;
+  const action = isActive ? "ban" : "unban";
   try {
-    const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/ban`, {
+    const res = await LandmarkSession.authFetch(`/api/admin/users/${userId}/${action}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" }
     });
@@ -135,7 +145,7 @@ async function viewAsUser(userId) {
             method: "POST"
         });
         if (!res.ok) throw new Error("Failed");
-        window.open("/api/user/dashboard", "_blank");
+        window.location.href = "/api/user/dashboard";
     } catch (err) {
         alert("Impersonation failed");
     }

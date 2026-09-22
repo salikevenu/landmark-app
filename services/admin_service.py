@@ -170,6 +170,7 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
             "subscription_expiry": r[4],
             "wallet_balance": r[5],
             "is_blocked": r[6],
+            "is_active": not r[6],
             "created_at": r[7]
         }
         if u['subscription_expiry']:
@@ -193,6 +194,19 @@ def unban_user(user_id, admin_id, admin_phone, ip):
         conn.commit()
     log_admin_action(admin_id, admin_phone, 'unban', 'user', str(user_id), f'Unbanned user {user_id}', ip)
     return {'status': 'unbanned'}
+
+def delete_user(user_id, admin_id, admin_phone, ip):
+    """Admin "delete": permanently blocks the account rather than a real
+    DELETE FROM users, which would break FK-referenced rows in
+    payments/wallet_transactions/referrals/etc. Reuses is_blocked -- the
+    same flag ban_user sets -- since nothing else in the app distinguishes
+    a banned account from a deleted one, and this is irreversible from the
+    admin UI (no corresponding "undelete" action)."""
+    with get_db_connection() as conn:
+        conn.execute(text("UPDATE users SET is_blocked = 1 WHERE id = :user_id"), {"user_id": user_id})
+        conn.commit()
+    log_admin_action(admin_id, admin_phone, 'delete', 'user', str(user_id), f'Deleted (permanently blocked) user {user_id}', ip)
+    return {'status': 'deleted'}
 
 def change_user_role(user_id, new_role, admin_id, admin_phone, ip):
     valid_roles = ['user', 'business_basic', 'business_premium', 'service_provider']
