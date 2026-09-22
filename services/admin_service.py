@@ -524,34 +524,44 @@ def sponsor_listing_admin(listing_id, admin_id, admin_phone, ip):
 # PAYMENT MANAGEMENT
 # -------------------------------
 def get_admin_payments(page=1, limit=50, search='', status_filter='', start_date=None, end_date=None):
+    """payments.user_phone is a schema column the live order-creation insert
+    (routes/payment_routes.py) never writes to -- it's always NULL. The
+    caller's phone comes from a LEFT JOIN on the always-populated user_id
+    instead (LEFT, not JOIN, so a payment row is never hidden even if its
+    user_id is somehow orphaned)."""
     offset = (page - 1) * limit
     params = {}
     where_clauses = []
 
     if search:
-        where_clauses.append("(user_phone LIKE :search OR payment_id LIKE :search)")
+        where_clauses.append("(u.phone LIKE :search OR p.payment_id LIKE :search)")
         params['search'] = f'%{search}%'
     if status_filter:
-        where_clauses.append("status = :status_filter")
+        where_clauses.append("p.status = :status_filter")
         params['status_filter'] = status_filter
     if start_date:
-        where_clauses.append("created_at >= :start_date")
+        where_clauses.append("p.created_at >= :start_date")
         params['start_date'] = start_date
     if end_date:
-        where_clauses.append("created_at <= :end_date")
+        where_clauses.append("p.created_at <= :end_date")
         params['end_date'] = end_date + " 23:59:59"
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
     with get_db_connection() as conn:
-        count_query = f"SELECT COUNT(*) FROM payments WHERE {where_sql}"
+        count_query = f"""
+            SELECT COUNT(*) FROM payments p
+            LEFT JOIN users u ON p.user_id = u.id
+            WHERE {where_sql}
+        """
         total = conn.execute(text(count_query), params).scalar()
 
         query = f"""
-            SELECT id, user_id, user_phone, amount, status, created_at
-            FROM payments
+            SELECT p.id, p.user_id, u.phone AS user_phone, p.amount, p.status, p.created_at
+            FROM payments p
+            LEFT JOIN users u ON p.user_id = u.id
             WHERE {where_sql}
-            ORDER BY id DESC
+            ORDER BY p.id DESC
             LIMIT :limit OFFSET :offset
         """
         params['limit'] = limit
