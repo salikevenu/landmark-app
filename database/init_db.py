@@ -721,6 +721,12 @@ def _init_db_body(conn):
         ('otp_verification_expiry_seconds', '300'),
         ('otp_resend_cooldown_seconds', '60'),
         ('otp_max_attempts', '5'),
+        # How many listings a user with no paid plan may create --
+        # services/subscription_access.py's get_business_limit_for_user()
+        # floors every user's limit at this. See migrations/
+        # add_free_listing_allowance.py for the one-time seed on databases
+        # created before this existed.
+        ('free_listing_limit', '1'),
     ]
     for key, val in defaults:
         conn.execute(text("""

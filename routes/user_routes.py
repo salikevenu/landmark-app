@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, date
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from database.init_db import get_db_connection
-from routes.auth_routes import generate_referral_code, referral_link_for
+from routes.auth_routes import generate_referral_code, referral_link_for, LOGIN_PATH
 from time import time
 import razorpay
 import os
@@ -308,8 +308,13 @@ def user_dashboard():
     return redirect("/dashboard")
 
 @user_bp.route('/create-listing')
-@requires_active_plan('service_provider', 'business_basic', 'business_premium', 'business_power')
+@jwt_required()
 def create_listing():
+    """No active-plan gate here: every user, paid or not, is allowed up to
+    the admin-configured free listing allowance (see
+    subscription_access.get_business_limit_for_user) before hitting the
+    same upgrade prompt a paid user sees at their own limit -- listing
+    creation is no longer a hard paywall."""
     user_id = get_jwt_identity()
     db = get_db_connection()
     try:
@@ -317,17 +322,19 @@ def create_listing():
             text("SELECT role, plan, business_limit, extra_businesses_purchased FROM users WHERE id = :uid"),
             {"uid": user_id}
         ).fetchone()
+        if not user:
+            return redirect(LOGIN_PATH)
 
         business_count = db.execute(
             text("SELECT COUNT(*) FROM listings WHERE user_id = :uid"),
             {"uid": user_id}
         ).scalar()  # Use scalar for aggregate
+
+        # Single authoritative limit check (see get_business_limit_for_user) —
+        # None means unlimited (Business Power).
+        max_allowed = get_business_limit_for_user(dict(user._mapping), db)
     finally:
         db.close()
-
-    # Single authoritative limit check (see get_business_limit_for_user) —
-    # None means unlimited (Business Power).
-    max_allowed = get_business_limit_for_user(dict(user._mapping))
 
     if max_allowed is not None and business_count >= max_allowed:
         if user._mapping["role"] == "business_premium":

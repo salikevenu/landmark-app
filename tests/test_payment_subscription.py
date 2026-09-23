@@ -215,11 +215,17 @@ class ListingAccessTests(unittest.TestCase):
             "plan": "service_provider",
             "subscription_expiry": expiry,
         }))
+
+    def test_create_listing_page_has_no_active_plan_gate(self):
+        """Listing creation is no longer a hard paywall -- every user (paid
+        or not) gets the admin-configured free listing allowance, enforced
+        by get_business_limit_for_user, not requires_active_plan. See
+        services/subscription_access.py's get_business_limit_for_user for
+        the actual cap."""
         src = (ROOT / "routes" / "user_routes.py").read_text(encoding="utf-8")
-        self.assertIn(
-            "requires_active_plan('service_provider', 'business_basic', 'business_premium', 'business_power')",
-            src,
-        )
+        decorators_and_body = src.split("@user_bp.route('/create-listing')")[1].split("\n@user_bp.route(")[0]
+        self.assertNotIn("requires_active_plan", decorators_and_body)
+        self.assertIn("get_business_limit_for_user", decorators_and_body)
 
 
 class FrontendContractTests(unittest.TestCase):
@@ -850,16 +856,35 @@ class CreateListingFlowTests(unittest.TestCase):
         self.assertEqual(body["listing_id"], 77)
         conn.commit.assert_called()
 
-    def test_expired_subscription_blocked(self):
+    def test_expired_subscription_allowed_within_free_limit(self):
+        """An expired (or never-paid) user is no longer hard-blocked from
+        creating a listing at all -- get_business_limit_for_user floors
+        their cap at the admin-configured free listing allowance, so
+        someone with zero existing listings can still create their first
+        one for free."""
         expiry = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
         user_row = _row({
             "id": 42, "role": "business_basic", "plan": "business_basic",
             "subscription_expiry": expiry, "is_active": 1,
+            "extra_businesses_purchased": 0, "business_limit": 0,
         })
         conn = MagicMock()
-        resm = MagicMock()
-        resm.fetchone.return_value = user_row
-        conn.execute.return_value = resm
+        conn.__enter__.return_value = conn
+
+        def execute(query, params=None):
+            qs = str(query)
+            res = MagicMock()
+            if "FROM users" in qs:
+                res.fetchone.return_value = user_row
+            elif "FROM admin_settings" in qs:
+                res.fetchone.return_value = None  # falls back to DEFAULT_FREE_LISTING_LIMIT
+            elif "COUNT(*)" in qs:
+                res.fetchone.return_value = SimpleNamespace(_mapping={"cnt": 0})
+            elif "INSERT INTO listings" in qs:
+                res.fetchone.return_value = (12,)
+            return res
+
+        conn.execute.side_effect = execute
         with patch.object(listing_mod, "get_db_connection", return_value=conn):
             res = self.client.post(
                 "/api/listing/create-listing",
@@ -871,8 +896,46 @@ class CreateListingFlowTests(unittest.TestCase):
                 },
                 headers={"Authorization": f"Bearer {self._token()}"},
             )
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(res.get_json()["success"])
+
+    def test_free_user_blocked_once_free_limit_reached(self):
+        """The free allowance is still a real cap -- a free/expired user
+        who has already used it up gets the same upgrade prompt a paid
+        user sees at their own limit, not unlimited free listings."""
+        user_row = _row({
+            "id": 42, "role": "free", "plan": "free",
+            "subscription_expiry": None, "is_active": 1,
+            "extra_businesses_purchased": 0, "business_limit": 0,
+        })
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+
+        def execute(query, params=None):
+            qs = str(query)
+            res = MagicMock()
+            if "FROM users" in qs:
+                res.fetchone.return_value = user_row
+            elif "FROM admin_settings" in qs:
+                res.fetchone.return_value = SimpleNamespace(_mapping={"value": "1"})
+            elif "COUNT(*)" in qs:
+                res.fetchone.return_value = SimpleNamespace(_mapping={"cnt": 1})
+            return res
+
+        conn.execute.side_effect = execute
+        with patch.object(listing_mod, "get_db_connection", return_value=conn):
+            res = self.client.post(
+                "/api/listing/create-listing",
+                data={
+                    "business_name": "Second Cafe",
+                    "category": "food",
+                    "latitude": "12.9",
+                    "longitude": "77.6",
+                },
+                headers={"Authorization": f"Bearer {self._token()}"},
+            )
         self.assertEqual(res.status_code, 403)
-        self.assertIn("subscription", res.get_json()["error"].lower())
+        self.assertIn("upgrade", res.get_json()["error"].lower())
 
     def test_service_provider_listing_api_allowed(self):
         expiry = (datetime.utcnow() + timedelta(days=10)).strftime("%Y-%m-%d")

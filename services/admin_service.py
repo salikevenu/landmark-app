@@ -764,6 +764,7 @@ NUMERIC_SETTING_BOUNDS = {
     "otp_verification_expiry_seconds": (30, None),
     "otp_resend_cooldown_seconds": (1, None),
     "otp_max_attempts": (1, None),
+    "free_listing_limit": (0, None),
 }
 
 

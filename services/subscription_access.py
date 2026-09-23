@@ -1,10 +1,16 @@
 # Canonical subscription-active check for listing/business access.
 from datetime import datetime
 
+from sqlalchemy import text
+
 from config.payment_config import BUSINESS_POWER_PLAN
+from database.init_db import get_db_connection
 
 PAID_PLANS = ("service_provider", "business_basic", "business_premium", BUSINESS_POWER_PLAN)
 CANONICAL_CREATE_LISTING_API = "/api/listing/create-listing"
+
+DEFAULT_FREE_LISTING_LIMIT = 1
+FREE_LISTING_LIMIT_SETTING_KEY = "free_listing_limit"
 
 
 def legacy_add_business_gone():
@@ -54,14 +60,41 @@ def is_active_business_power_owner(user_row):
     return is_subscription_active(user_row)
 
 
-def get_business_limit_for_user(user_row):
+def _free_listing_limit(conn=None):
+    """Admin-configurable free listing allowance (admin_settings key
+    'free_listing_limit'). Falls back to DEFAULT_FREE_LISTING_LIMIT on a
+    missing row, unparseable value, a negative value, or a lookup failure
+    -- a bad setting must never block every user from creating a listing."""
+    try:
+        if conn is not None:
+            row = conn.execute(
+                text("SELECT value FROM admin_settings WHERE key = :key"),
+                {"key": FREE_LISTING_LIMIT_SETTING_KEY},
+            ).fetchone()
+        else:
+            with get_db_connection() as c:
+                row = c.execute(
+                    text("SELECT value FROM admin_settings WHERE key = :key"),
+                    {"key": FREE_LISTING_LIMIT_SETTING_KEY},
+                ).fetchone()
+        if row is None:
+            return DEFAULT_FREE_LISTING_LIMIT
+        value = int(float(row._mapping["value"]))
+        return value if value >= 0 else DEFAULT_FREE_LISTING_LIMIT
+    except Exception:
+        return DEFAULT_FREE_LISTING_LIMIT
+
+
+def get_business_limit_for_user(user_row, conn=None):
     """Single authoritative business/listing creation cap for a user.
 
     Returns None for unlimited (Business Power). Otherwise returns the
-    plan's stored business_limit plus any purchased extra slots. Both
-    listing-creation enforcement points (the create-listing page gate and
-    the create-listing API) must call this instead of re-deriving the cap
-    from plan strings themselves.
+    plan's stored business_limit plus any purchased extra slots, floored
+    at the admin-configured free listing allowance -- every user, paid or
+    not, may create at least that many listings; a paid plan only ever
+    raises this, never lowers it. Both listing-creation enforcement points
+    (the create-listing page gate and the create-listing API) must call
+    this instead of re-deriving the cap from plan strings themselves.
     """
     if not user_row:
         return 0
@@ -70,7 +103,7 @@ def get_business_limit_for_user(user_row):
         return None
     limit = int(user_row.get("business_limit") or 0)
     extra = int(user_row.get("extra_businesses_purchased") or 0)
-    return limit + extra
+    return max(limit + extra, _free_listing_limit(conn))
 
 
 # ===========================================================================

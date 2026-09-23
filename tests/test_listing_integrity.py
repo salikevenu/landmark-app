@@ -119,7 +119,14 @@ class ListingIdorHttpTests(unittest.TestCase):
             )
         self.assertEqual(res.status_code, 404)
 
-    def test_expired_jwt_role_cannot_update(self):
+    def test_expired_subscription_can_still_update_own_listing(self):
+        """Owning a listing grants management rights (update/delete/upload/
+        view) regardless of current subscription status -- only *creating*
+        a new listing is capped by get_business_limit_for_user. An expired
+        (or free-tier) user must still be able to fix a typo or remove
+        their own listing without being forced to pay first. Ownership is
+        still resolved from a fresh DB row here, not the JWT's role claim,
+        matching test_jwt_role_does_not_unlock_without_db_plan."""
         conn = self._conn(paid=True)
         expiry_past = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -143,7 +150,7 @@ class ListingIdorHttpTests(unittest.TestCase):
                 json={"business_name": "Nope"},
                 headers={"Authorization": f"Bearer {self._token(99)}"},
             )
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 200)
 
     def test_unauthenticated_rate_blocked(self):
         res = self.client.post("/api/listing/rate", json={"listing_id": 1, "rating": 5})

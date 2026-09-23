@@ -16,7 +16,7 @@ from services.listing_service import (
     update_review_service,
     delete_review_service,
 )
-from services.subscription_access import is_subscription_active, get_business_limit_for_user
+from services.subscription_access import get_business_limit_for_user
 from services.authz import db_user_is_admin
 from services.sponsorship import public_is_sponsored_sql, sponsorship_rank_sql
 import logging
@@ -63,7 +63,15 @@ def _parse_coord(value, lo, hi, field):
 
 
 def _paid_listing_user(conn, user_id, *, for_update=False):
-    """Load the authenticated user from DB. JWT role/plan claims are ignored."""
+    """Load the authenticated user from DB. JWT role/plan claims are ignored.
+
+    Does NOT require an active paid plan: owning/managing a listing you
+    already have (update, delete, image upload, view) and creating one
+    within the free listing allowance are both available with no
+    subscription at all. The creation quota itself is enforced separately
+    by get_business_limit_for_user, exactly as api_create_listing already
+    does -- this only confirms the account exists and is active.
+    """
     sql = """
         SELECT id, role, plan, subscription_expiry, is_active, extra_businesses_purchased, business_limit
         FROM users WHERE id = :uid
@@ -73,10 +81,7 @@ def _paid_listing_user(conn, user_id, *, for_update=False):
     row = conn.execute(text(sql), {"uid": user_id}).fetchone()
     if not row or not row._mapping.get("is_active"):
         return None, (jsonify({"error": "User not found or inactive"}), 404)
-    user_dict = dict(row._mapping)
-    if not is_subscription_active(user_dict):
-        return None, (jsonify({"error": "Active subscription required"}), 403)
-    return user_dict, None
+    return dict(row._mapping), None
 
 
 def _normalize_image_type(raw):
@@ -108,10 +113,11 @@ def api_create_listing():
             ).fetchone()._mapping["cnt"]
 
             # Single authoritative limit check (see get_business_limit_for_user) —
-            # do not re-derive this from plan strings here. is_subscription_active
-            # (already enforced above by _paid_listing_user) guarantees plan is
-            # one of the recognized paid plans by this point.
-            max_allowed = get_business_limit_for_user(user_dict)
+            # do not re-derive this from plan strings here. Every user, paid or
+            # not, is allowed up to the admin-configured free listing allowance
+            # (get_business_limit_for_user floors at it); a paid plan's own
+            # business_limit only ever raises this, never lowers it.
+            max_allowed = get_business_limit_for_user(user_dict, conn)
             if max_allowed is not None and listing_count >= max_allowed:
                 return jsonify({"error": "Business limit reached. Upgrade your plan to add more listings."}), 403
 
