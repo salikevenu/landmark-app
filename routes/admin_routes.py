@@ -557,7 +557,10 @@ def activate():
     phone = data.get("phone")
     plan = data.get("plan", "business_basic")
     days = data.get("days", 30)
-    expiry = activate_subscription(phone, plan, days)
+    try:
+        expiry = activate_subscription(phone, plan, days)
+    except ValueError as e:
+        return jsonify({"status": "error", "error": str(e)}), 404
     return jsonify({"status": "activated", "phone": phone, "expiry": expiry})
 
 @admin_bp.route("/api/admin/approve-payment", methods=["POST"])
@@ -628,6 +631,7 @@ def admin_chart_data():
     user_counts = []
     listing_counts = []
     revenue_daily = []
+    referral_counts = []
 
     with get_db_connection() as conn:
         for i in range(days - 1, -1, -1):
@@ -656,11 +660,19 @@ def admin_chart_data():
             ).scalar()
             revenue_daily.append(rev)
 
+            # Referral transactions created on that day
+            rc = conn.execute(
+                text("SELECT COUNT(*) FROM referral_transactions WHERE DATE(created_at) = :date"),
+                {"date": date_str}
+            ).scalar()
+            referral_counts.append(rc)
+
     return jsonify({
         "labels": dates,
         "users": user_counts,
         "listings": listing_counts,
-        "revenue": revenue_daily
+        "revenue": revenue_daily,
+        "referrals": referral_counts
     })
 
 @admin_bp.route("/api/admin/audit-log")

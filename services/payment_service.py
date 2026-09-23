@@ -110,15 +110,26 @@ def activate_subscription(phone, plan, days=None):
     `plan` may be a display name ('Business Basic') or internal key ('business_basic').
     Does not write subscription_status (column is not in the canonical users schema).
     Does not enqueue referral commission (admin path is excluded by product rule).
+
+    `phone` is normalized the same way every other phone-matching path in
+    the codebase does (routes.auth_routes.clean_phone) before matching --
+    without this, an admin typing "+91 93472 80151" instead of the stored
+    clean 10-digit form silently matched zero rows. The UPDATE's rowcount
+    is checked for the same reason: previously a non-matching phone still
+    returned a computed expiry date as if activation had succeeded.
     """
     display, spec = get_plan_spec(plan)
     if not spec:
         raise ValueError("Unknown plan")
+    cleaned_phone = ''.join(filter(str.isdigit, phone or ''))
+    cleaned_phone = cleaned_phone[-10:] if len(cleaned_phone) >= 10 else cleaned_phone
+    if not cleaned_phone:
+        raise ValueError("Phone number required")
     duration = spec["duration_days"] if days is None else int(days)
     expiry_date = _expiry_date(duration)
     conn = get_db_connection()
     try:
-        conn.execute(text("""
+        result = conn.execute(text("""
             UPDATE users
             SET role = :role,
                 plan = :plan,
@@ -130,8 +141,11 @@ def activate_subscription(phone, plan, days=None):
             "plan": spec["plan"],
             "expiry_date": expiry_date,
             "blimit": spec["business_limit"],
-            "phone": phone,
+            "phone": cleaned_phone,
         })
+        if result.rowcount == 0:
+            conn.rollback()
+            raise ValueError(f"No user found with phone {cleaned_phone}")
         conn.commit()
     finally:
         try:

@@ -584,7 +584,7 @@
         body: JSON.stringify({ phone, plan })
       });
       const data = await res.json();
-      status.innerText = data.status || data.message || data.error || 'Done';
+      status.innerText = data.error || data.status || data.message || 'Done';
     } catch (err) { status.innerText = 'Server error'; }
   }
 

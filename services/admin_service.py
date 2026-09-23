@@ -70,6 +70,9 @@ def get_admin_stats(period='week'):
         result = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM withdraw_requests WHERE status='pending'"))
         stats['pending_withdrawals'] = result.scalar()
 
+        result = conn.execute(text("SELECT COUNT(*) FROM referral_transactions"))
+        stats['total_referrals'] = result.scalar()
+
         # Time-series data
         if start_date:
             rows = conn.execute(
@@ -579,7 +582,10 @@ def approve_payment_admin(payment_id, admin_id, admin_phone, ip):
         if not payment:
             return {'error': 'Payment not found or already processed'}
         # Assuming default plan 'business_basic'
-        expiry = activate_subscription(payment[2], 'business_basic', 30)
+        try:
+            expiry = activate_subscription(payment[2], 'business_basic', 30)
+        except ValueError as e:
+            return {'error': f'Could not activate subscription: {e}'}
         conn.execute(text("UPDATE payments SET status='verified' WHERE id = :payment_id"), {"payment_id": payment_id})
         conn.commit()
     log_admin_action(admin_id, admin_phone, 'approve_payment', 'payment', str(payment_id), f'Approved payment {payment_id}', ip)
