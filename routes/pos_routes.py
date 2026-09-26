@@ -388,19 +388,286 @@ def list_products(business_id):
         if not entitlement["has_access"]:
             return _pos_access_denied_response()
 
-        rows = conn.execute(
-            text("""
-                SELECT id, name, price, is_active, created_at
-                FROM pos_products
-                WHERE business_id = :business_id AND is_active = 1
-                ORDER BY id
-            """),
-            {"business_id": business_id},
-        ).fetchall()
+        # Catalog Management V1 (Phase 16): the Catalog screen passes
+        # ?include_inactive=1 so an owner can see -- and reactivate --
+        # products they deactivated. Every other caller (Sales, Inventory)
+        # keeps the default active-only list, byte-for-byte unchanged.
+        if _truthy_query_flag(request.args.get("include_inactive")):
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, price, is_active, created_at
+                    FROM pos_products
+                    WHERE business_id = :business_id
+                    ORDER BY id
+                """),
+                {"business_id": business_id},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, price, is_active, created_at
+                    FROM pos_products
+                    WHERE business_id = :business_id AND is_active = 1
+                    ORDER BY id
+                """),
+                {"business_id": business_id},
+            ).fetchall()
         products = [_product_payload(dict(row._mapping)) for row in rows]
         return jsonify({"products": products}), 200
     except Exception:
         logger.exception("list pos products failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# =====================================================================
+# Catalog Management V1 (Phase 16): create / edit / deactivate products
+# =====================================================================
+# Products are never hard-deleted: pos_sale_items snapshots name/price at
+# sale time and references pos_products(id), so "delete" is is_active = 0.
+# A deactivated product disappears from Sales and Inventory (both already
+# filter is_active = 1) but every past sale/receipt keeps working.
+
+_MAX_PRODUCT_NAME_LENGTH = 100
+
+
+def _truthy_query_flag(raw):
+    return isinstance(raw, str) and raw.strip().lower() in ("1", "true", "yes")
+
+
+def _validate_product_name(raw):
+    """Returns (name, error). Trimmed, non-empty, bounded length."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "Product name is required"
+    name = " ".join(raw.split())
+    if len(name) > _MAX_PRODUCT_NAME_LENGTH:
+        return None, f"Product name must be at most {_MAX_PRODUCT_NAME_LENGTH} characters"
+    return name, None
+
+
+def _validate_product_price(raw):
+    """Returns (price, error). Integer minor units (paise), 0 allowed (free
+    items), bounded by the same ceiling create_sale enforces on totals.
+    bool is rejected explicitly (it is an int subclass in Python)."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None, "price must be a whole number of paise"
+    if raw < 0 or raw > _MAX_SALE_AMOUNT:
+        return None, "price must be between 0 and the maximum allowed amount"
+    return raw, None
+
+
+def _active_name_taken(conn, business_id, name, exclude_product_id=None):
+    """Case-insensitive duplicate check among this business's ACTIVE
+    products. Inactive products don't block a name, so an owner can
+    retire "Tea" and add a new "Tea" later."""
+    row = conn.execute(
+        text("""
+            SELECT id FROM pos_products
+            WHERE business_id = :business_id
+              AND is_active = 1
+              AND LOWER(name) = LOWER(:name)
+              AND (CAST(:exclude_id AS INTEGER) IS NULL OR id <> CAST(:exclude_id AS INTEGER))
+            LIMIT 1
+        """),
+        {"business_id": business_id, "name": name, "exclude_id": exclude_product_id},
+    ).fetchone()
+    return row is not None
+
+
+def _authorize_business_write(conn, business_id, user_id):
+    """Shared ownership + entitlement gate for the product write routes --
+    identical semantics to every other business-scoped route here.
+    Returns a Flask response to send back, or None when authorized."""
+    owned = conn.execute(
+        text("""
+            SELECT id FROM pos_businesses
+            WHERE id = :business_id AND owner_user_id = :uid
+        """),
+        {"business_id": business_id, "uid": user_id},
+    ).fetchone()
+    if owned is None:
+        return jsonify({"success": False, "error": "Business not found"}), 404
+
+    entitlement = _resolve_pos_entitlement(conn, user_id)
+    if not entitlement["has_access"]:
+        return _pos_access_denied_response()
+    return None
+
+
+@pos_bp.route("/businesses/<int:business_id>/products", methods=["POST"])
+@jwt_required()
+def create_product(business_id):
+    """Adds a product. Body: {"name": str, "price": int paise,
+    "opening_stock"?: int >= 0}. When opening_stock is present the product
+    starts stock-tracked (pos_inventory row created in the same
+    transaction); when absent it stays untracked, exactly like a product
+    that has never been received."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        denied = _authorize_business_write(conn, business_id, user_id)
+        if denied is not None:
+            return denied
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        name, error = _validate_product_name(data.get("name"))
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        price, error = _validate_product_price(data.get("price"))
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        opening_stock = None
+        if "opening_stock" in data and data.get("opening_stock") is not None:
+            opening_stock = data.get("opening_stock")
+            if (
+                isinstance(opening_stock, bool)
+                or not isinstance(opening_stock, int)
+                or opening_stock < 0
+                or opening_stock > _MAX_SALE_QUANTITY
+            ):
+                return jsonify({"success": False, "error": "opening_stock must be a non-negative integer"}), 400
+
+        if _active_name_taken(conn, business_id, name):
+            return jsonify({"success": False, "error": "A product with this name already exists"}), 409
+
+        row = conn.execute(
+            text("""
+                INSERT INTO pos_products (business_id, name, price, is_active, created_at, updated_at)
+                VALUES (:business_id, :name, :price, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id, name, price, is_active, created_at
+            """),
+            {"business_id": business_id, "name": name, "price": price},
+        ).fetchone()
+        product = dict(row._mapping)
+
+        if opening_stock is not None:
+            _upsert_inventory_quantity(
+                conn,
+                business_id,
+                {"id": product["id"], "name": product["name"]},
+                set_absolute=True,
+                quantity=opening_stock,
+            )
+
+        conn.commit()
+        return jsonify({"product": _product_payload(product)}), 201
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("create pos product failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@pos_bp.route("/businesses/<int:business_id>/products/<int:product_id>", methods=["PATCH"])
+@jwt_required()
+def update_product(business_id, product_id):
+    """Edits a product. Body: any of {"name", "price", "is_active"}.
+    Changing price never touches past sales (pos_sale_items keeps its own
+    snapshot). is_active=false is the only "delete"; is_active=true
+    reactivates, subject to the same active-name uniqueness rule."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        denied = _authorize_business_write(conn, business_id, user_id)
+        if denied is not None:
+            return denied
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        allowed = {"name", "price", "is_active"}
+        if not any(key in data for key in allowed):
+            return jsonify({"success": False, "error": "Nothing to update"}), 400
+
+        existing = conn.execute(
+            text("""
+                SELECT id, name, price, is_active, created_at
+                FROM pos_products
+                WHERE id = :product_id AND business_id = :business_id
+            """),
+            {"product_id": product_id, "business_id": business_id},
+        ).fetchone()
+        if existing is None:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+        current = dict(existing._mapping)
+
+        name = current["name"]
+        if "name" in data:
+            name, error = _validate_product_name(data.get("name"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+
+        price = current["price"]
+        if "price" in data:
+            price, error = _validate_product_price(data.get("price"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+
+        is_active = 1 if current["is_active"] else 0
+        if "is_active" in data:
+            raw_active = data.get("is_active")
+            if not isinstance(raw_active, bool):
+                return jsonify({"success": False, "error": "is_active must be true or false"}), 400
+            is_active = 1 if raw_active else 0
+
+        if is_active and _active_name_taken(conn, business_id, name, exclude_product_id=product_id):
+            return jsonify({"success": False, "error": "A product with this name already exists"}), 409
+
+        row = conn.execute(
+            text("""
+                UPDATE pos_products
+                SET name = :name, price = :price, is_active = :is_active,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :product_id AND business_id = :business_id
+                RETURNING id, name, price, is_active, created_at
+            """),
+            {
+                "name": name,
+                "price": price,
+                "is_active": is_active,
+                "product_id": product_id,
+                "business_id": business_id,
+            },
+        ).fetchone()
+        conn.commit()
+        return jsonify({"product": _product_payload(dict(row._mapping))}), 200
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("update pos product failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:
