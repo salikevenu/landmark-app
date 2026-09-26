@@ -204,6 +204,24 @@ class PosEntitlementEnforcementTests(unittest.TestCase):
         )
         self.assertEqual(res.status_code, 403)
 
+    def test_no_subscription_post_inventory_receive_denied(self):
+        business = self.businesses.create(1, "Shop A")
+        res = self.client.post(
+            f"/api/pos/businesses/{business['id']}/inventory/1/receive",
+            json={"quantity": 5},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_no_subscription_post_inventory_adjust_denied(self):
+        business = self.businesses.create(1, "Shop A")
+        res = self.client.post(
+            f"/api/pos/businesses/{business['id']}/inventory/1/adjust",
+            json={"quantity": 5},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(res.status_code, 403)
+
     def test_no_subscription_post_customers_denied(self):
         business = self.businesses.create(1, "Shop A")
         res = self.client.post(

@@ -929,7 +929,24 @@ def _init_db_body(conn):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """))
+    # Sales V1 (checkout flow): how the sale was paid for. Nullable at the
+    # DB level so this ADD COLUMN is safe against pre-existing rows --
+    # routes/pos_routes.py:create_sale is what actually requires it for
+    # every new sale, application-side, matching this backend's usual
+    # "app enforces, schema stays permissive for old rows" convention.
+    conn.execute(text(
+        "ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS payment_method TEXT"
+    ))
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_pos_sales_business ON pos_sales(business_id)"))
+    # Supports the dashboard summary endpoint's today/week aggregate
+    # queries (routes/pos_routes.py:get_dashboard_summary) -- both filter
+    # on business_id plus a created_at lower bound, so this composite
+    # index lets Postgres satisfy each with a single index range scan
+    # instead of a business_id-only scan plus a created_at filter.
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_pos_sales_business_created "
+        "ON pos_sales(business_id, created_at)"
+    ))
 
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS pos_sale_items (
@@ -966,6 +983,22 @@ def _init_db_body(conn):
         CREATE UNIQUE INDEX IF NOT EXISTS uq_pos_customers_business_phone
         ON pos_customers (business_id, phone)
     """))
+
+    # Customer & Sale Association V1.5 (Phase 8): optional link to the
+    # customer who made the purchase. Nullable, same "app enforces, schema
+    # stays permissive for old rows" convention already used for
+    # pos_sales.payment_method above -- every pre-existing sale keeps
+    # working with no customer at all, exactly like today. Added here
+    # (after pos_customers exists) rather than alongside pos_sales' other
+    # columns above, since this REFERENCES clause needs the table to
+    # already be defined; init_db.py runs its statements in order on every
+    # boot, so this is still safe to add without reordering anything
+    # already there. No ON DELETE behavior is specified because there is
+    # no customer-delete endpoint anywhere in this backend.
+    conn.execute(text(
+        "ALTER TABLE pos_sales ADD COLUMN IF NOT EXISTS customer_id "
+        "INTEGER REFERENCES pos_customers(id)"
+    ))
 
     # =====================================================
     # POS SUBSCRIPTIONS

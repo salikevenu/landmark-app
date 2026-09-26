@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -152,6 +153,13 @@ def _inventory_payload(row):
         "product_id": row["product_id"],
         "product_name": row["product_name"],
         "quantity": row["quantity"],
+        # True only when a real pos_inventory row exists for this product --
+        # independent of quantity, so a tracked-but-depleted product
+        # (quantity 0, is_tracked True) is distinguishable from one that
+        # has never been stock-tracked at all (quantity 0, is_tracked
+        # False). See create_sale: the same row-existence check is what
+        # decides whether a sale deducts stock at all.
+        "is_tracked": row["inventory_product_id"] is not None,
     }
 
 
@@ -159,6 +167,12 @@ def _inventory_payload(row):
 # quantity*price multiplication (or a running total) can never wrap.
 _MAX_SALE_QUANTITY = 1_000_000
 _MAX_SALE_AMOUNT = 2_000_000_000
+
+# Sales V1 checkout flow: the whitelist a client's "payment_method" must
+# match. Deliberately server-enforced the same way POS_PLANS gates
+# billing plans -- a client can never introduce a new payment method the
+# backend hasn't been told how to report/reconcile.
+_PAYMENT_METHODS = {"cash", "card", "upi"}
 
 
 def _format_expiry(value):
@@ -215,10 +229,29 @@ def _customer_payload(row):
 
 def _sale_payload(sale_row, item_rows):
     created_at = sale_row["created_at"]
+    # Customer & Sale Association V1.5 (Phase 8): sale_row carries these
+    # flat customer_* keys from either create_sale's own lookup (merged
+    # in before this call) or list_sales' LEFT JOIN -- same shape either
+    # way, so this one function serves both call sites unchanged.
+    # customer_id is None for the far-more-common no-customer sale
+    # (including every pre-existing row, which never had one).
+    customer_id = sale_row.get("customer_id")
+    customer = (
+        _customer_payload({
+            "id": customer_id,
+            "name": sale_row["customer_name"],
+            "phone": sale_row["customer_phone"],
+            "created_at": sale_row["customer_created_at"],
+        })
+        if customer_id is not None
+        else None
+    )
     return {
         "id": sale_row["id"],
         "total_amount": sale_row["total_amount"],
+        "payment_method": sale_row["payment_method"],
         "created_at": created_at.isoformat() if created_at else None,
+        "customer": customer,
         "items": [
             {
                 "product_id": row["product_id"],
@@ -355,19 +388,286 @@ def list_products(business_id):
         if not entitlement["has_access"]:
             return _pos_access_denied_response()
 
-        rows = conn.execute(
-            text("""
-                SELECT id, name, price, is_active, created_at
-                FROM pos_products
-                WHERE business_id = :business_id AND is_active = 1
-                ORDER BY id
-            """),
-            {"business_id": business_id},
-        ).fetchall()
+        # Catalog Management V1 (Phase 16): the Catalog screen passes
+        # ?include_inactive=1 so an owner can see -- and reactivate --
+        # products they deactivated. Every other caller (Sales, Inventory)
+        # keeps the default active-only list, byte-for-byte unchanged.
+        if _truthy_query_flag(request.args.get("include_inactive")):
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, price, is_active, created_at
+                    FROM pos_products
+                    WHERE business_id = :business_id
+                    ORDER BY id
+                """),
+                {"business_id": business_id},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                text("""
+                    SELECT id, name, price, is_active, created_at
+                    FROM pos_products
+                    WHERE business_id = :business_id AND is_active = 1
+                    ORDER BY id
+                """),
+                {"business_id": business_id},
+            ).fetchall()
         products = [_product_payload(dict(row._mapping)) for row in rows]
         return jsonify({"products": products}), 200
     except Exception:
         logger.exception("list pos products failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# =====================================================================
+# Catalog Management V1 (Phase 16): create / edit / deactivate products
+# =====================================================================
+# Products are never hard-deleted: pos_sale_items snapshots name/price at
+# sale time and references pos_products(id), so "delete" is is_active = 0.
+# A deactivated product disappears from Sales and Inventory (both already
+# filter is_active = 1) but every past sale/receipt keeps working.
+
+_MAX_PRODUCT_NAME_LENGTH = 100
+
+
+def _truthy_query_flag(raw):
+    return isinstance(raw, str) and raw.strip().lower() in ("1", "true", "yes")
+
+
+def _validate_product_name(raw):
+    """Returns (name, error). Trimmed, non-empty, bounded length."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "Product name is required"
+    name = " ".join(raw.split())
+    if len(name) > _MAX_PRODUCT_NAME_LENGTH:
+        return None, f"Product name must be at most {_MAX_PRODUCT_NAME_LENGTH} characters"
+    return name, None
+
+
+def _validate_product_price(raw):
+    """Returns (price, error). Integer minor units (paise), 0 allowed (free
+    items), bounded by the same ceiling create_sale enforces on totals.
+    bool is rejected explicitly (it is an int subclass in Python)."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None, "price must be a whole number of paise"
+    if raw < 0 or raw > _MAX_SALE_AMOUNT:
+        return None, "price must be between 0 and the maximum allowed amount"
+    return raw, None
+
+
+def _active_name_taken(conn, business_id, name, exclude_product_id=None):
+    """Case-insensitive duplicate check among this business's ACTIVE
+    products. Inactive products don't block a name, so an owner can
+    retire "Tea" and add a new "Tea" later."""
+    row = conn.execute(
+        text("""
+            SELECT id FROM pos_products
+            WHERE business_id = :business_id
+              AND is_active = 1
+              AND LOWER(name) = LOWER(:name)
+              AND (CAST(:exclude_id AS INTEGER) IS NULL OR id <> CAST(:exclude_id AS INTEGER))
+            LIMIT 1
+        """),
+        {"business_id": business_id, "name": name, "exclude_id": exclude_product_id},
+    ).fetchone()
+    return row is not None
+
+
+def _authorize_business_write(conn, business_id, user_id):
+    """Shared ownership + entitlement gate for the product write routes --
+    identical semantics to every other business-scoped route here.
+    Returns a Flask response to send back, or None when authorized."""
+    owned = conn.execute(
+        text("""
+            SELECT id FROM pos_businesses
+            WHERE id = :business_id AND owner_user_id = :uid
+        """),
+        {"business_id": business_id, "uid": user_id},
+    ).fetchone()
+    if owned is None:
+        return jsonify({"success": False, "error": "Business not found"}), 404
+
+    entitlement = _resolve_pos_entitlement(conn, user_id)
+    if not entitlement["has_access"]:
+        return _pos_access_denied_response()
+    return None
+
+
+@pos_bp.route("/businesses/<int:business_id>/products", methods=["POST"])
+@jwt_required()
+def create_product(business_id):
+    """Adds a product. Body: {"name": str, "price": int paise,
+    "opening_stock"?: int >= 0}. When opening_stock is present the product
+    starts stock-tracked (pos_inventory row created in the same
+    transaction); when absent it stays untracked, exactly like a product
+    that has never been received."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        denied = _authorize_business_write(conn, business_id, user_id)
+        if denied is not None:
+            return denied
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        name, error = _validate_product_name(data.get("name"))
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        price, error = _validate_product_price(data.get("price"))
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+
+        opening_stock = None
+        if "opening_stock" in data and data.get("opening_stock") is not None:
+            opening_stock = data.get("opening_stock")
+            if (
+                isinstance(opening_stock, bool)
+                or not isinstance(opening_stock, int)
+                or opening_stock < 0
+                or opening_stock > _MAX_SALE_QUANTITY
+            ):
+                return jsonify({"success": False, "error": "opening_stock must be a non-negative integer"}), 400
+
+        if _active_name_taken(conn, business_id, name):
+            return jsonify({"success": False, "error": "A product with this name already exists"}), 409
+
+        row = conn.execute(
+            text("""
+                INSERT INTO pos_products (business_id, name, price, is_active, created_at, updated_at)
+                VALUES (:business_id, :name, :price, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id, name, price, is_active, created_at
+            """),
+            {"business_id": business_id, "name": name, "price": price},
+        ).fetchone()
+        product = dict(row._mapping)
+
+        if opening_stock is not None:
+            _upsert_inventory_quantity(
+                conn,
+                business_id,
+                {"id": product["id"], "name": product["name"]},
+                set_absolute=True,
+                quantity=opening_stock,
+            )
+
+        conn.commit()
+        return jsonify({"product": _product_payload(product)}), 201
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("create pos product failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@pos_bp.route("/businesses/<int:business_id>/products/<int:product_id>", methods=["PATCH"])
+@jwt_required()
+def update_product(business_id, product_id):
+    """Edits a product. Body: any of {"name", "price", "is_active"}.
+    Changing price never touches past sales (pos_sale_items keeps its own
+    snapshot). is_active=false is the only "delete"; is_active=true
+    reactivates, subject to the same active-name uniqueness rule."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        denied = _authorize_business_write(conn, business_id, user_id)
+        if denied is not None:
+            return denied
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        allowed = {"name", "price", "is_active"}
+        if not any(key in data for key in allowed):
+            return jsonify({"success": False, "error": "Nothing to update"}), 400
+
+        existing = conn.execute(
+            text("""
+                SELECT id, name, price, is_active, created_at
+                FROM pos_products
+                WHERE id = :product_id AND business_id = :business_id
+            """),
+            {"product_id": product_id, "business_id": business_id},
+        ).fetchone()
+        if existing is None:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+        current = dict(existing._mapping)
+
+        name = current["name"]
+        if "name" in data:
+            name, error = _validate_product_name(data.get("name"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+
+        price = current["price"]
+        if "price" in data:
+            price, error = _validate_product_price(data.get("price"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+
+        is_active = 1 if current["is_active"] else 0
+        if "is_active" in data:
+            raw_active = data.get("is_active")
+            if not isinstance(raw_active, bool):
+                return jsonify({"success": False, "error": "is_active must be true or false"}), 400
+            is_active = 1 if raw_active else 0
+
+        if is_active and _active_name_taken(conn, business_id, name, exclude_product_id=product_id):
+            return jsonify({"success": False, "error": "A product with this name already exists"}), 409
+
+        row = conn.execute(
+            text("""
+                UPDATE pos_products
+                SET name = :name, price = :price, is_active = :is_active,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :product_id AND business_id = :business_id
+                RETURNING id, name, price, is_active, created_at
+            """),
+            {
+                "name": name,
+                "price": price,
+                "is_active": is_active,
+                "product_id": product_id,
+                "business_id": business_id,
+            },
+        ).fetchone()
+        conn.commit()
+        return jsonify({"product": _product_payload(dict(row._mapping))}), 200
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("update pos product failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:
@@ -405,7 +705,8 @@ def list_inventory(business_id):
         rows = conn.execute(
             text("""
                 SELECT p.id AS product_id, p.name AS product_name,
-                       COALESCE(i.quantity, 0) AS quantity
+                       COALESCE(i.quantity, 0) AS quantity,
+                       i.product_id AS inventory_product_id
                 FROM pos_products p
                 LEFT JOIN pos_inventory i ON i.product_id = p.id
                 WHERE p.business_id = :business_id AND p.is_active = 1
@@ -417,6 +718,189 @@ def list_inventory(business_id):
         return jsonify({"inventory": inventory}), 200
     except Exception:
         logger.exception("list pos inventory failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _load_owned_active_product(conn, business_id, product_id):
+    """Same product-ownership shape as create_sale's per-line lookup:
+    wrong business, nonexistent, and inactive all resolve to the same
+    "not found" outcome here, so a caller can never tell them apart --
+    consistent with every other product-scoped query in this file
+    (list_products/list_inventory/create_sale all filter is_active = 1)."""
+    row = conn.execute(
+        text("""
+            SELECT id, name FROM pos_products
+            WHERE id = :product_id AND business_id = :business_id AND is_active = 1
+        """),
+        {"product_id": product_id, "business_id": business_id},
+    ).fetchone()
+    return dict(row._mapping) if row else None
+
+
+def _upsert_inventory_quantity(conn, business_id, product, set_absolute, quantity):
+    """The one place pos_inventory rows are created or changed outside of
+    a sale's deduction. A single `INSERT ... ON CONFLICT (product_id) DO
+    UPDATE` is used instead of `SELECT ... FOR UPDATE` + branch: Postgres
+    resolves the conflict atomically under its own row-level lock, so two
+    concurrent receive/adjust calls (or a receive racing a sale's own FOR
+    UPDATE lock on the same row) can never duplicate the row or lose an
+    update -- the same upsert pattern already used elsewhere in this
+    backend for exactly this "create or update a singleton row" shape
+    (see pos_subscriptions/pending_referrals). `set_absolute` selects
+    adjust's "set to exactly this value" vs receive's "add this many".
+    """
+    quantity_sql = "EXCLUDED.quantity" if set_absolute else "pos_inventory.quantity + EXCLUDED.quantity"
+    row = conn.execute(
+        text(f"""
+            INSERT INTO pos_inventory (product_id, business_id, quantity, updated_at)
+            VALUES (:product_id, :business_id, :quantity, CURRENT_TIMESTAMP)
+            ON CONFLICT (product_id) DO UPDATE SET
+                quantity = {quantity_sql},
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING quantity
+        """),
+        {"product_id": product["id"], "business_id": business_id, "quantity": quantity},
+    ).fetchone()
+    return _inventory_payload({
+        "product_id": product["id"],
+        "product_name": product["name"],
+        "quantity": row._mapping["quantity"],
+        "inventory_product_id": product["id"],
+    })
+
+
+@pos_bp.route("/businesses/<int:business_id>/inventory/<int:product_id>/receive", methods=["POST"])
+@jwt_required()
+def receive_inventory(business_id, product_id):
+    """Adds stock, creating the pos_inventory row (and starting tracking)
+    if it doesn't exist yet -- the "future receive stock feature" the
+    table's own comment in database/init_db.py anticipated. Never touches
+    create_sale's deduction logic."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        entitlement = _resolve_pos_entitlement(conn, user_id)
+        if not entitlement["has_access"]:
+            return _pos_access_denied_response()
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        quantity = data.get("quantity")
+        # bool is a subclass of int in Python -- reject it explicitly, same
+        # as create_sale's item quantity check.
+        if (
+            isinstance(quantity, bool)
+            or not isinstance(quantity, int)
+            or quantity <= 0
+            or quantity > _MAX_SALE_QUANTITY
+        ):
+            return jsonify({"success": False, "error": "quantity must be a positive integer"}), 400
+
+        product = _load_owned_active_product(conn, business_id, product_id)
+        if product is None:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+
+        item = _upsert_inventory_quantity(
+            conn, business_id, product, set_absolute=False, quantity=quantity
+        )
+        conn.commit()
+        return jsonify({"inventory_item": item}), 200
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("receive pos inventory failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@pos_bp.route("/businesses/<int:business_id>/inventory/<int:product_id>/adjust", methods=["POST"])
+@jwt_required()
+def adjust_inventory(business_id, product_id):
+    """Sets stock to an exact quantity (including 0), creating the
+    pos_inventory row if it doesn't exist yet -- the resulting item is
+    always tracked, matching receive_inventory."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        entitlement = _resolve_pos_entitlement(conn, user_id)
+        if not entitlement["has_access"]:
+            return _pos_access_denied_response()
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
+
+        quantity = data.get("quantity")
+        if (
+            isinstance(quantity, bool)
+            or not isinstance(quantity, int)
+            or quantity < 0
+            or quantity > _MAX_SALE_QUANTITY
+        ):
+            return jsonify({"success": False, "error": "quantity must be a non-negative integer"}), 400
+
+        product = _load_owned_active_product(conn, business_id, product_id)
+        if product is None:
+            return jsonify({"success": False, "error": "Product not found"}), 404
+
+        item = _upsert_inventory_quantity(
+            conn, business_id, product, set_absolute=True, quantity=quantity
+        )
+        conn.commit()
+        return jsonify({"inventory_item": item}), 200
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        logger.exception("adjust pos inventory failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:
@@ -455,6 +939,38 @@ def create_sale(business_id):
         if not isinstance(data, dict):
             return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
 
+        payment_method = data.get("payment_method")
+        if payment_method not in _PAYMENT_METHODS:
+            return jsonify({
+                "success": False,
+                "error": "payment_method must be one of: " + ", ".join(sorted(_PAYMENT_METHODS)),
+            }), 400
+
+        # Customer & Sale Association V1.5 (Phase 8): optional --
+        # omitted/null means a walk-in sale, exactly like every sale
+        # before this feature existed. Never trust the client past this
+        # point: ownership is re-checked against business_id here, the
+        # same way every product_id in `items` below is, so a customer
+        # from another business (or one that doesn't exist at all)
+        # resolves to the same generic rejection -- never a distinct
+        # signal an attacker could use to probe another business's
+        # customer ids.
+        raw_customer_id = data.get("customer_id")
+        customer_row = None
+        if raw_customer_id is not None:
+            if isinstance(raw_customer_id, bool) or not isinstance(raw_customer_id, int):
+                return jsonify({"success": False, "error": "customer_id must be an integer"}), 400
+            customer_row = conn.execute(
+                text("""
+                    SELECT id, name, phone, created_at FROM pos_customers
+                    WHERE id = :customer_id AND business_id = :business_id
+                """),
+                {"customer_id": raw_customer_id, "business_id": business_id},
+            ).fetchone()
+            if customer_row is None:
+                return jsonify({"success": False, "error": "Customer not found"}), 400
+            customer_row = dict(customer_row._mapping)
+
         raw_items = data.get("items")
         if not isinstance(raw_items, list) or len(raw_items) == 0:
             return jsonify({"success": False, "error": "items must be a non-empty list"}), 400
@@ -486,6 +1002,10 @@ def create_sale(business_id):
             parsed_items.append({"product_id": product_id, "quantity": quantity})
 
         line_items = []
+        # (product_id, quantity) pairs to deduct at the end -- only for
+        # products with a tracked pos_inventory row (see the stock-check
+        # block below for why an untracked product is never blocked).
+        inventory_deductions = []
         total_amount = 0
         for item in parsed_items:
             # Same business_id + is_active filter as list_products: a
@@ -500,13 +1020,43 @@ def create_sale(business_id):
                 {"product_id": item["product_id"], "business_id": business_id},
             ).fetchone()
             if product_row is None:
+                conn.rollback()
                 return jsonify({"success": False, "error": "One or more products are invalid"}), 400
 
             product = dict(product_row._mapping)
             quantity = item["quantity"]
+
+            # Stock is enforced only for products that already have a
+            # pos_inventory row. There is still no "receive stock"
+            # endpoint (see that table's own comment in
+            # database/init_db.py), so a missing row means this product's
+            # stock has simply never been tracked -- not that it has zero
+            # stock -- and must not block a sale that already worked
+            # before stock tracking existed. FOR UPDATE locks any row
+            # that IS tracked so a concurrent sale of the same product can
+            # never oversell it (same locking pattern as
+            # _finalize_pos_payment's billing-order lock).
+            inventory_row = conn.execute(
+                text("SELECT quantity FROM pos_inventory WHERE product_id = :product_id FOR UPDATE"),
+                {"product_id": product["id"]},
+            ).fetchone()
+            if inventory_row is not None:
+                available = inventory_row._mapping["quantity"]
+                if available < quantity:
+                    conn.rollback()
+                    return jsonify({
+                        "success": False,
+                        "error": (
+                            f"Insufficient stock for {product['name']} "
+                            f"(have {available}, need {quantity})"
+                        ),
+                    }), 409
+                inventory_deductions.append((product["id"], quantity))
+
             unit_price = product["price"]
             line_total = unit_price * quantity
             if line_total > _MAX_SALE_AMOUNT or total_amount + line_total > _MAX_SALE_AMOUNT:
+                conn.rollback()
                 return jsonify({"success": False, "error": "Sale total is too large"}), 400
             total_amount += line_total
 
@@ -520,13 +1070,26 @@ def create_sale(business_id):
 
         sale_row = conn.execute(
             text("""
-                INSERT INTO pos_sales (business_id, total_amount, created_at)
-                VALUES (:business_id, :total_amount, CURRENT_TIMESTAMP)
-                RETURNING id, total_amount, created_at
+                INSERT INTO pos_sales
+                    (business_id, total_amount, payment_method, customer_id, created_at)
+                VALUES
+                    (:business_id, :total_amount, :payment_method, :customer_id, CURRENT_TIMESTAMP)
+                RETURNING id, total_amount, payment_method, customer_id, created_at
             """),
-            {"business_id": business_id, "total_amount": total_amount},
+            {
+                "business_id": business_id,
+                "total_amount": total_amount,
+                "payment_method": payment_method,
+                "customer_id": customer_row["id"] if customer_row else None,
+            },
         ).fetchone()
         sale = dict(sale_row._mapping)
+        # _sale_payload expects these flat customer_* keys (see its own
+        # comment) -- already fetched above during validation, so this is
+        # never a second customer lookup.
+        sale["customer_name"] = customer_row["name"] if customer_row else None
+        sale["customer_phone"] = customer_row["phone"] if customer_row else None
+        sale["customer_created_at"] = customer_row["created_at"] if customer_row else None
 
         for line in line_items:
             conn.execute(
@@ -536,6 +1099,21 @@ def create_sale(business_id):
                     VALUES (:sale_id, :product_id, :product_name, :unit_price, :quantity, :line_total)
                 """),
                 {"sale_id": sale["id"], **line},
+            )
+
+        # Applied last, still inside this same transaction: every lock
+        # acquired above is held until this commit, so the sale record
+        # and every stock deduction it implies become visible atomically
+        # -- a reader never sees the sale without the matching deduction,
+        # or the deduction without the sale.
+        for product_id, quantity in inventory_deductions:
+            conn.execute(
+                text("""
+                    UPDATE pos_inventory
+                    SET quantity = quantity - :quantity, updated_at = CURRENT_TIMESTAMP
+                    WHERE product_id = :product_id
+                """),
+                {"product_id": product_id, "quantity": quantity},
             )
 
         conn.commit()
@@ -556,12 +1134,102 @@ def create_sale(business_id):
                 pass
 
 
+def _parse_page_param(raw):
+    """Returns (page, error_message)."""
+    try:
+        page = int(raw)
+    except (TypeError, ValueError):
+        return None, "page must be a positive integer"
+    if page < 1:
+        return None, "page must be a positive integer"
+    return page, None
+
+
+def _parse_limit_param(raw):
+    """Returns (limit, error_message)."""
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        return None, "limit must be an integer between 1 and 100"
+    if limit < 1 or limit > 100:
+        return None, "limit must be an integer between 1 and 100"
+    return limit, None
+
+
+def _parse_date_param(raw, field_name):
+    """Returns (date, error_message)."""
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date(), None
+    except ValueError:
+        return None, f"{field_name} must be a valid date (YYYY-MM-DD)"
+
+
 @pos_bp.route("/businesses/<int:business_id>/sales", methods=["GET"])
 @jwt_required()
 def list_sales(business_id):
+    """Paginated, newest-first sale history (Sales History V1.1) with
+    optional date-range/payment-method filtering. Fetches the current
+    page's items in one bulk query keyed by sale_id, grouped in Python --
+    deliberately never one items query per sale (unlike this route's
+    previous version), so cost no longer scales with how much history a
+    business has.
+    """
     user_id = _as_user_id(get_jwt_identity())
     if user_id is None:
         return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    page, page_error = _parse_page_param(request.args.get("page", "1"))
+    if page_error:
+        return jsonify({"success": False, "error": page_error}), 400
+
+    limit, limit_error = _parse_limit_param(request.args.get("limit", "20"))
+    if limit_error:
+        return jsonify({"success": False, "error": limit_error}), 400
+
+    from_date = None
+    raw_from = request.args.get("from")
+    if raw_from:
+        from_date, from_error = _parse_date_param(raw_from, "from")
+        if from_error:
+            return jsonify({"success": False, "error": from_error}), 400
+
+    # The upper bound is exclusive and one day past `to` so the whole of
+    # `to` itself (any time from 00:00:00 up to but not including the
+    # next day) is included -- created_at is a TIMESTAMP, not a DATE.
+    to_exclusive = None
+    raw_to = request.args.get("to")
+    if raw_to:
+        to_date, to_error = _parse_date_param(raw_to, "to")
+        if to_error:
+            return jsonify({"success": False, "error": to_error}), 400
+        to_exclusive = to_date + timedelta(days=1)
+
+    payment_method = request.args.get("payment_method")
+    if payment_method is not None and payment_method not in _PAYMENT_METHODS:
+        return jsonify({
+            "success": False,
+            "error": "payment_method must be one of: " + ", ".join(sorted(_PAYMENT_METHODS)),
+        }), 400
+
+    # Customer Filter & Search V1.6 (Phase 9). Same _parse_page_param/
+    # _parse_limit_param style: any query-string value that doesn't parse
+    # cleanly as an integer (a bool-looking "true", a float-looking
+    # "1.5", free text, ...) is rejected -- there is no separate bool/
+    # float type to reject at this layer since query params always
+    # arrive as strings.
+    customer_id = None
+    raw_customer_id = request.args.get("customer_id")
+    if raw_customer_id is not None:
+        try:
+            customer_id = int(raw_customer_id)
+        except ValueError:
+            return jsonify({"success": False, "error": "customer_id must be an integer"}), 400
+
+    # Blank ("customer_search=") is treated as not provided, same as the
+    # existing from/to/payment_method optional-param convention.
+    customer_search = request.args.get("customer_search")
+    if customer_search is not None and not customer_search.strip():
+        customer_search = None
 
     conn = None
     try:
@@ -581,33 +1249,561 @@ def list_sales(business_id):
         if not entitlement["has_access"]:
             return _pos_access_denied_response()
 
-        sale_rows = conn.execute(
-            text("""
-                SELECT id, total_amount, created_at FROM pos_sales
-                WHERE business_id = :business_id
-                ORDER BY id
-            """),
-            {"business_id": business_id},
-        ).fetchall()
+        # Every fragment appended here is a fixed literal -- never
+        # user-supplied text -- so building the WHERE clause this way is
+        # safe; every actual value (including payment_method) still flows
+        # through a bind parameter below, never string-interpolated.
+        # Qualified with the `s.` alias (see the queries below) because
+        # Phase 8's customer LEFT JOIN brings pos_customers.business_id/
+        # created_at into scope too -- unqualified names would be
+        # ambiguous once that join is present.
+        where_clauses = ["s.business_id = :business_id"]
+        params = {"business_id": business_id}
+        if from_date is not None:
+            where_clauses.append("s.created_at >= :from_date")
+            params["from_date"] = from_date
+        if to_exclusive is not None:
+            where_clauses.append("s.created_at < :to_exclusive")
+            params["to_exclusive"] = to_exclusive
+        if payment_method is not None:
+            where_clauses.append("s.payment_method = :payment_method")
+            params["payment_method"] = payment_method
+        if customer_id is not None:
+            # Deliberately no separate pos_customers ownership lookup: a
+            # sale's own customer_id can only ever have been set (by
+            # create_sale) to a customer already belonging to that same
+            # sale's business_id, so filtering by `s.business_id =
+            # :business_id AND s.customer_id = :customer_id` together
+            # already makes a nonexistent id and a cross-business id
+            # resolve identically to zero matching rows -- an honest
+            # empty page, never a 400, and never a way to distinguish
+            # "wrong business" from "doesn't exist" from the response.
+            where_clauses.append("s.customer_id = :customer_id")
+            params["customer_id"] = customer_id
+        if customer_search is not None:
+            # ILIKE is Postgres case-insensitive LIKE (already used
+            # elsewhere in this backend); substring match on the
+            # LEFT-JOINed customer's own name/phone, never on any sale
+            # field itself. A walk-in sale's c.name/c.phone are NULL from
+            # the join, and `NULL ILIKE anything` is NULL (falsy), so
+            # walk-in sales are naturally excluded whenever this filter
+            # is active -- exactly the intended behavior.
+            where_clauses.append("(c.name ILIKE :customer_search OR c.phone ILIKE :customer_search)")
+            params["customer_search"] = f"%{customer_search.strip()}%"
+        where_sql = " AND ".join(where_clauses)
 
-        sales = []
-        for sale_row in sale_rows:
-            sale = dict(sale_row._mapping)
+        # Phase 9: always LEFT JOINed here too (not just in the main page
+        # query below) so `where_sql` -- which may now reference c.name/
+        # c.phone -- is valid verbatim in both queries, and COUNT(*)
+        # still reflects the exact same filtered set. A LEFT JOIN never
+        # duplicates or drops a pos_sales row (customer_id is nullable
+        # 1:1), so this never changes the count on its own.
+        total_row = conn.execute(
+            text(f"""
+                SELECT COUNT(*) AS total
+                FROM pos_sales s
+                LEFT JOIN pos_customers c
+                    ON c.id = s.customer_id AND c.business_id = s.business_id
+                WHERE {where_sql}
+            """),
+            params,
+        ).fetchone()
+        total = total_row._mapping["total"]
+
+        offset = (page - 1) * limit
+        # Customer & Sale Association V1.5 (Phase 8): customer info comes
+        # from this same query's LEFT JOIN, never a second per-sale
+        # lookup -- `c.business_id = s.business_id` is a defensive
+        # belt-and-suspenders check (customer_id can only ever be set to
+        # an already same-business-validated id by create_sale, so this
+        # can never actually filter anything out in practice, but it
+        # costs nothing and keeps this query itself provably
+        # business-scoped even if that invariant ever changed).
+        sale_rows = conn.execute(
+            text(f"""
+                SELECT s.id, s.total_amount, s.payment_method, s.created_at,
+                       s.customer_id AS customer_id,
+                       c.name AS customer_name,
+                       c.phone AS customer_phone,
+                       c.created_at AS customer_created_at
+                FROM pos_sales s
+                LEFT JOIN pos_customers c
+                    ON c.id = s.customer_id AND c.business_id = s.business_id
+                WHERE {where_sql}
+                ORDER BY s.created_at DESC, s.id DESC
+                LIMIT :limit OFFSET :offset
+            """),
+            {**params, "limit": limit, "offset": offset},
+        ).fetchall()
+        sale_dicts = [dict(row._mapping) for row in sale_rows]
+
+        # One bulk items query for the whole page, grouped in Python --
+        # replaces the old one-query-per-sale loop.
+        sale_ids = [sale["id"] for sale in sale_dicts]
+        items_by_sale_id = {sale_id: [] for sale_id in sale_ids}
+        if sale_ids:
             item_rows = conn.execute(
                 text("""
-                    SELECT product_id, product_name, unit_price, quantity, line_total
+                    SELECT sale_id, product_id, product_name, unit_price, quantity, line_total
                     FROM pos_sale_items
-                    WHERE sale_id = :sale_id
-                    ORDER BY id
+                    WHERE sale_id = ANY(:sale_ids)
+                    ORDER BY sale_id, id
                 """),
-                {"sale_id": sale["id"]},
+                {"sale_ids": sale_ids},
             ).fetchall()
-            items = [dict(row._mapping) for row in item_rows]
-            sales.append(_sale_payload(sale, items))
+            for row in item_rows:
+                row_dict = dict(row._mapping)
+                items_by_sale_id[row_dict["sale_id"]].append(row_dict)
 
-        return jsonify({"sales": sales}), 200
+        sales = [_sale_payload(sale, items_by_sale_id[sale["id"]]) for sale in sale_dicts]
+
+        return jsonify({
+            "sales": sales,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "has_next": (page * limit) < total,
+            "has_previous": page > 1,
+        }), 200
     except Exception:
         logger.exception("list pos sales failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@pos_bp.route("/businesses/<int:business_id>/sales/analytics", methods=["GET"])
+@jwt_required()
+def get_sales_analytics(business_id):
+    """Aggregated Sales Analytics V1.7 -- summary/payment-method/daily
+    breakdowns for the active business, filtered the same way Sales
+    History is (from/to/payment_method/customer_id, minus pagination and
+    customer_search, which don't apply to an aggregate view). Exactly
+    three fixed aggregate queries (plus the existing ownership/entitlement
+    ones) regardless of how much history matches -- like
+    get_dashboard_summary, this never selects individual sale rows, so
+    cost scales with matching rows at the database level, not with
+    request count on this server. Every date computation (`::date`
+    truncation) is Postgres's own, operating on `created_at` as already
+    stored -- never the caller's clock.
+    """
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    from_date = None
+    raw_from = request.args.get("from")
+    if raw_from:
+        from_date, from_error = _parse_date_param(raw_from, "from")
+        if from_error:
+            return jsonify({"success": False, "error": from_error}), 400
+
+    to_date = None
+    raw_to = request.args.get("to")
+    if raw_to:
+        to_date, to_error = _parse_date_param(raw_to, "to")
+        if to_error:
+            return jsonify({"success": False, "error": to_error}), 400
+
+    if from_date is not None and to_date is not None and from_date > to_date:
+        return jsonify({"success": False, "error": "from must not be after to"}), 400
+
+    # Upper bound is exclusive and one day past `to`, same as list_sales,
+    # so the whole of `to` itself (through 23:59:59) is included --
+    # created_at is a TIMESTAMP, not a DATE.
+    to_exclusive = to_date + timedelta(days=1) if to_date is not None else None
+
+    payment_method = request.args.get("payment_method")
+    if payment_method is not None and payment_method not in _PAYMENT_METHODS:
+        return jsonify({
+            "success": False,
+            "error": "payment_method must be one of: " + ", ".join(sorted(_PAYMENT_METHODS)),
+        }), 400
+
+    customer_id = None
+    raw_customer_id = request.args.get("customer_id")
+    if raw_customer_id is not None:
+        try:
+            customer_id = int(raw_customer_id)
+        except ValueError:
+            return jsonify({"success": False, "error": "customer_id must be an integer"}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        entitlement = _resolve_pos_entitlement(conn, user_id)
+        if not entitlement["has_access"]:
+            return _pos_access_denied_response()
+
+        # No pos_customers join anywhere in this endpoint -- customer_id
+        # only ever filters pos_sales.customer_id directly (never a
+        # customer's name/phone), so unlike list_sales' customer_search
+        # there is no ambiguous-column concern requiring a join at all.
+        # Cross-business/nonexistent customer_id resolves to zero matching
+        # rows for the same structural reason documented in list_sales.
+        where_clauses = ["business_id = :business_id"]
+        params = {"business_id": business_id}
+        if from_date is not None:
+            where_clauses.append("created_at >= :from_date")
+            params["from_date"] = from_date
+        if to_exclusive is not None:
+            where_clauses.append("created_at < :to_exclusive")
+            params["to_exclusive"] = to_exclusive
+        if payment_method is not None:
+            where_clauses.append("payment_method = :payment_method")
+            params["payment_method"] = payment_method
+        if customer_id is not None:
+            where_clauses.append("customer_id = :customer_id")
+            params["customer_id"] = customer_id
+        where_sql = " AND ".join(where_clauses)
+
+        summary_row = conn.execute(
+            text(f"""
+                SELECT COUNT(*) AS sale_count,
+                       COALESCE(SUM(total_amount), 0) AS total_revenue,
+                       COALESCE(ROUND(AVG(total_amount))::BIGINT, 0) AS average_sale
+                FROM pos_sales
+                WHERE {where_sql}
+            """),
+            params,
+        ).fetchone()
+        summary = dict(summary_row._mapping)
+
+        # A NULL payment_method (a sale recorded before payment-method
+        # tracking existed) is not a payment method -- excluded here so
+        # this breakdown only ever reports real, known methods.
+        payment_rows = conn.execute(
+            text(f"""
+                SELECT payment_method,
+                       COUNT(*) AS sale_count,
+                       COALESCE(SUM(total_amount), 0) AS total_amount
+                FROM pos_sales
+                WHERE {where_sql} AND payment_method IS NOT NULL
+                GROUP BY payment_method
+                ORDER BY payment_method
+            """),
+            params,
+        ).fetchall()
+
+        # `created_at::date` -- same plain, no-timezone-conversion cast
+        # this file already relies on elsewhere (created_at is a bare
+        # TIMESTAMP; every date comparison in list_sales compares it
+        # directly against a `date` value the same way).
+        daily_rows = conn.execute(
+            text(f"""
+                SELECT created_at::date AS sale_date,
+                       COUNT(*) AS sale_count,
+                       COALESCE(SUM(total_amount), 0) AS total_amount
+                FROM pos_sales
+                WHERE {where_sql}
+                GROUP BY sale_date
+                ORDER BY sale_date
+            """),
+            params,
+        ).fetchall()
+
+        as_of = conn.execute(text("SELECT NOW() AS as_of")).fetchone()._mapping["as_of"]
+
+        return jsonify({
+            "summary": {
+                "sale_count": summary["sale_count"],
+                "total_revenue": summary["total_revenue"],
+                "average_sale": summary["average_sale"],
+            },
+            "payment_methods": [
+                {
+                    "payment_method": row._mapping["payment_method"],
+                    "sale_count": row._mapping["sale_count"],
+                    "total_amount": row._mapping["total_amount"],
+                }
+                for row in payment_rows
+            ],
+            "daily_sales": [
+                {
+                    "date": row._mapping["sale_date"].isoformat(),
+                    "sale_count": row._mapping["sale_count"],
+                    "total_amount": row._mapping["total_amount"],
+                }
+                for row in daily_rows
+            ],
+            "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+        }), 200
+    except Exception:
+        logger.exception("get pos sales analytics failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# Reports V1.8: top products/customers are each capped at this many rows --
+# a small local business owner never needs more than a top-10 view, and an
+# explicit fixed LIMIT keeps the response bounded regardless of catalog/
+# customer-roster size (see get_sales_reports).
+_REPORTS_TOP_N = 10
+
+
+@pos_bp.route("/businesses/<int:business_id>/sales/reports", methods=["GET"])
+@jwt_required()
+def get_sales_reports(business_id):
+    """POS Operational Reports V1.8 -- one aggregated response answering
+    the small-business-owner questions this phase exists for (how much did
+    I sell, how many bills, best sellers, payment mix, top customers, daily
+    trend). Same from/to/payment_method/customer_id filter semantics as
+    Sales History/Analytics (routes/pos_routes.py:list_sales /
+    get_sales_analytics) -- `from`/`to` inclusive, upper bound handled as
+    an exclusive one-day-past-`to` comparison against `created_at`, every
+    date computed server-side, never the caller's clock.
+
+    Every aggregate here is computed by a small FIXED number of SQL
+    queries (ownership + entitlement + summary + top_products +
+    payment_methods + top_customers + daily_sales + as_of) regardless of
+    how many sales/items/customers match -- never one query per product,
+    per customer, or per day, and never fetches individual sale rows into
+    Python. All queries share one `where_sql` built against the `s`
+    (pos_sales) alias so every breakdown is filtered identically and an
+    excluded sale's items/association can never leak into a total.
+    """
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    from_date = None
+    raw_from = request.args.get("from")
+    if raw_from:
+        from_date, from_error = _parse_date_param(raw_from, "from")
+        if from_error:
+            return jsonify({"success": False, "error": from_error}), 400
+
+    to_date = None
+    raw_to = request.args.get("to")
+    if raw_to:
+        to_date, to_error = _parse_date_param(raw_to, "to")
+        if to_error:
+            return jsonify({"success": False, "error": to_error}), 400
+
+    if from_date is not None and to_date is not None and from_date > to_date:
+        return jsonify({"success": False, "error": "from must not be after to"}), 400
+
+    # Upper bound is exclusive and one day past `to`, same as list_sales/
+    # get_sales_analytics, so the whole of `to` itself (through 23:59:59)
+    # is included -- created_at is a TIMESTAMP, not a DATE.
+    to_exclusive = to_date + timedelta(days=1) if to_date is not None else None
+
+    payment_method = request.args.get("payment_method")
+    if payment_method is not None and payment_method not in _PAYMENT_METHODS:
+        return jsonify({
+            "success": False,
+            "error": "payment_method must be one of: " + ", ".join(sorted(_PAYMENT_METHODS)),
+        }), 400
+
+    customer_id = None
+    raw_customer_id = request.args.get("customer_id")
+    if raw_customer_id is not None:
+        try:
+            customer_id = int(raw_customer_id)
+        except ValueError:
+            return jsonify({"success": False, "error": "customer_id must be an integer"}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        entitlement = _resolve_pos_entitlement(conn, user_id)
+        if not entitlement["has_access"]:
+            return _pos_access_denied_response()
+
+        # Aliased `s` throughout (pos_sales) so this same where_sql is
+        # valid verbatim whether or not a given query also joins
+        # pos_sale_items/pos_customers -- one filter definition, applied
+        # identically everywhere, so an excluded sale's items/customer
+        # association can never leak into a total.
+        where_clauses = ["s.business_id = :business_id"]
+        params = {"business_id": business_id}
+        if from_date is not None:
+            where_clauses.append("s.created_at >= :from_date")
+            params["from_date"] = from_date
+        if to_exclusive is not None:
+            where_clauses.append("s.created_at < :to_exclusive")
+            params["to_exclusive"] = to_exclusive
+        if payment_method is not None:
+            where_clauses.append("s.payment_method = :payment_method")
+            params["payment_method"] = payment_method
+        if customer_id is not None:
+            where_clauses.append("s.customer_id = :customer_id")
+            params["customer_id"] = customer_id
+        where_sql = " AND ".join(where_clauses)
+
+        summary_row = conn.execute(
+            text(f"""
+                SELECT COUNT(*) AS sale_count,
+                       COALESCE(SUM(s.total_amount), 0) AS total_revenue,
+                       COALESCE(ROUND(AVG(s.total_amount))::BIGINT, 0) AS average_sale
+                FROM pos_sales s
+                WHERE {where_sql}
+            """),
+            params,
+        ).fetchone()
+        summary = dict(summary_row._mapping)
+
+        # Top products (D): aggregated straight from pos_sale_items joined
+        # to their parent sale, so only items belonging to a sale that
+        # matches every active filter are ever summed -- an item on an
+        # excluded sale never contributes. Sorted by quantity_sold DESC
+        # (the spec's primary key) with revenue DESC then product_id ASC
+        # as a fully deterministic tie-break, capped at _REPORTS_TOP_N.
+        product_rows = conn.execute(
+            text(f"""
+                SELECT si.product_id AS product_id,
+                       si.product_name AS product_name,
+                       SUM(si.quantity) AS quantity_sold,
+                       SUM(si.line_total) AS revenue
+                FROM pos_sale_items si
+                JOIN pos_sales s ON s.id = si.sale_id
+                WHERE {where_sql}
+                GROUP BY si.product_id, si.product_name
+                ORDER BY quantity_sold DESC, revenue DESC, si.product_id ASC
+                LIMIT :top_n
+            """),
+            {**params, "top_n": _REPORTS_TOP_N},
+        ).fetchall()
+
+        # Payment methods (F): same aggregation/exclusion semantics as
+        # get_sales_analytics -- a NULL payment_method (pre-tracking sale)
+        # is not a payment method and is excluded here, while still
+        # counted in `summary` above.
+        payment_rows = conn.execute(
+            text(f"""
+                SELECT s.payment_method AS payment_method,
+                       COUNT(*) AS sale_count,
+                       COALESCE(SUM(s.total_amount), 0) AS total_amount
+                FROM pos_sales s
+                WHERE {where_sql} AND s.payment_method IS NOT NULL
+                GROUP BY s.payment_method
+                ORDER BY s.payment_method
+            """),
+            params,
+        ).fetchall()
+
+        # Top customers (E): walk-in sales (customer_id IS NULL) are
+        # excluded by the JOIN itself (an INNER JOIN drops any sale with
+        # no matching pos_customers row) -- no separate NULL check needed.
+        # `c.business_id = s.business_id` keeps this provably
+        # business-scoped even though customer_id can only ever already
+        # be same-business (same defensive belt-and-suspenders as
+        # list_sales' own customer JOIN). Sorted by total_amount DESC (the
+        # spec's primary key) then customer_id ASC as a deterministic
+        # tie-break, capped at _REPORTS_TOP_N.
+        customer_rows = conn.execute(
+            text(f"""
+                SELECT s.customer_id AS customer_id,
+                       c.name AS customer_name,
+                       c.phone AS customer_phone,
+                       COUNT(*) AS sale_count,
+                       COALESCE(SUM(s.total_amount), 0) AS total_amount
+                FROM pos_sales s
+                JOIN pos_customers c
+                    ON c.id = s.customer_id AND c.business_id = s.business_id
+                WHERE {where_sql}
+                GROUP BY s.customer_id, c.name, c.phone
+                ORDER BY total_amount DESC, s.customer_id ASC
+                LIMIT :top_n
+            """),
+            {**params, "top_n": _REPORTS_TOP_N},
+        ).fetchall()
+
+        # Daily sales (G): same `created_at::date` grouping as
+        # get_sales_analytics, oldest -> newest (ascending sale_date) --
+        # matches that endpoint's existing convention exactly. Never
+        # zero-filled: a day with no matching sale is simply absent.
+        daily_rows = conn.execute(
+            text(f"""
+                SELECT s.created_at::date AS sale_date,
+                       COUNT(*) AS sale_count,
+                       COALESCE(SUM(s.total_amount), 0) AS total_amount
+                FROM pos_sales s
+                WHERE {where_sql}
+                GROUP BY sale_date
+                ORDER BY sale_date
+            """),
+            params,
+        ).fetchall()
+
+        as_of = conn.execute(text("SELECT NOW() AS as_of")).fetchone()._mapping["as_of"]
+
+        return jsonify({
+            "summary": {
+                "sale_count": summary["sale_count"],
+                "total_revenue": summary["total_revenue"],
+                "average_sale": summary["average_sale"],
+            },
+            "top_products": [
+                {
+                    "product_id": row._mapping["product_id"],
+                    "product_name": row._mapping["product_name"],
+                    "quantity_sold": row._mapping["quantity_sold"],
+                    "revenue": row._mapping["revenue"],
+                }
+                for row in product_rows
+            ],
+            "payment_methods": [
+                {
+                    "payment_method": row._mapping["payment_method"],
+                    "sale_count": row._mapping["sale_count"],
+                    "total_amount": row._mapping["total_amount"],
+                }
+                for row in payment_rows
+            ],
+            "top_customers": [
+                {
+                    "customer_id": row._mapping["customer_id"],
+                    "customer_name": row._mapping["customer_name"],
+                    "phone": row._mapping["customer_phone"],
+                    "sale_count": row._mapping["sale_count"],
+                    "total_amount": row._mapping["total_amount"],
+                }
+                for row in customer_rows
+            ],
+            "daily_sales": [
+                {
+                    "date": row._mapping["sale_date"].isoformat(),
+                    "sale_count": row._mapping["sale_count"],
+                    "total_amount": row._mapping["total_amount"],
+                }
+                for row in daily_rows
+            ],
+            "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+        }), 200
+    except Exception:
+        logger.exception("get pos sales reports failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:
@@ -728,6 +1924,91 @@ def create_customer(business_id):
         return jsonify({"customer": _customer_payload(dict(row._mapping))}), 201
     except Exception:
         logger.exception("create pos customer failed")
+        return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _dashboard_period_payload(row):
+    return {
+        "sale_count": row["sale_count"],
+        "total_amount": row["total_amount"],
+    }
+
+
+@pos_bp.route("/businesses/<int:business_id>/dashboard/summary", methods=["GET"])
+@jwt_required()
+def get_dashboard_summary(business_id):
+    """Operational dashboard totals for one business -- today's and this
+    (ISO, Monday-start) week's sale count/revenue.
+
+    Computed entirely by PostgreSQL's own NOW()/date_trunc() -- never the
+    app server's or a client's clock, same principle as this backend's
+    OTP-expiry handling in routes/auth_routes.py. Exactly two fixed
+    aggregate queries regardless of how much sale history exists --
+    deliberately never selects individual sale rows the way
+    GET .../sales does, so a business with years of history costs the
+    same as one with none (no N+1, unlike list_sales()'s per-sale items
+    query)."""
+    user_id = _as_user_id(get_jwt_identity())
+    if user_id is None:
+        return jsonify({"success": False, "error": "Invalid session"}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        owned = conn.execute(
+            text("""
+                SELECT id FROM pos_businesses
+                WHERE id = :business_id AND owner_user_id = :uid
+            """),
+            {"business_id": business_id, "uid": user_id},
+        ).fetchone()
+        if owned is None:
+            return jsonify({"success": False, "error": "Business not found"}), 404
+
+        entitlement = _resolve_pos_entitlement(conn, user_id)
+        if not entitlement["has_access"]:
+            return _pos_access_denied_response()
+
+        today_row = conn.execute(
+            text("""
+                SELECT COUNT(*) AS sale_count,
+                       COALESCE(SUM(total_amount), 0) AS total_amount,
+                       NOW() AS as_of
+                FROM pos_sales
+                WHERE business_id = :business_id
+                  AND created_at >= date_trunc('day', NOW())
+            """),
+            {"business_id": business_id},
+        ).fetchone()
+        today = dict(today_row._mapping)
+
+        week_row = conn.execute(
+            text("""
+                SELECT COUNT(*) AS sale_count,
+                       COALESCE(SUM(total_amount), 0) AS total_amount
+                FROM pos_sales
+                WHERE business_id = :business_id
+                  AND created_at >= date_trunc('week', NOW())
+            """),
+            {"business_id": business_id},
+        ).fetchone()
+        week = dict(week_row._mapping)
+
+        as_of = today["as_of"]
+        return jsonify({
+            "today": _dashboard_period_payload(today),
+            "week": _dashboard_period_payload(week),
+            "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+        }), 200
+    except Exception:
+        logger.exception("get pos dashboard summary failed")
         return jsonify({"success": False, "error": "Something went wrong. Please try again."}), 500
     finally:
         if conn is not None:
