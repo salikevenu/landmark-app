@@ -629,7 +629,7 @@ def _wants_json_tokens():
 @auth_bp.route("/send-otp", methods=["POST"])
 @_limit("5 per minute")
 @_limit("20 per hour")
-@_limit("3 per hour", key_func=otp_phone_key)
+@_limit("5 per hour", key_func=otp_phone_key)
 def send_otp():
     """Send OTP via Message Central VerifyNow API."""
     try:
@@ -901,7 +901,7 @@ def public_login_page():
 @auth_bp.route("/resend-otp", methods=["POST"])
 @_limit("5 per minute")
 @_limit("20 per hour")
-@_limit("3 per hour", key_func=otp_phone_key)
+@_limit("5 per hour", key_func=otp_phone_key)
 def resend_otp():
     """Resend OTP."""
     try:
