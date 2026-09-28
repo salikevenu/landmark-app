@@ -31,7 +31,7 @@ NEW_DEFAULTS = [
     ("referral_first_bonus_business_premium", "150"),
     ("otp_verification_expiry_seconds", "300"),
     ("otp_resend_cooldown_seconds", "60"),
-    ("otp_max_attempts", "5"),
+    ("otp_max_attempts", "3"),  # was "5"; see migrations/set_otp_max_attempts_3.py
 ]
 
 

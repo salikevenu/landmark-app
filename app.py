@@ -36,7 +36,6 @@ from flask_jwt_extended import (
     verify_jwt_in_request,
     set_access_cookies,
     set_refresh_cookies,
-    unset_jwt_cookies
 )
 import hmac
 from werkzeug.exceptions import HTTPException
@@ -133,8 +132,16 @@ app.config.update(
     TEMPLATES_AUTO_RELOAD=True,
     MAX_CONTENT_LENGTH=20 * 1024 * 1024,
     UPLOAD_FOLDER="static/uploads",
-    JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "your-secure-jwt-secret-key"),
+    # No fallback: REQUIRED_ENV_VARS above already refuses to start (RuntimeError)
+    # when JWT_SECRET_KEY is unset, and a hardcoded default would let anyone
+    # who has read this file forge tokens.
+    JWT_SECRET_KEY=os.environ["JWT_SECRET_KEY"],
     JWT_ACCESS_TOKEN_EXPIRES=timedelta(hours=2),
+    # Fallback only, for a refresh token minted WITHOUT an explicit
+    # expires_delta -- kept at the short 7 days so a forgotten one never
+    # silently gets remember-me's lifetime. Login always passes one
+    # (routes.auth_routes.generate_jwt_tokens): DEFAULT_REFRESH_TTL (7 days),
+    # or REMEMBER_ME_REFRESH_TTL (30 days) only when remember-me is ticked.
     JWT_REFRESH_TOKEN_EXPIRES=timedelta(days=7),
     JWT_TOKEN_LOCATION=["cookies", "headers"],
     JWT_COOKIE_SECURE=_cookie_secure,
@@ -145,7 +152,9 @@ app.config.update(
     JWT_ACCESS_COOKIE_PATH="/",
     JWT_ACCESS_COOKIE_NAME="access_token",
     JWT_REFRESH_COOKIE_NAME="refresh_token",
-    JWT_REFRESH_COOKIE_PATH="/api/refresh",
+    # "/" (was "/api/refresh") so logout requests carry the refresh token
+    # and can blocklist it; still HttpOnly, Secure on Render, CSRF-protected.
+    JWT_REFRESH_COOKIE_PATH="/",
     JWT_ACCESS_CSRF_COOKIE_NAME="csrf_access_token",
     JWT_REFRESH_CSRF_COOKIE_NAME="csrf_refresh_token",
     JWT_ACCESS_CSRF_COOKIE_PATH="/",
@@ -228,7 +237,12 @@ def _jwt_invalid(reason):
         return _silent_refresh_redirect()
     return jsonify({"success": False, "error": "Invalid session"}), 401
 
-from services.jwt_session import register_jwt_security, revoke_tokens_from_request
+from services.jwt_session import (
+    ACCESS_TOKEN_TTL,
+    clear_auth_cookies,
+    register_jwt_security,
+    revoke_tokens_from_request,
+)
 register_jwt_security(jwt)
 
 # ==================== REGISTER ROUTES ====================
@@ -400,7 +414,7 @@ def pricing():
 def logout_page():
     revoke_tokens_from_request()
     response = make_response(render_template("logout.html"))
-    unset_jwt_cookies(response)
+    clear_auth_cookies(response)
     return response
 
 @app.route('/set-language', methods=['POST'])
@@ -471,7 +485,9 @@ def _mint_access_token_for_refresh():
         return None, None
     role = mapping.get("role") or "free"
     phone = mapping.get("phone") or ""
-    access_expires = timedelta(days=30) if remember_me else timedelta(hours=2)
+    # Same fixed lifetime as login (routes.auth_routes.generate_jwt_tokens):
+    # remember_me lengthens only the refresh token, never the access token.
+    access_expires = ACCESS_TOKEN_TTL
     access_token = create_access_token(
         identity=str(uid),
         additional_claims={"role": role, "phone": phone, "remember_me": remember_me},
@@ -535,14 +551,14 @@ def refresh_silent():
         verify_jwt_in_request(refresh=True)
     except Exception:
         resp = redirect(login_url)
-        unset_jwt_cookies(resp)
+        clear_auth_cookies(resp)
         return resp
 
     try:
         access_token, access_expires = _mint_access_token_for_refresh()
     except (TypeError, ValueError):
         resp = redirect(login_url)
-        unset_jwt_cookies(resp)
+        clear_auth_cookies(resp)
         return resp
     except Exception:
         logger.exception("silent refresh user lookup failed")
@@ -550,7 +566,7 @@ def refresh_silent():
 
     if access_token is None:
         resp = redirect(login_url)
-        unset_jwt_cookies(resp)
+        clear_auth_cookies(resp)
         return resp
 
     resp = redirect(next_url)

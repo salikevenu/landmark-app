@@ -10,7 +10,7 @@ bind = f"0.0.0.0:{port}"
 # One worker keeps memory flat and keeps the in-process fallbacks (the
 # rate limiter and the JWT revocation blocklist, both of which degrade to
 # process memory when Redis is unreachable) consistent -- a second worker
-# would silently double every "3 per hour" limit and let a logged-out
+# would silently double every "5 per hour" limit and let a logged-out
 # token stay valid on the other worker. Concurrency is therefore bought
 # with THREADS, not processes.
 #
