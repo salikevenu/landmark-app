@@ -789,46 +789,13 @@ def verify_extra_business_payment(data, user_id):
     if int(payment.get("amount") or 0) != expected_paise:
         return error_payload("Amount mismatch")
 
+    # Only an order this server created (POST /create-order stores a
+    # 'created' extra_business row first) can grant a slot. There is
+    # deliberately no fallback that inserts a row here: that would turn ANY
+    # paid ₹249 Razorpay order without a user_id note (another product, a
+    # dashboard payment link) into a free slot. finalize_extra_business_order
+    # answers "Order not found for this account" when no row exists.
     ensure_payments_plan_column()
-    conn = get_db_connection()
-    try:
-        preview = conn.execute(text("""
-            SELECT id, user_id, order_id, payment_id, amount, status, plan
-            FROM payments
-            WHERE user_id = :uid
-              AND (order_id = :oid OR payment_id = :oid OR payment_id = :pid)
-            ORDER BY id DESC
-            LIMIT 1
-        """), {"uid": uid, "oid": razorpay_order_id, "pid": razorpay_payment_id}).fetchone()
-        row = _row_map(preview)
-        if not row:
-            try:
-                conn.execute(text("""
-                    INSERT INTO payments
-                        (user_id, order_id, payment_id, amount, status, plan, created_at)
-                    VALUES
-                        (:user_id, :order_id, :payment_id, :amount, :status, :plan, :created_at)
-                """), {
-                    "user_id": uid,
-                    "order_id": razorpay_order_id,
-                    "payment_id": razorpay_order_id,
-                    "amount": expected_paise,
-                    "status": "captured",
-                    "plan": EXTRA_BUSINESS_PLAN,
-                    "created_at": datetime.utcnow(),
-                })
-                conn.commit()
-            except IntegrityError:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
     return finalize_extra_business_order(
         razorpay_order_id,
         razorpay_payment_id,

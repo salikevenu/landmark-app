@@ -261,9 +261,13 @@ def wallet_balance():
 @jwt_required()
 def wallet_transactions():
     user_id = get_jwt_identity()
+    # Explicit columns only: a referrer's commission rows carry
+    # the REFERRED user's razorpay_payment_id, which must not be exposed.
+    # Same shape as services.wallet_service.get_wallet_transactions.
     with get_db_connection() as conn:
         rows = conn.execute(text("""
-            SELECT * FROM wallet_transactions
+            SELECT id, amount, type, source, status, created_at
+            FROM wallet_transactions
             WHERE user_id = :uid
             ORDER BY created_at DESC
         """), {"uid": user_id}).fetchall()

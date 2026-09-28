@@ -140,6 +140,8 @@ Do not commit `.env`. CI uses dummy secrets (good).
 
 ## 9. Payments
 
+> **Superseded:** this table is the 2026-08-14 state. See section 16 (re-audit 2026-09-29) for the current status of sections 9 and 10.
+
 | Control | Status |
 |---|---|
 | Order amount from server PLAN_PRICES | yes on `/create-order` |
@@ -240,6 +242,44 @@ Avatar and listing images saved under `static/uploads` with `secure_filename` pl
 
 ---
 
-## 16. Do not do in this pass
+## 16. Payments, wallet and referral re-audit (2026-09-29, branch `audit/payments`)
+
+Read-through of `routes/payment_routes.py`, `services/payment_service.py`, `routes/wallet_routes.py`, `routes/withdraw_routes.py`, `services/wallet_service.py`, `services/referral_commission.py` and the internal payout job in `app.py`.
+
+**Fixed since the 2026-08-14 audit (verified in code)**
+
+| Old finding | Now |
+|---|---|
+| `/create-order-debug` unauthenticated | Returns 404, creates nothing (`payment_routes.py`) |
+| `/verify-payment` optional JWT, `test_user_001` fallback | `@jwt_required()`; the order must belong to the caller (payments row + Razorpay notes) |
+| `/submit-payment-proof` unauthenticated | `@jwt_required()`, returns 404 |
+| Unsigned `/api/payment/webhook` | Now a stub in `app.py` that always returns 403 and records nothing; payments are only activated by the HMAC-verified `/api/payment/razorpay/webhook` (constant-time compare, 503 if secret unset) |
+| Activation not idempotent | Payment row locked `FOR UPDATE`; activates only from a pre-activation status, then compare-and-set to `activated`; replays return `duplicate` without extending expiry |
+| Verify trusts client data | Signature, Razorpay order `paid`, payment `captured` and matching order, amounts equal to the stored row, plan and duration from the stored row |
+| Wallet credit-then-debit leaves money behind | Withdrawal reserves with a row lock + compare-and-set debit (never negative), in one transaction with the request and ledger row |
+| Withdraw debits immediately, lost if never paid | Debit is a reservation; reject refunds exactly once (unique refund ledger index); approve does not debit again |
+| Duplicate withdrawal submits | Idempotency key backed by a unique `(user_id, reference_id)` index |
+| Commission double-pay | One job per payment (`UNIQUE (payment_id)`), one commission row per payment, only for `activated` payments, self-referral blocked, payout release `SKIP LOCKED` + compare-and-set |
+| `SATURDAY_PAYOUT_SECRET` unset → `Bearer None` | Unset secret denies; must differ from app/JWT secrets; constant-time compare |
+
+**Fixed in this pass**
+
+- `verify_extra_business_payment` (reachable via legacy `POST /api/user/verify-payment` with `plan=extra_business`) inserted a payments row for any paid ₹249 Razorpay order it had no record of, as long as the order had no `user_id` note. Not exploitable today, since no other product costs ₹249, but a future ₹249 product or dashboard payment link would have become a free listing slot. It now requires a row created by `/create-order`.
+- Withdrawal UPI IDs are validated as `handle@provider` before any balance is reserved (was: any non-empty text ≤ 120 chars).
+- `GET /api/payment/wallet-transactions` used `SELECT *`, exposing the referred user's `razorpay_payment_id` on a referrer's commission rows. Now uses explicit columns, the same as `/api/wallet/transactions`.
+
+**Open: product decisions**
+
+- **Early renewal loses remaining days.** Activation sets expiry to *now + billed duration*, never extending the current expiry (`payment_service._expiry_date`). A user with 20 days left who renews monthly ends with 30, not 50. Buying a lower plan while on a higher one also downgrades immediately.
+- **Refunds and chargebacks are not handled.** Refund webhooks are ignored. A refunded payment keeps the subscription active, and its referral commission unlocks the next Saturday 18:00 IST (sometimes less than a day later) and can then be withdrawn.
+- **Pending withdrawals have no timeout or alert.** Reserved money stays out of the user's balance until an admin approves or rejects.
+
+**Open: low**
+
+- Recurring 10% commission can be earned on one's own purchases through a second account (sock-puppet referral); withdrawal requires one paid business referral, which a second account can also satisfy.
+
+---
+
+## 17. Do not do in this pass
 
 No secret rotation from this document, no firewall changes, no data deletion. Fix order is in `LANDMARK_IMPLEMENTATION_ROADMAP.md`.

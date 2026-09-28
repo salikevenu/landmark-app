@@ -286,6 +286,22 @@ class WithdrawalSafetyTests(unittest.TestCase):
     def test_negative_amount(self):
         self.assertFalse(request_withdrawal(1, -100, "user@upi")["success"])
 
+    def test_malformed_upi_rejected_before_any_reservation(self):
+        for bad in ("", "   ", "nohandle", "@okaxis", "name@", "name@@okaxis",
+                    "na me@okaxis", "name@ok-axis", "name@1bank", "<script>@x",
+                    "a" * 101 + "@okaxis", None, 12345):
+            out = request_withdrawal(1, 100, bad)
+            self.assertFalse(out["success"], bad)
+            self.assertEqual(out.get("_http"), 400, bad)
+        self.assertEqual(self.store.balances[1], Decimal("150.00"))
+        self.assertEqual([w for w in self.store.withdrawals if w["status"] == "pending"], [])
+
+    def test_valid_upi_formats_accepted(self):
+        self.store.balances[1] = Decimal("1000.00")
+        for good in ("user@upi", "name.1@okaxis", "first_last-2@ybl", "9876543210@paytm", " padded@oksbi "):
+            out = request_withdrawal(1, 100, good)
+            self.assertTrue(out["success"], (good, out))
+
     def test_concurrent_withdrawals_one_succeeds(self):
         results = [None, None]
 

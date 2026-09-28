@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime
 import logging
 import math
+import re
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +29,8 @@ STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 STATUS_PAID = "paid"
+# UPI virtual payment address: handle@provider, e.g. name.1@okaxis.
+UPI_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}@[A-Za-z][A-Za-z0-9]{1,19}$")
 
 
 def _as_int_user_id(user_id):
@@ -281,9 +284,13 @@ def request_withdrawal(user_id, amount, upi_id, idempotency_key=None):
         money = parse_money(amount)
     except ValueError as exc:
         return {"success": False, "error": str(exc), "_http": 400}
-    upi = (upi_id or "").strip()
-    if not upi or len(upi) > 120:
+    upi = (upi_id or "").strip() if isinstance(upi_id, str) else ""
+    if not upi:
         return {"success": False, "error": "UPI ID required", "_http": 400}
+    if not UPI_ID_PATTERN.fullmatch(upi):
+        # Checked before any balance is reserved: a malformed ID would
+        # only surface when the admin tries to pay it.
+        return {"success": False, "error": "Enter a valid UPI ID (for example name@okaxis)", "_http": 400}
     key = (idempotency_key or "").strip() or None
     if key and len(key) > 120:
         return {"success": False, "error": "Invalid request id", "_http": 400}
