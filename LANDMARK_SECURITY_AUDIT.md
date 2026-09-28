@@ -232,7 +232,7 @@ Avatar and listing images saved under `static/uploads` with `secure_filename` pl
 
 **Open / not done in this pass**
 
-- Verify-attempt check is read-then-increment, not atomic: parallel wrong guesses can exceed the cap (still bounded by the 10/min and 30/h per-number verify limits).
+- ~~Verify-attempt check is read-then-increment, not atomic.~~ **Fixed 2026-09-29:** `verify_otp` claims each attempt with one atomic `UPDATE … WHERE attempts < max RETURNING` (`reserve_attempt`) before the provider sees the guess, so concurrent guesses can't exceed the cap. Every claimed attempt counts, including a provider error or timeout (as before). Covered by a concurrent-guess DB test.
 - Lockout can be triggered by anyone who knows a phone number (3 wrong guesses → 15 min denial of login). **Follow-up:** lock by phone number + client IP instead of number alone, so a stranger's wrong guesses don't lock the real user out. Needs an `ip` column on `otp_verifications` (schema change + migration), so it's planned as a separate PR.
 - `services/admin_service.py` still accepts `otp_max_attempts` > 3 and `otp_verification_expiry_seconds` > 300; runtime silently caps them.
 - Logout accepts GET and CSRF-less POST (forced-logout CSRF, low impact).

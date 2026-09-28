@@ -349,6 +349,8 @@ class ReferralAttributionFlowTests(unittest.TestCase):
             "created_at": datetime.utcnow(),
         }
         with patch.object(auth_routes, "get_verification", return_value=stored), \
+             patch.object(auth_routes, "reserve_attempt",
+                          return_value={"verification_id": stored["verification_id"], "attempts": 1}), \
              patch.object(auth_routes, "delete_verification"), \
              patch.object(auth_routes, "get_sms_service", return_value=sms):
             res = self.client.post(
@@ -372,6 +374,8 @@ class ReferralAttributionFlowTests(unittest.TestCase):
             "created_at": datetime.utcnow(),
         }
         with patch.object(auth_routes, "get_verification", return_value=stored), \
+             patch.object(auth_routes, "reserve_attempt",
+                          return_value={"verification_id": stored["verification_id"], "attempts": 1}), \
              patch.object(auth_routes, "delete_verification"), \
              patch.object(auth_routes, "get_sms_service", return_value=sms):
             res = self.client.post(
@@ -570,6 +574,8 @@ class RegisterPageReferralCaptureTests(unittest.TestCase):
             "created_at": datetime.utcnow(),
         }
         with patch.object(auth_routes, "get_verification", return_value=stored), \
+             patch.object(auth_routes, "reserve_attempt",
+                          return_value={"verification_id": stored["verification_id"], "attempts": 1}), \
              patch.object(auth_routes, "delete_verification"), \
              patch.object(auth_routes, "get_sms_service", return_value=sms):
             verify_res = self.client.post(

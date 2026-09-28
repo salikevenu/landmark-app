@@ -635,24 +635,47 @@ def get_verification(phone):
             }
         return None
 
-def increment_attempts(phone, max_attempts=None):
-    """Count a wrong OTP. On reaching max_attempts, lock the number by
-    pushing the row's expires_at out to NOW() + OTP_LOCKOUT_SECONDS.
-    Returns the new attempt count (None if there was no row)."""
+def reserve_attempt(phone, max_attempts):
+    """Atomically claim one verify attempt BEFORE the code is checked.
+
+    A single UPDATE ... WHERE attempts < :max_attempts, so concurrent
+    verify requests for one number can never get more than max_attempts
+    guesses between them: PostgreSQL row-locks the row and re-checks the
+    WHERE clause for each waiting UPDATE. (Reading the count, asking the
+    provider, then incrementing let simultaneous requests all pass the
+    check.) Every claimed attempt counts, including one whose provider
+    call errors or times out.
+
+    The claim that reaches max_attempts also applies the lock (expires_at
+    = NOW() + OTP_LOCKOUT_SECONDS). If that last guess is correct, the
+    success path deletes the row, so the lock only ever outlives a wrong
+    guess.
+
+    Returns {"verification_id", "attempts"} for the claimed attempt, or
+    None if the number is locked, the code expired or was used, or there
+    is no row.
+    """
     with engine.connect() as conn:
         row = conn.execute(text("""
             UPDATE otp_verifications
             SET attempts = attempts + 1,
                 expires_at = CASE
-                    WHEN :max_attempts IS NOT NULL AND attempts + 1 >= :max_attempts
+                    WHEN attempts + 1 >= :max_attempts
                     THEN NOW() + make_interval(secs => :lock_seconds)
                     ELSE expires_at
                 END
             WHERE phone = :phone
-            RETURNING attempts
+              AND expires_at > NOW()
+              AND attempts < :max_attempts
+            RETURNING verification_id, attempts
         """), {"phone": phone, "max_attempts": max_attempts, "lock_seconds": OTP_LOCKOUT_SECONDS}).fetchone()
         conn.commit()
-    return row._mapping["attempts"] if row else None
+    if row is None:
+        return None
+    return {
+        "verification_id": row._mapping["verification_id"],
+        "attempts": row._mapping["attempts"],
+    }
 
 
 def _locked_response():
@@ -802,14 +825,24 @@ def verify_otp():
             # stay refused too, instead of deleting it and allowing a fresh OTP.
             return _locked_response()
 
-        # ✅ Verify OTP FIRST, then increment attempts only on failure
+        # Claim the attempt atomically before the provider sees the guess.
+        claim = reserve_attempt(full_phone, max_attempts)
+        if claim is None:
+            # A concurrent request took the last attempt (now locked) or
+            # used/expired the code between the read above and this claim.
+            if _is_locked(get_verification(full_phone)):
+                return _locked_response()
+            return jsonify({
+                "success": False,
+                "message": "This OTP has already been used or expired.",
+                "reason": "ALREADY_CONSUMED"
+            }), 401
+
         sms_service = get_sms_service()
-        success, response = sms_service.verify_otp(str(stored["verification_id"]), user_otp)
+        success, response = sms_service.verify_otp(str(claim["verification_id"]), user_otp)
 
         if not success:
-            # ✅ Only increment attempts on failure
-            attempts = increment_attempts(full_phone, max_attempts)
-            if attempts is not None and attempts >= max_attempts:
+            if claim["attempts"] >= max_attempts:
                 return _locked_response()
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
