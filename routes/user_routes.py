@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token, unset_jwt_cookies
-from services.jwt_session import revoke_tokens_from_request
+from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
+from services.jwt_session import clear_auth_cookies, revoke_tokens_from_request
 from datetime import datetime, timedelta, date
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -254,7 +254,7 @@ def upload_profile_avatar():
 def logout():
     revoke_tokens_from_request()
     response = jsonify({"success": True, "message": "Logged out"})
-    unset_jwt_cookies(response)
+    clear_auth_cookies(response)
     return response, 200
 
 # ------------------------------------------------------------

@@ -415,7 +415,9 @@ class FrontendAuthGateTests(unittest.TestCase):
 class AppJwtConfigTests(unittest.TestCase):
     def test_refresh_cookie_path_matches_refresh_route(self):
         src = (ROOT / "app.py").read_text(encoding="utf-8")
-        self.assertIn('JWT_REFRESH_COOKIE_PATH="/api/refresh"', src)
+        # "/" so logout requests carry (and can revoke) the refresh token --
+        # see tests/test_auth.py::TestLogoutRevokes.
+        self.assertIn('JWT_REFRESH_COOKIE_PATH="/"', src)
         self.assertIn("JWT_COOKIE_HTTPONLY=True", src)
         self.assertIn('JWT_ACCESS_COOKIE_PATH="/"', src)
         self.assertIn('JWT_COOKIE_PATH="/"', src)
@@ -427,6 +429,76 @@ class AppJwtConfigTests(unittest.TestCase):
         self.assertIn("JWT_COOKIE_SECURE=_cookie_secure", src)
         self.assertNotIn('JWT_REFRESH_COOKIE_PATH="/token/refresh"', src)
 
+    def test_refresh_csrf_cookie_path_is_root(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn('JWT_REFRESH_CSRF_COOKIE_PATH="/"', src)
+
+    def test_no_hardcoded_jwt_secret_fallback(self):
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn("your-secure-jwt-secret-key", src)
+        self.assertIn('JWT_SECRET_KEY=os.environ["JWT_SECRET_KEY"]', src)
+
+    def test_refresh_default_is_7_days_and_ttls_live_in_jwt_session(self):
+        from app import app as flask_app
+        from services import jwt_session
+
+        self.assertEqual(flask_app.config["JWT_REFRESH_TOKEN_EXPIRES"], timedelta(days=7))
+        self.assertEqual(jwt_session.ACCESS_TOKEN_TTL, timedelta(hours=2))
+        self.assertEqual(jwt_session.DEFAULT_REFRESH_TTL, timedelta(days=7))
+        self.assertEqual(jwt_session.REMEMBER_ME_REFRESH_TTL, timedelta(days=30))
+        src = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn("from routes.auth_routes import ACCESS_TOKEN_TTL", src)
+        routes_src = (ROOT / "routes" / "auth_routes.py").read_text(encoding="utf-8")
+        self.assertNotIn("ACCESS_TOKEN_TTL = ", routes_src)
+        self.assertNotIn("REMEMBER_ME_REFRESH_TTL = ", routes_src)
+
+    def test_every_production_refresh_token_passes_explicit_expires_delta(self):
+        """JWT_REFRESH_TOKEN_EXPIRES is only a fallback; remember-me's 30 days
+        must come from an explicit expires_delta at the call site."""
+        import ast
+
+        offenders = []
+        for path in ROOT.rglob("*.py"):
+            rel = path.relative_to(ROOT).parts
+            if rel[0] in ("venv", ".venv", "tests") or "site-packages" in rel:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+                if name == "create_refresh_token" and not any(
+                    kw.arg == "expires_delta" for kw in node.keywords
+                ):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+        self.assertEqual(offenders, [])
+
+    def test_app_refuses_to_start_without_jwt_secret(self):
+        import subprocess
+
+        probe = (
+            "import os, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import dotenv\n"
+            "dotenv.load_dotenv = lambda *a, **k: False\n"
+            "os.environ.pop('JWT_SECRET_KEY', None)\n"
+            "try:\n"
+            "    import app\n"
+            "except RuntimeError as e:\n"
+            "    print('REFUSED', e)\n"
+            "else:\n"
+            "    print('STARTED')\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k not in ("JWT_SECRET_KEY", "RENDER")}
+        env.update(SECRET_KEY="probe", DATABASE_URL="postgresql://probe:probe@127.0.0.1:1/probe", REDIS_URL="")
+        out = subprocess.run(
+            [sys.executable, "-c", probe, str(ROOT)],
+            capture_output=True, text=True, timeout=120, env=env, cwd=str(ROOT),
+        )
+        self.assertIn("REFUSED", out.stdout, out.stdout[-2000:] + out.stderr[-2000:])
+        self.assertIn("JWT_SECRET_KEY", out.stdout)
+
     def test_session_js_refresh_does_not_recurse(self):
         js = (ROOT / "static" / "js" / "session.js").read_text(encoding="utf-8")
         self.assertIn("refreshInFlight", js)
@@ -435,6 +507,70 @@ class AppJwtConfigTests(unittest.TestCase):
         self.assertIn("csrf_access_token", js)
         self.assertIn("csrf_refresh_token", js)
         self.assertIn("isRefreshCall", js)
+
+
+class LogoutCookieDeletionTests(unittest.TestCase):
+    """Every logout must expire refresh_token under BOTH "/" (current path)
+    and "/api/refresh" (pre-change path), with matching cookie attributes --
+    otherwise a browser from before the path change keeps a live refresh
+    cookie that /api/refresh will happily redeem after "logout"."""
+
+    LOGOUTS = [
+        ("POST", "/api/auth/logout"),
+        ("GET", "/api/auth/logout"),
+        ("POST", "/api/user/logout"),
+        ("GET", "/logout"),
+    ]
+
+    def setUp(self):
+        from app import app as flask_app
+        flask_app.config["TESTING"] = True
+        self.app = flask_app
+        self.client = flask_app.test_client()
+
+    @staticmethod
+    def _deletions(response, name):
+        """{path: lowercased Set-Cookie header} for each expiry of `name`."""
+        out = {}
+        for header in response.headers.getlist("Set-Cookie"):
+            if not header.startswith(f"{name}=;"):
+                continue
+            attrs = dict(
+                (part.split("=", 1) + [""])[:2]
+                for part in (p.strip().lower() for p in header.split(";")[1:])
+            )
+            if "max-age" in attrs:
+                assert attrs["max-age"] == "0", header
+            out[attrs.get("path")] = header.lower()
+        return out
+
+    def test_logout_expires_refresh_cookie_under_root_and_legacy_path(self):
+        for method, path in self.LOGOUTS:
+            with self.subTest(method=method, path=path):
+                res = self.client.open(path, method=method, headers={"Accept": "application/json"})
+                self.assertLess(res.status_code, 400)
+                refresh = self._deletions(res, "refresh_token")
+                self.assertIn("/", refresh)
+                self.assertIn("/api/refresh", refresh)
+                # Access + refresh CSRF cookies are cleared at "/" too.
+                self.assertIn("/", self._deletions(res, "access_token"))
+                self.assertIn("/", self._deletions(res, "csrf_refresh_token"))
+
+    def test_legacy_delete_matches_how_the_cookie_was_set(self):
+        from services.jwt_session import clear_auth_cookies
+
+        with patch.dict(self.app.config, {
+            "JWT_COOKIE_SECURE": True,
+            "JWT_COOKIE_SAMESITE": "Lax",
+            "JWT_COOKIE_DOMAIN": "landmarkvts.in",
+        }):
+            with self.app.test_request_context("/"):
+                res = clear_auth_cookies(jsonify(ok=True))
+        legacy = self._deletions(res, "refresh_token")["/api/refresh"]
+        self.assertIn("domain=landmarkvts.in", legacy)
+        self.assertIn("secure", legacy)
+        self.assertIn("httponly", legacy)
+        self.assertIn("samesite=lax", legacy)
 
 
 if __name__ == "__main__":

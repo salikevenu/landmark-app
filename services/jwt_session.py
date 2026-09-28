@@ -1,14 +1,24 @@
 """JWT session hardening: blocklist, banned-user lookup, request-token revoke."""
 import logging
+from datetime import timedelta
 
-from flask import jsonify, request
-from flask_jwt_extended import decode_token
+from flask import current_app, jsonify, request
+from flask_jwt_extended import decode_token, unset_jwt_cookies
 from sqlalchemy import text
 
 from database.init_db import get_db_connection
 from services.jwt_blocklist import is_revoked, revoke_jti
 
 logger = logging.getLogger(__name__)
+
+# Token lifetimes, shared by login (routes.auth_routes.generate_jwt_tokens)
+# and app.py's refresh endpoints. The access token is deliberately short and
+# FIXED -- "remember me" must never lengthen it (see generate_jwt_tokens for
+# why). Session longevity comes from the refresh token plus app.py's
+# silent-refresh bounce, not from a long-lived access token.
+ACCESS_TOKEN_TTL = timedelta(hours=2)
+DEFAULT_REFRESH_TTL = timedelta(days=7)
+REMEMBER_ME_REFRESH_TTL = timedelta(days=30)
 
 
 def _identity_int(raw):
@@ -91,6 +101,34 @@ def revoke_tokens_from_request():
         except Exception:
             continue
         revoke_jti(decoded.get("jti"), decoded.get("exp"))
+
+
+# Where the refresh cookie lived before JWT_REFRESH_COOKIE_PATH became "/".
+LEGACY_REFRESH_COOKIE_PATH = "/api/refresh"
+
+
+def clear_auth_cookies(response):
+    """unset_jwt_cookies + drop any refresh cookie still stored under the old
+    /api/refresh path, so a pre-change browser session can't silently log
+    itself back in after logout.
+
+    The legacy delete mirrors the attributes set_refresh_cookies uses
+    (domain/secure/samesite); a delete whose attributes differ from the
+    original Set-Cookie can be ignored by the browser. The refresh CSRF
+    cookie needs no legacy delete: it has always lived at "/" (explicitly
+    since JWT_REFRESH_CSRF_COOKIE_PATH was added, flask-jwt-extended's
+    default before that), which unset_jwt_cookies already clears."""
+    unset_jwt_cookies(response)
+    config = current_app.config
+    response.delete_cookie(
+        config.get("JWT_REFRESH_COOKIE_NAME", "refresh_token"),
+        path=LEGACY_REFRESH_COOKIE_PATH,
+        domain=config.get("JWT_COOKIE_DOMAIN"),
+        secure=config.get("JWT_COOKIE_SECURE", False),
+        httponly=True,
+        samesite=config.get("JWT_COOKIE_SAMESITE"),
+    )
+    return response
 
 
 def register_jwt_security(jwt):

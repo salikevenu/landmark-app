@@ -720,7 +720,7 @@ def _init_db_body(conn):
         ('referral_first_bonus_business_premium', '150'),
         ('otp_verification_expiry_seconds', '300'),
         ('otp_resend_cooldown_seconds', '60'),
-        ('otp_max_attempts', '5'),
+        ('otp_max_attempts', '3'),
         # How many listings a user with no paid plan may create --
         # services/subscription_access.py's get_business_limit_for_user()
         # floors every user's limit at this. See migrations/

@@ -22,10 +22,15 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt,
     get_jwt_identity,
-    unset_jwt_cookies,
     verify_jwt_in_request,
 )
-from services.jwt_session import revoke_tokens_from_request
+from services.jwt_session import (
+    ACCESS_TOKEN_TTL,
+    DEFAULT_REFRESH_TTL,
+    REMEMBER_ME_REFRESH_TTL,
+    clear_auth_cookies,
+    revoke_tokens_from_request,
+)
 from services.sms_service import get_sms_service
 from extensions import limiter
 from flask_limiter.util import get_remote_address
@@ -65,6 +70,30 @@ def _limit(*args, **kwargs):
         return limiter.limit(*args, **kwargs)(fn)
     return deco
 
+
+def _shared_limit(*args, **kwargs):
+    """Same load-order guard as _limit, for a limit shared by several routes."""
+    def deco(fn):
+        if limiter is None:
+            logger.error(
+                "RATE LIMIT NOT APPLIED to %s: extensions.init_extensions() "
+                "has not run yet at import time.",
+                getattr(fn, "__name__", fn),
+            )
+            return fn
+        return limiter.shared_limit(*args, **kwargs)(fn)
+    return deco
+
+
+# Max OTP SMS per phone number per hour, shared by send-otp and resend-otp.
+# Only requests that actually sent an OTP (HTTP 200) are counted, so a
+# resend refused by the 60 s cooldown does not burn the user's quota.
+OTP_REQUESTS_PER_NUMBER_PER_HOUR = "5 per hour"
+
+
+def _otp_sent(response):
+    return response.status_code == 200
+
 # =================================
 # DATABASE-BASED VERIFICATION STORAGE
 # =================================
@@ -87,7 +116,11 @@ VERIFICATION_EXPIRY_SECONDS = 300
 # validity period instead of a short cooldown.
 RESEND_COOLDOWN_SECONDS = 60
 COUNTRY_CODE = os.getenv("MESSAGE_CENTRAL_COUNTRY", "91")
-MAX_OTP_ATTEMPTS = 5
+MAX_OTP_ATTEMPTS = 3
+# After MAX_OTP_ATTEMPTS wrong codes the number is locked: verify, send and
+# resend all return 429 until this passes. Stored on the otp_verifications
+# row itself (expires_at is pushed out to the lock end), so no schema change.
+OTP_LOCKOUT_SECONDS = 15 * 60
 PENDING_REFERRAL_TTL = timedelta(days=7)
 REFERRAL_CODE_INSERT_ATTEMPTS = 8
 
@@ -97,7 +130,7 @@ REFERRAL_CODE_INSERT_ATTEMPTS = 8
 # OTP send/verify must never break because a settings read failed.
 
 
-def _otp_setting_int(key, default, minimum=1):
+def _otp_setting_int(key, default, minimum=1, maximum=None):
     try:
         with engine.connect() as conn:
             row = conn.execute(
@@ -106,14 +139,20 @@ def _otp_setting_int(key, default, minimum=1):
         if row is None:
             return default
         value = int(float(row._mapping["value"]))
-        return value if value >= minimum else default
+        if value < minimum:
+            return default
+        # Security ceilings: an admin setting may tighten these, never loosen them.
+        return min(value, maximum) if maximum is not None else value
     except Exception:
         logger.exception("OTP setting lookup failed for key=%s; using default=%s", key, default)
         return default
 
 
 def _verification_expiry_seconds():
-    return _otp_setting_int("otp_verification_expiry_seconds", VERIFICATION_EXPIRY_SECONDS, minimum=30)
+    return _otp_setting_int(
+        "otp_verification_expiry_seconds", VERIFICATION_EXPIRY_SECONDS,
+        minimum=30, maximum=VERIFICATION_EXPIRY_SECONDS,
+    )
 
 
 def _resend_cooldown_seconds():
@@ -121,15 +160,7 @@ def _resend_cooldown_seconds():
 
 
 def _max_otp_attempts():
-    return _otp_setting_int("otp_max_attempts", MAX_OTP_ATTEMPTS, minimum=1)
-
-# Token lifetimes. The access token is deliberately short and FIXED --
-# "remember me" must never lengthen it (see generate_jwt_tokens below for
-# why). Session longevity comes from the refresh token plus app.py's
-# silent-refresh bounce, not from a long-lived access token.
-ACCESS_TOKEN_TTL = timedelta(hours=2)
-DEFAULT_REFRESH_TTL = timedelta(days=7)
-REMEMBER_ME_REFRESH_TTL = timedelta(days=365)
+    return _otp_setting_int("otp_max_attempts", MAX_OTP_ATTEMPTS, minimum=1, maximum=MAX_OTP_ATTEMPTS)
 
 # Canonical pre-auth URLs. Single source of truth: every redirect, link
 # and fallback in the codebase builds from these, so the flow cannot
@@ -512,7 +543,7 @@ def generate_jwt_tokens(user_data, remember_me=False):
     Nothing is lost by shortening it: app.py's /api/refresh/silent
     transparently mints a new access token from the still-valid refresh
     cookie on any page navigation, so "stay logged in" keeps working
-    exactly as before -- it is the refresh token's 365 days that deliver
+    exactly as before -- it is the refresh token's 30 days that deliver
     that, not the access token's.
     """
     access_expires = ACCESS_TOKEN_TTL
@@ -559,7 +590,14 @@ def store_verification(phone, verification_id):
             VALUES (:phone, :verification_id, NOW() + make_interval(secs => :expiry_seconds))
             ON CONFLICT (phone) DO UPDATE SET
                 verification_id = :verification_id,
-                attempts = 0,
+                -- Message Central's 506 REQUEST_ALREADY_EXISTS hands back the
+                -- SAME live code; its wrong-attempt count must survive.
+                attempts = CASE
+                    WHEN otp_verifications.verification_id = :verification_id
+                         AND otp_verifications.expires_at > NOW()
+                    THEN otp_verifications.attempts
+                    ELSE 0
+                END,
                 created_at = NOW(),
                 expires_at = NOW() + make_interval(secs => :expiry_seconds)
         """), {
@@ -597,15 +635,37 @@ def get_verification(phone):
             }
         return None
 
-def increment_attempts(phone):
-    """Increment the attempt counter for a phone number."""
+def increment_attempts(phone, max_attempts=None):
+    """Count a wrong OTP. On reaching max_attempts, lock the number by
+    pushing the row's expires_at out to NOW() + OTP_LOCKOUT_SECONDS.
+    Returns the new attempt count (None if there was no row)."""
     with engine.connect() as conn:
-        conn.execute(text("""
+        row = conn.execute(text("""
             UPDATE otp_verifications
-            SET attempts = attempts + 1
+            SET attempts = attempts + 1,
+                expires_at = CASE
+                    WHEN :max_attempts IS NOT NULL AND attempts + 1 >= :max_attempts
+                    THEN NOW() + make_interval(secs => :lock_seconds)
+                    ELSE expires_at
+                END
             WHERE phone = :phone
-        """), {"phone": phone})
+            RETURNING attempts
+        """), {"phone": phone, "max_attempts": max_attempts, "lock_seconds": OTP_LOCKOUT_SECONDS}).fetchone()
         conn.commit()
+    return row._mapping["attempts"] if row else None
+
+
+def _locked_response():
+    minutes = max(1, OTP_LOCKOUT_SECONDS // 60)
+    return jsonify({
+        "success": False,
+        "message": f"Too many incorrect attempts. Please try again in {minutes} minutes.",
+        "reason": "OTP_LOCKED",
+    }), 429
+
+
+def _is_locked(verification):
+    return bool(verification) and verification["attempts"] >= _max_otp_attempts()
 
 def delete_verification(phone):
     """Delete the verification record."""
@@ -629,7 +689,8 @@ def _wants_json_tokens():
 @auth_bp.route("/send-otp", methods=["POST"])
 @_limit("5 per minute")
 @_limit("20 per hour")
-@_limit("5 per hour", key_func=otp_phone_key)
+@_shared_limit(OTP_REQUESTS_PER_NUMBER_PER_HOUR, scope="otp-request-per-number",
+               key_func=otp_phone_key, deduct_when=_otp_sent)
 def send_otp():
     """Send OTP via Message Central VerifyNow API."""
     try:
@@ -657,6 +718,8 @@ def send_otp():
         # for up to RESEND_COOLDOWN_SECONDS, never for the OTP's full
         # validity window.
         existing = get_verification(full_phone)
+        if _is_locked(existing):
+            return _locked_response()
         cooldown_seconds = _resend_cooldown_seconds()
         if existing and existing["seconds_since_created"] < cooldown_seconds:
             return jsonify({
@@ -733,12 +796,11 @@ def verify_otp():
                 "reason": "ALREADY_CONSUMED"
             }), 401
 
-        if stored["attempts"] >= _max_otp_attempts():
-            delete_verification(full_phone)
-            return jsonify({
-                "success": False,
-                "message": "Too many incorrect attempts. Please request a new OTP."
-            }), 429
+        max_attempts = _max_otp_attempts()
+        if stored["attempts"] >= max_attempts:
+            # Locked: the row is kept (expires_at = lock end) so send/resend
+            # stay refused too, instead of deleting it and allowing a fresh OTP.
+            return _locked_response()
 
         # ✅ Verify OTP FIRST, then increment attempts only on failure
         sms_service = get_sms_service()
@@ -746,7 +808,9 @@ def verify_otp():
 
         if not success:
             # ✅ Only increment attempts on failure
-            increment_attempts(full_phone)
+            attempts = increment_attempts(full_phone, max_attempts)
+            if attempts is not None and attempts >= max_attempts:
+                return _locked_response()
             return jsonify({"success": False, "message": "Incorrect OTP. Please try again."}), 401
 
         # The OTP is correct from here on, and Message Central has now
@@ -901,7 +965,8 @@ def public_login_page():
 @auth_bp.route("/resend-otp", methods=["POST"])
 @_limit("5 per minute")
 @_limit("20 per hour")
-@_limit("5 per hour", key_func=otp_phone_key)
+@_shared_limit(OTP_REQUESTS_PER_NUMBER_PER_HOUR, scope="otp-request-per-number",
+               key_func=otp_phone_key, deduct_when=_otp_sent)
 def resend_otp():
     """Resend OTP."""
     try:
@@ -924,6 +989,8 @@ def resend_otp():
         # Same resend cooldown as send_otp() -- see RESEND_COOLDOWN_SECONDS;
         # independent of VERIFICATION_EXPIRY_SECONDS.
         stored = get_verification(full_phone)
+        if _is_locked(stored):
+            return _locked_response()
         cooldown_seconds = _resend_cooldown_seconds()
         if stored and stored["seconds_since_created"] < cooldown_seconds:
             return jsonify({
@@ -963,10 +1030,10 @@ def logout():
     revoke_tokens_from_request()
     if request.method == "GET":
         response = redirect("/logout")
-        unset_jwt_cookies(response)
+        clear_auth_cookies(response)
         return response
     response = jsonify({"success": True, "message": "Logged out successfully"})
-    unset_jwt_cookies(response)
+    clear_auth_cookies(response)
     return response, 200
 
 @auth_bp.route("/me", methods=["GET"])

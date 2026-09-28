@@ -22,8 +22,8 @@ This is a defect list for the maintainers. It is not an authorization to attack 
 
 **Configured**
 
-- Access 15 min (or 30 days if remember_me)
-- Refresh 7 days (or 365)
+- Access 2 h, fixed (remember_me no longer lengthens it; was 30 days)
+- Refresh 7 days (or 30 if remember_me; was 365 until 2026-09-28). `JWT_REFRESH_TOKEN_EXPIRES` = 7 days is only the fallback; login always passes an explicit `expires_delta`
 - Locations: cookies + headers
 - Cookie secure + CSRF protect
 - Flask `session` also used for language; `PERMANENT_SESSION_LIFETIME` 10 years
@@ -48,7 +48,7 @@ This is a defect list for the maintainers. It is not an authorization to attack 
 
 - Phone normalized to 10 digits, Indian 6–9 prefix
 - OTP stored as Message Central `verificationId` in Postgres, not the OTP itself (when not debug)
-- Attempt cap 5
+- Attempt cap 3 (was 5), then a 15-minute per-number lock (2026-09-28)
 - Parameterized SQL
 
 **Issues**
@@ -203,6 +203,35 @@ Avatar and listing images saved under `static/uploads` with `secure_filename` pl
 
 ---
 
-## 15. Do not do in this pass
+## 15. Remediation log: auth hardening pass (2026-09-28, branch `audit/auth`)
+
+**JWT / sessions**
+
+- `JWT_SECRET_KEY` hardcoded fallback (`"your-secure-jwt-secret-key"`) removed from `app.py`; the app refuses to start (`RuntimeError`) when it is unset. Tests get a test-only secret from `tests/conftest.py`.
+- Access token fixed at 2 h (`ACCESS_TOKEN_TTL`), also for tokens minted by `/api/refresh` and `/api/refresh/silent`. Remember-me lengthens only the refresh token: 30 days (was 365). Default refresh 7 days.
+- `JWT_REFRESH_TOKEN_EXPIRES` restored to 7 days, so a refresh token minted without `expires_delta` never gets remember-me's lifetime. A test fails if any production `create_refresh_token` call omits `expires_delta` (today there is one: `routes/auth_routes.py::generate_jwt_tokens`).
+- TTL constants (`ACCESS_TOKEN_TTL`, `DEFAULT_REFRESH_TTL`, `REMEMBER_ME_REFRESH_TTL`) now live in `services/jwt_session.py`, shared by `app.py` and `routes/auth_routes.py`.
+- Refresh cookie path `/api/refresh` → `/` so logout requests carry the refresh token and can blocklist it. `JWT_REFRESH_CSRF_COOKIE_PATH` is `/` (it always was).
+- All logout paths (`/logout`, `/api/auth/logout` GET/POST, `/api/user/logout`) use `clear_auth_cookies()`, which also expires the legacy `/api/refresh` refresh cookie with the same domain/secure/samesite/httponly attributes as when it was set. No legacy CSRF-cookie delete is needed.
+
+**OTP**
+
+- Max wrong attempts 5 → 3. An admin setting may lower it, never raise it (runtime ceiling). Hitting the cap locks the number for 15 min: verify, send and resend all return 429 `OTP_LOCKED`.
+- Message Central 506 `REQUEST_ALREADY_EXISTS` (same live code) no longer resets the wrong-attempt counter.
+- OTP expiry setting capped at 300 s.
+- Per-number SMS limit is now shared by send-otp and resend-otp: 5/hour in total, counting only requests that sent (HTTP 200). Previously each endpoint allowed 5/hour on its own (10 combined).
+- Existing databases: run `python -m migrations.set_otp_max_attempts_3` once, because the `init_db` seed is `ON CONFLICT DO NOTHING`.
+
+**Open / not done in this pass**
+
+- Verify-attempt check is read-then-increment, not atomic: parallel wrong guesses can exceed the cap (still bounded by the 10/min and 30/h per-number verify limits).
+- Lockout can be triggered by anyone who knows a phone number (3 wrong guesses → 15 min denial of login). **Follow-up:** lock by phone number + client IP instead of number alone, so a stranger's wrong guesses don't lock the real user out. Needs an `ip` column on `otp_verifications` (schema change + migration), so it's planned as a separate PR.
+- `services/admin_service.py` still accepts `otp_max_attempts` > 3 and `otp_verification_expiry_seconds` > 300; runtime silently caps them.
+- Logout accepts GET and CSRF-less POST (forced-logout CSRF, low impact).
+- `app.secret_key` still has a hardcoded fallback, unreachable because `SECRET_KEY` is in `REQUIRED_ENV_VARS`.
+
+---
+
+## 16. Do not do in this pass
 
 No secret rotation from this document, no firewall changes, no data deletion. Fix order is in `LANDMARK_IMPLEMENTATION_ROADMAP.md`.
