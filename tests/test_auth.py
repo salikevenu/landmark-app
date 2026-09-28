@@ -446,6 +446,50 @@ class TestLockoutAfterThreeWrongOtps:
         assert send(c, ip, phone).status_code == 200
         assert verify(c, ip, phone, sms.code_for(phone)).status_code == 200
 
+    def test_concurrent_wrong_guesses_cannot_exceed_max_attempts(self, client, sms, db, monkeypatch):
+        """Guesses sent at the same moment must not all pass the attempt
+        check: each claims its attempt atomically before the provider sees
+        it, so at most max_attempts guesses ever reach the provider."""
+        import time
+
+        c, _ = client
+        phone = _phone()
+        send(c, "10.200.0.1", phone)
+        wrong = sms.wrong_code_for(phone)
+
+        provider_calls = []
+        real_verify = sms.verify_otp
+
+        def slow_verify(verification_id, otp):
+            provider_calls.append(otp)
+            time.sleep(0.3)  # hold the race window open
+            return real_verify(verification_id, otp)
+
+        monkeypatch.setattr(sms, "verify_otp", slow_verify)
+
+        n = 8
+        barrier = threading.Barrier(n)
+        codes = [None] * n
+
+        def guess(i):
+            tc = flask_app.test_client()
+            barrier.wait()
+            codes[i] = verify(tc, f"10.201.0.{i + 1}", phone, wrong).status_code
+
+        threads = [threading.Thread(target=guess, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert len(provider_calls) == auth_routes.MAX_OTP_ATTEMPTS, (provider_calls, codes)
+        assert otp_row(db, phone)["attempts"] == auth_routes.MAX_OTP_ATTEMPTS
+        assert sorted(codes) == [401] * (auth_routes.MAX_OTP_ATTEMPTS - 1) + [429] * (
+            n - auth_routes.MAX_OTP_ATTEMPTS + 1
+        ), codes
+        # And the number is locked for the real code too.
+        assert verify(c, "10.200.0.1", phone, sms.code_for(phone)).status_code == 429
+
     def test_resend_of_same_pending_code_does_not_reset_attempts(self, client, sms, db):
         """Message Central answers a resend with 506 + the SAME verification
         id while the first code is still live. The wrong-attempt counter on
