@@ -13,42 +13,63 @@ razor_client = None
 logger = logging.getLogger(__name__)
 
 
+# Bounded so a hung (not refused) Redis can't stall a request thread for long.
+_REDIS_STORAGE_OPTIONS = {"socket_connect_timeout": 2, "socket_timeout": 2}
+
+# Flask-Limiter's own logger. It logs a WARNING when it falls back to memory
+# but only INFO when Redis comes back; both are worth an operator's
+# attention, so the recovery line is promoted to WARNING as well.
+_LIMITER_LOGGER_NAME = "flask-limiter"
+_STORAGE_RECOVERED_MSG = "Rate limit storage recovered"
+
+
+class _PromoteStorageRecovery(logging.Filter):
+    def filter(self, record):
+        if record.getMessage() == _STORAGE_RECOVERED_MSG:
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
+
+
+def _install_limiter_log_filter():
+    lim_logger = logging.getLogger(_LIMITER_LOGGER_NAME)
+    if not any(isinstance(f, _PromoteStorageRecovery) for f in lim_logger.filters):
+        lim_logger.addFilter(_PromoteStorageRecovery())
+
+
 def limiter_storage_uri():
-    """Pick Flask-Limiter storage. Redis is optional and never blocks boot."""
-    redis_url = (os.getenv("REDIS_URL") or "").strip()
-    if not redis_url:
-        return "memory://"
-    try:
-        import redis as redis_lib
-        client = redis_lib.from_url(
-            redis_url,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-            retry_on_timeout=False,
-        )
-        client.ping()
-        return redis_url
-    except Exception:
-        logger.warning(
-            "REDIS_URL set but Redis is unreachable; rate limiter using in-memory storage"
-        )
-        return "memory://"
+    """Pick Flask-Limiter storage: Redis whenever REDIS_URL is set, else memory.
+
+    No connectivity probe: Redis being down at boot and Redis going down
+    later are handled the same way, by Flask-Limiter's in-memory fallback
+    (in_memory_fallback_enabled in init_extensions). It applies each route's
+    own limits against process memory while Redis is unreachable and
+    switches back once Redis answers again.
+    """
+    return (os.getenv("REDIS_URL") or "").strip() or "memory://"
 
 
 def init_extensions(app):
     global limiter, razor_client
 
     storage_uri = limiter_storage_uri()
+    _install_limiter_log_filter()
     try:
         limiter = Limiter(
             key_func=get_remote_address,
             app=app,
             default_limits=[],
             storage_uri=storage_uri,
+            storage_options=_REDIS_STORAGE_OPTIONS if storage_uri != "memory://" else {},
             strategy="fixed-window",
+            # Fail open to memory, never to "no limits": NOT swallow_errors,
+            # which would skip rate limiting entirely on a storage error.
+            in_memory_fallback_enabled=True,
         )
     except Exception:
-        logger.warning("rate limiter storage failed; using in-memory storage")
+        # Storage could not even be constructed (bad URL scheme, redis
+        # package missing). Connection failures never land here.
+        logger.warning("rate limiter storage failed; using in-memory storage", exc_info=True)
         limiter = Limiter(
             key_func=get_remote_address,
             app=app,

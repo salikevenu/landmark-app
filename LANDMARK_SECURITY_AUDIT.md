@@ -222,6 +222,14 @@ Avatar and listing images saved under `static/uploads` with `secure_filename` pl
 - Per-number SMS limit is now shared by send-otp and resend-otp: 5/hour in total, counting only requests that sent (HTTP 200). Previously each endpoint allowed 5/hour on its own (10 combined).
 - Existing databases: run `python -m migrations.set_otp_max_attempts_3` once, because the `init_db` seed is `ON CONFLICT DO NOTHING`.
 
+**Rate limiter when Redis is unavailable** (predates this branch; separate commit)
+
+- Before: Redis down at boot → silently pinned to per-process memory until restart. Redis down after boot → every rate-limited endpoint (OTP, `/api/refresh`) returned 500.
+- Now: the limiter always uses `REDIS_URL` when set, with Flask-Limiter's `in_memory_fallback_enabled`. Whether Redis is down at boot or later, each route's own limits keep applying in process memory, and the limiter switches back to Redis when it answers again (backoff up to ~32 s). Both transitions are logged at WARNING. `swallow_errors` is deliberately not used, since it would skip limiting entirely.
+- Redis socket timeouts are 2 s, so a hung Redis can't stall request threads.
+- While in fallback, counters are per process and start from zero, so limits are looser across instances or restarts. With `workers = 1` that only matters if Render runs more than one instance.
+- Residual: if Redis fails in the instant between a request's limit check and its deferred deduction (`deduct_when`, used by the OTP send limit), that one request can still return 500.
+
 **Open / not done in this pass**
 
 - Verify-attempt check is read-then-increment, not atomic: parallel wrong guesses can exceed the cap (still bounded by the 10/min and 30/h per-number verify limits).
