@@ -16,6 +16,19 @@ jobs:
         ports:
           - 6379:6379
         options: --health-cmd "redis-cli ping" --health-interval 10s
+      # Throwaway database for the DB-backed tests in tests/test_auth.py
+      # (they TRUNCATE on every test; never point them at a real database).
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: landmark_test
+          POSTGRES_PASSWORD: landmark_test
+          POSTGRES_DB: landmark_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U landmark_test -d landmark_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
 
     steps:
     - uses: actions/checkout@v4
@@ -28,12 +41,12 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
 
     - name: Verify app import with dummy production secrets
       env:
@@ -52,6 +65,25 @@ jobs:
             traceback.print_exc()
             sys.exit(1)
         "
+
+    # Test modules set their own dummy SECRET_KEY/JWT_SECRET_KEY/DATABASE_URL
+    # (tests/conftest.py and os.environ.setdefault), so none are set here.
+    - name: Run test suite
+      run: pytest -q --ignore=tests/test_auth.py
+
+    # Separate process, as its docstring requires: it must import the app
+    # before routes.auth_routes for the rate-limit tests to be meaningful,
+    # which another module in the same run can prevent.
+    - name: Run auth tests against PostgreSQL
+      env:
+        TEST_DATABASE_URL: postgresql://landmark_test:landmark_test@localhost:5432/landmark_test
+      # Fail on any skip too: a skipped DB test would otherwise look green.
+      run: |
+        pytest -q -rs tests/test_auth.py | tee auth-tests.log
+        if grep -q "skipped" auth-tests.log; then
+          echo "::error::tests/test_auth.py skipped tests in CI (see -rs reasons above)"
+          exit 1
+        fi
 
     - name: Lint with flake8 (optional, not failing)
       run: |
