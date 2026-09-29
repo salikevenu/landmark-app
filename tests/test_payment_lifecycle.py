@@ -165,6 +165,13 @@ class CreateOrderHardeningTests(unittest.TestCase):
         self.assertTrue(res.get_json().get("reused"))
         rzp.order.create.assert_not_called()
 
+    def test_wallet_transactions_never_selects_star(self):
+        """Commission rows hold the referred user's razorpay_payment_id."""
+        src = (Path(__file__).resolve().parents[1] / "routes" / "payment_routes.py").read_text(encoding="utf-8")
+        body = src.split("def wallet_transactions")[1].split("@payment_bp.route")[0]
+        self.assertNotIn("SELECT *", body)
+        self.assertIn("SELECT id, amount, type, source, status, created_at", body)
+
     def test_create_order_debug_still_404(self):
         res = self.client.post("/api/payment/create-order-debug", json={"plan": "Business Basic"})
         self.assertEqual(res.status_code, 404)
@@ -432,6 +439,47 @@ class ExtraBusinessTests(unittest.TestCase):
             )
         self.assertTrue(result.get("duplicate"))
         self.assertEqual(store.user["extra_businesses_purchased"], 1)
+
+    def test_paid_order_the_server_never_created_grants_no_slot(self):
+        """A captured ₹249 Razorpay order with no payments row (another
+        product, a dashboard payment link) must not become a free slot:
+        no row is inserted and extra_businesses_purchased is untouched."""
+        executed = []
+
+        class NoRowConn:
+            def execute(self, query, params=None):
+                executed.append(str(query))
+                res = MagicMock()
+                res.fetchone.return_value = None
+                res.rowcount = 0
+                return res
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        client = _rzp_client(
+            "order_foreign", "pay_foreign", EXTRA_BUSINESS_AMOUNT_PAISE,
+            notes={"purpose": "something_else"},  # no user_id note
+        )
+        with patch("services.payment_service.get_razorpay_client", return_value=client), \
+             patch("services.payment_service.ensure_payments_plan_column"), \
+             patch("services.payment_service.get_db_connection", side_effect=NoRowConn):
+            result = verify_extra_business_payment({
+                "razorpay_order_id": "order_foreign",
+                "razorpay_payment_id": "pay_foreign",
+                "razorpay_signature": "sig",
+            }, "42")
+
+        self.assertFalse(result["success"])
+        self.assertIn("not found", result["error"].lower())
+        self.assertFalse(any("INSERT INTO payments" in q for q in executed), executed)
+        self.assertFalse(any("extra_businesses_purchased" in q for q in executed), executed)
 
     def test_subscription_finalize_rejects_extra_business_row(self):
         _, spec = get_plan_spec("business_basic")
