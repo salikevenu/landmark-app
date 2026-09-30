@@ -70,7 +70,9 @@ def get_admin_stats(period='week'):
         result = conn.execute(text("SELECT COALESCE(SUM(amount), 0) FROM withdraw_requests WHERE status='pending'"))
         stats['pending_withdrawals'] = result.scalar()
 
-        result = conn.execute(text("SELECT COUNT(*) FROM referral_transactions"))
+        # Referrals = accounts that signed up with an agent's code. (The old
+        # referral_transactions table is never written to.)
+        result = conn.execute(text("SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL"))
         stats['total_referrals'] = result.scalar()
 
         # Time-series data
@@ -673,29 +675,38 @@ def get_admin_referrals(page=1, limit=50, search=''):
         where_clause += " AND (u1.phone LIKE :search OR u2.phone LIKE :search)"
         params['search'] = f'%{search}%'
 
+    # One row per referred account (u2). reward_amount = commission earned from
+    # that account so far (locked + released, refund-reversed excluded);
+    # status = 'qualified' once any commission exists, else 'pending'.
     with get_db_connection() as conn:
         count_query = f"""
-            SELECT COUNT(*) FROM referral_transactions rt
-            JOIN users u1 ON rt.referrer_id = u1.id
-            JOIN users u2 ON rt.referred_user_id = u2.id
+            SELECT COUNT(*) FROM users u2
+            JOIN users u1 ON u2.referred_by = u1.id
             {where_clause}
         """
         total = conn.execute(text(count_query), params).scalar()
 
         query = f"""
-            SELECT rt.id, u1.phone AS referrer_phone, u2.phone AS referred_phone,
-                   rt.reward_amount, rt.status, rt.created_at
-            FROM referral_transactions rt
-            JOIN users u1 ON rt.referrer_id = u1.id
-            JOIN users u2 ON rt.referred_user_id = u2.id
+            SELECT u2.id, u1.phone AS referrer_phone, u2.phone AS referred_phone,
+                   COALESCE(SUM(w.amount), 0) AS reward_amount,
+                   CASE WHEN COUNT(w.id) > 0 THEN 'qualified' ELSE 'pending' END AS status,
+                   u2.created_at
+            FROM users u2
+            JOIN users u1 ON u2.referred_by = u1.id
+            LEFT JOIN wallet_transactions w
+                   ON w.user_id = u1.id
+                  AND w.reference_id = 'user_' || u2.id::text
+                  AND w.source IN ('referral_first_bonus', 'referral_recurring')
+                  AND w.status IN ('locked', 'released')
             {where_clause}
-            ORDER BY rt.id DESC
+            GROUP BY u2.id, u1.phone, u2.phone, u2.created_at
+            ORDER BY u2.id DESC
             LIMIT :limit OFFSET :offset
         """
         params['limit'] = limit
         params['offset'] = offset
         rows = conn.execute(text(query), params).fetchall()
-    referrals = [{"id": r[0], "referrer_phone": r[1], "referred_phone": r[2], "reward_amount": r[3], "status": r[4], "created_at": r[5]} for r in rows]
+    referrals = [{"id": r[0], "referrer_phone": r[1], "referred_phone": r[2], "reward_amount": round(float(r[3] or 0), 2), "status": r[4], "created_at": r[5]} for r in rows]
     return {'referrals': referrals, 'total': total, 'page': page, 'limit': limit, 'pages': (total + limit - 1) // limit}
 
 # -------------------------------

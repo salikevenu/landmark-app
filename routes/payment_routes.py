@@ -26,7 +26,7 @@ from services.payment_service import (
     finalize_extra_business_order,
     mark_payment_failed,
 )
-from services.referral_commission import after_payment_finalized
+from services.referral_commission import after_payment_finalized, reverse_commission_for_refund
 from database.init_db import get_db_connection
 import logging
 
@@ -252,8 +252,16 @@ def wallet_balance():
             text("SELECT balance FROM wallet_balance WHERE user_id = :uid"),
             {"uid": user_id},
         ).fetchone()
+        # All referral commission earned so far: still locked plus released.
+        # A commission cancelled by a refund ('reversed') is not earned.
+        earned = conn.execute(text("""
+            SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions
+            WHERE user_id = :uid
+              AND source IN ('referral_first_bonus', 'referral_recurring')
+              AND status IN ('locked', 'released')
+        """), {"uid": user_id}).scalar()
     balance = row._mapping["balance"] if row else 0
-    return jsonify({"wallet_balance": balance})
+    return jsonify({"wallet_balance": balance, "referral_earnings": round(float(earned or 0), 2)})
 
 
 
@@ -296,6 +304,30 @@ def verify_payment():
     
     return _json_from_result(result)
 
+def _handle_refund_processed(data, payment_id, payment_status, payment_amount):
+    """Razorpay finished a refund: stop the referral commission that payment earned.
+
+    Only the commission is touched here. The refunded user's subscription is not
+    changed by this handler. A full refund cancels a still-locked commission; a
+    paid-out one, or a partial refund, flags the agent for an admin to decide
+    (see services.referral_commission.reverse_commission_for_refund).
+    Answers 500 on failure so Razorpay retries; the reversal is idempotent.
+    """
+    refund = ((data.get("payload") or {}).get("refund") or {}).get("entity") or {}
+    full_refund = payment_status == "refunded"
+    if not full_refund:
+        try:
+            full_refund = int(refund.get("amount")) >= int(payment_amount)
+        except (TypeError, ValueError):
+            full_refund = False  # can't tell: treat as partial, so an admin reviews it
+    try:
+        summary = reverse_commission_for_refund(payment_id, full_refund=full_refund)
+    except Exception:
+        logger.exception("refund webhook: commission reversal failed for payment %s", payment_id)
+        return jsonify({"success": False, "error": "Could not process refund"}), 500
+    return jsonify({"success": True, "status": "refund_processed", **summary}), 200
+
+
 @payment_bp.route("/razorpay/webhook", methods=["POST"])
 def razorpay_webhook():
     """HMAC-verified webhook. Activates only if a matching created order exists (idempotent)."""
@@ -325,6 +357,9 @@ def razorpay_webhook():
         notes = entity.get("notes") or {}
     except Exception:
         return jsonify({"success": False, "error": "Invalid payload"}), 400
+
+    if data.get("event") == "refund.processed":
+        return _handle_refund_processed(data, payment_id, status, amount)
 
     if status in ("failed", "cancelled"):
         if order_id:

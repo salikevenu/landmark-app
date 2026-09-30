@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 
 from database.init_db import get_db_connection
 from config.payment_config import get_plan_spec, duration_days_for_stored_amount
+from services import fraud_policy
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ COMMISSION_SOURCES = (FIRST_BONUS_SOURCE, RECURRING_SOURCE)
 JOB_PENDING = "pending"
 JOB_COMPLETED = "completed"
 JOB_SKIPPED = "skipped"
+# wallet_transactions.status of a commission cancelled by a refund before it was released.
+REVERSED_STATUS = "reversed"
 RECURRING_RATE = 0.10
 
 # Fixed first-sale bonus by plan (config.payment_config.PLANS[*]["plan"] key).
@@ -626,6 +629,81 @@ def release_locked_referral_payouts():
         except Exception:
             pass
     return released_count
+
+
+def reverse_commission_for_refund(razorpay_payment_id, full_refund=True):
+    """A payment was refunded: stop the referral commission it earned. Idempotent.
+
+    Full refund:
+      * a commission job still pending for the payment is skipped, so none
+        is created later;
+      * commission still 'locked' is marked 'reversed' and never released;
+      * commission already 'released' stays in the agent's wallet (no
+        clawback, so no negative balance) and the agent is flagged with the
+        payment and amount for an admin to decide.
+    Partial refund: nothing is reversed automatically; the agent is flagged.
+
+    Runs in one transaction. The job is skipped BEFORE the ledger is read:
+    a job being processed at this instant holds a lock on its row, so the
+    skip waits for it to commit and the ledger read then sees its row.
+    """
+    pid = str(razorpay_payment_id or "").strip()
+    summary = {"full_refund": bool(full_refund), "jobs_skipped": 0, "reversed": 0, "flagged": 0}
+    if not pid:
+        return summary
+    conn = get_db_connection()
+    try:
+        if full_refund:
+            skipped = conn.execute(text("""
+                UPDATE referral_commission_jobs
+                SET status = :status, processed_at = CURRENT_TIMESTAMP, last_error = 'payment refunded'
+                WHERE status = 'pending' AND (razorpay_payment_id = :pid OR payment_id = :pid)
+            """), {"status": JOB_SKIPPED, "pid": pid})
+            summary["jobs_skipped"] = skipped.rowcount or 0
+
+        rows = conn.execute(text("""
+            SELECT id, user_id, amount, status
+            FROM wallet_transactions
+            WHERE razorpay_payment_id = :pid AND source IN (:first_source, :recurring_source)
+            ORDER BY id
+            FOR UPDATE
+        """), {"pid": pid, "first_source": FIRST_BONUS_SOURCE, "recurring_source": RECURRING_SOURCE}).fetchall()
+
+        for row in rows:
+            entry = row._mapping
+            if full_refund and entry["status"] == "locked":
+                changed = conn.execute(text("""
+                    UPDATE wallet_transactions SET status = :status WHERE id = :id AND status = 'locked'
+                """), {"status": REVERSED_STATUS, "id": entry["id"]})
+                if changed.rowcount == 1:
+                    summary["reversed"] += 1
+                    logger.warning(
+                        "referral_commission REVERSED: payment %s refunded; wallet_transactions id=%s "
+                        "referrer user_id=%s amount=%s cancelled before release",
+                        pid, entry["id"], entry["user_id"], entry["amount"],
+                    )
+            elif entry["status"] in ("locked", "released"):
+                fraud_policy.flag_user(
+                    conn, entry["user_id"],
+                    "commission_refund_review: payment %s was %s refunded; commission %.2f is %s" % (
+                        pid, "fully" if full_refund else "partly", float(entry["amount"] or 0),
+                        "already paid out" if entry["status"] == "released" else "still locked",
+                    ),
+                )
+                summary["flagged"] += 1
+        conn.commit()
+        return summary
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 class _SkipClaim(Exception):

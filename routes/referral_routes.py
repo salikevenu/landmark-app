@@ -15,13 +15,16 @@ logger = logging.getLogger(__name__)
 def referral_leaderboard():
     try:
         with get_db_connection() as conn:
+            # A referral = an account that signed up with the agent's code
+            # (users.referred_by). The old referral_transactions table is
+            # never written to, so it always came back empty.
             rows = conn.execute(text("""
-                SELECT users.name,
-                       COUNT(referral_transactions.id) AS total_referrals
-                FROM referral_transactions
-                JOIN users ON users.id = referral_transactions.referrer_id
-                GROUP BY referral_transactions.referrer_id, users.name
-                ORDER BY total_referrals DESC
+                SELECT agent.name,
+                       COUNT(referred.id) AS total_referrals
+                FROM users referred
+                JOIN users agent ON agent.id = referred.referred_by
+                GROUP BY agent.id, agent.name
+                ORDER BY total_referrals DESC, agent.id
                 LIMIT 20
             """)).fetchall()
 

@@ -71,6 +71,12 @@ def note_resend_cooldown(phone, wait_seconds):
     log_throttle("otp_resend_cooldown", phone=mask_phone(phone), wait_seconds=wait_seconds)
 
 
+def note_unknown_referral_code(phone, code):
+    """A referral code that matches no account was ignored; signup carries on without an agent."""
+    safe_code = "".join(ch for ch in str(code or "") if ch.isalnum())[:20]  # user input: keep log lines clean
+    log_throttle("referral_code_unknown", phone=mask_phone(phone), code=safe_code)
+
+
 def is_self_referral(referrer_phone, phone):
     """True (and logged) when the referral code belongs to this same phone."""
     if referrer_phone and referrer_phone == phone:
@@ -93,7 +99,8 @@ def note_otp_lockout(phone):
 
 
 def flag_user(conn, user_id, reason):
-    """Mark an account flagged (idempotent) and log why. Caller commits."""
+    """Mark an account flagged and log why. Caller commits. Idempotent: a reason
+    already recorded on the account is not appended again (a replayed webhook)."""
     conn.execute(
         text("""
             UPDATE users
@@ -107,6 +114,7 @@ def flag_user(conn, user_id, reason):
                 ),
                 flagged_at = COALESCE(flagged_at, NOW())
             WHERE id = :uid
+              AND (flag_reason IS NULL OR POSITION(:reason IN flag_reason) = 0)
         """),
         {"uid": user_id, "reason": reason, "max_chars": FLAG_REASON_MAX_CHARS},
     )
