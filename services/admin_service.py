@@ -143,6 +143,9 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
         where_clauses.append("u.is_blocked = 0")
     elif status_filter == 'banned':
         where_clauses.append("u.is_blocked = 1")
+    elif status_filter == 'flagged':
+        # Set by services/fraud_policy.py (flag-only; the account still works).
+        where_clauses.append("u.is_flagged = 1")
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
@@ -152,7 +155,8 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
 
         query = f"""
             SELECT u.id, u.phone, u.name, u.role, u.subscription_expiry,
-                   COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at
+                   COALESCE(wb.balance, 0) AS wallet_balance, u.is_blocked, u.created_at,
+                   u.is_flagged, u.flag_reason
             FROM users u
             LEFT JOIN wallet_balance wb ON wb.user_id = u.id
             WHERE {where_sql}
@@ -174,7 +178,9 @@ def get_admin_users(page=1, limit=50, search='', role_filter='', status_filter='
             "wallet_balance": r[5],
             "is_blocked": r[6],
             "is_active": not r[6],
-            "created_at": r[7]
+            "created_at": r[7],
+            "is_flagged": bool(r[8]),
+            "flag_reason": r[9],
         }
         if u['subscription_expiry']:
             expiry_date = datetime.strptime(u['subscription_expiry'], '%Y-%m-%d')

@@ -17,6 +17,12 @@
       <option value="business_premium">Business Premium</option>
       <option value="admin">Admin</option>
     </select>
+    <select id="statusFilter" style="padding:8px;">
+      <option value="">All Status</option>
+      <option value="flagged">Flagged (fraud policy)</option>
+      <option value="banned">Banned</option>
+      <option value="active">Active</option>
+    </select>
     <button onclick="loadUsers()" style="padding:8px 15px;">Refresh</button>
   </div>
 
@@ -31,12 +37,13 @@
           <th>Phone</th>
           <th>Role</th>
           <th>Status</th>
+          <th>Flag</th>
           <th>Joined</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="usersTable">
-        <tr><td colspan="7">Loading users...</td></tr>
+        <tr><td colspan="8">Loading users...</td></tr>
       </tbody>
     </table>
   </div>
@@ -62,11 +69,13 @@ function escapeHtml(str) {
 async function loadUsers() {
   const search = document.getElementById("searchInput").value.trim();
   const role = document.getElementById("roleFilter").value;
+  const status = document.getElementById("statusFilter").value;
 
   let url = "/api/admin/users";
   const params = new URLSearchParams();
   if (search) params.append("search", search);
   if (role) params.append("role", role);
+  if (status) params.append("status", status);
   if (params.toString()) url += "?" + params.toString();
 
   try {
@@ -85,7 +94,7 @@ async function loadUsers() {
 
     let html = "";
     if (users.length === 0) {
-      html = '<tr><td colspan="7">No users found</td></tr>';
+      html = '<tr><td colspan="8">No users found</td></tr>';
     } else {
       users.forEach(user => {
         html += `
@@ -95,6 +104,9 @@ async function loadUsers() {
             <td>${user.phone}</td>
             <td>${user.role}</td>
             <td>${user.is_active ? "Active" : "Disabled"}</td>
+            <td>${user.is_flagged
+              ? '<strong style="color:#b45309;">Flagged</strong><br><small>' + escapeHtml(user.flag_reason || "") + '</small>'
+              : ""}</td>
             <td>${user.created_at || ""}</td>
             <td>
               <button onclick="toggleUser(${user.id}, ${user.is_active ? "true" : "false"})">${user.is_active ? "Disable" : "Activate"}</button>
@@ -111,7 +123,7 @@ async function loadUsers() {
     document.getElementById("userCount").innerText = users.length;
   } catch (err) {
     console.error(err);
-    document.getElementById("usersTable").innerHTML = "<tr><td colspan='7'>Error loading users.</td></tr>";
+    document.getElementById("usersTable").innerHTML = "<tr><td colspan='8'>Error loading users.</td></tr>";
   }
 }
 
@@ -183,6 +195,7 @@ document.getElementById("searchInput").addEventListener("keyup", function(e) {
   if (e.key === "Enter") loadUsers();
 });
 document.getElementById("roleFilter").addEventListener("change", loadUsers);
+document.getElementById("statusFilter").addEventListener("change", loadUsers);
 
 loadUsers();
 </script>

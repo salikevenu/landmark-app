@@ -291,6 +291,15 @@ def _init_db_body(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS idx_user_location ON users(latitude, longitude)"))
     conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT"))
 
+    # Fraud policy flags (services/fraud_policy.py). Flag-only: a flagged
+    # account works normally; the admin user list shows it with the reason.
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_flagged INTEGER DEFAULT 0"))
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS flag_reason TEXT"))
+    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMP"))
+    # evaluate_signup counts accounts per signup IP; flagged is a small subset.
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_ip_address ON users(ip_address)"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS idx_users_flagged ON users(is_flagged) WHERE is_flagged = 1"))
+
     # Release the ACCESS EXCLUSIVE lock the ALTER TABLE statements above
     # took on users before the remaining schema init continues — otherwise
     # it is held until the final commit at the end of this function, which

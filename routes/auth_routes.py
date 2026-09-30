@@ -31,6 +31,7 @@ from services.jwt_session import (
     clear_auth_cookies,
     revoke_tokens_from_request,
 )
+from services import fraud_policy
 from services.sms_service import get_sms_service
 from extensions import limiter
 from flask_limiter.util import get_remote_address
@@ -361,7 +362,7 @@ def persist_referral_for_phone(phone, data=None):
 
     referrer_phone = clean_phone(referrer.get("phone") or "")
     stored_code = referrer.get("referral_code") or ref
-    if referrer_phone and referrer_phone == phone:
+    if fraud_policy.is_self_referral(referrer_phone, phone):
         # Do not attribute self-referral, but never block OTP/login.
         if (session.get("ref_code") or "").strip() in (stored_code, ref, str(ref).strip()):
             session.pop("ref_code", None)
@@ -387,7 +388,7 @@ def resolve_referrer_id_for_signup(phone, data=None):
         referrer = fetch_referrer_by_code(session_code)
         if referrer:
             referrer_phone = clean_phone(referrer.get("phone") or "")
-            if referrer_phone and referrer_phone == phone:
+            if fraud_policy.is_self_referral(referrer_phone, phone):
                 session.pop("ref_code", None)
                 return None, None
             return int(referrer["id"]), None
@@ -457,13 +458,16 @@ def get_or_create_user(phone, ip_address=None, latitude=None, longitude=None, re
                 })
                 user_id = result.fetchone()[0]
                 conn.commit()
-                if bound_referrer is not None and bound_referrer == user_id:
+                if fraud_policy.is_self_referral_id(bound_referrer, user_id):
                     conn.execute(
                         text("UPDATE users SET referred_by = NULL WHERE id = :uid AND referred_by = :uid"),
                         {"uid": user_id},
                     )
                     conn.commit()
                     bound_referrer = None
+                fraud_policy.evaluate_signup(
+                    conn, user_id, phone, ip_address or request.remote_addr, referrer_id=bound_referrer,
+                )
                 return {
                     "id": user_id,
                     "phone": phone,
@@ -679,6 +683,8 @@ def reserve_attempt(phone, max_attempts):
 
 
 def _locked_response():
+    # Only ever called from inside the OTP request handlers.
+    fraud_policy.note_otp_lockout(clean_phone((request.get_json(silent=True) or {}).get("phone", "")))
     minutes = max(1, OTP_LOCKOUT_SECONDS // 60)
     return jsonify({
         "success": False,
@@ -745,6 +751,7 @@ def send_otp():
             return _locked_response()
         cooldown_seconds = _resend_cooldown_seconds()
         if existing and existing["seconds_since_created"] < cooldown_seconds:
+            fraud_policy.note_resend_cooldown(phone, cooldown_seconds)
             return jsonify({
                 "success": False,
                 "message": f"Please wait {cooldown_seconds} seconds before requesting another OTP."
@@ -1026,6 +1033,7 @@ def resend_otp():
             return _locked_response()
         cooldown_seconds = _resend_cooldown_seconds()
         if stored and stored["seconds_since_created"] < cooldown_seconds:
+            fraud_policy.note_resend_cooldown(phone, cooldown_seconds)
             return jsonify({
                 "success": False,
                 "message": f"Please wait {cooldown_seconds} seconds before requesting another OTP."

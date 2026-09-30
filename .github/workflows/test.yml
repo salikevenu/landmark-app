@@ -74,14 +74,14 @@ jobs:
     # Separate process, as its docstring requires: it must import the app
     # before routes.auth_routes for the rate-limit tests to be meaningful,
     # which another module in the same run can prevent.
-    - name: Run auth tests against PostgreSQL
+    - name: Run auth and fraud-policy tests against PostgreSQL
       env:
         TEST_DATABASE_URL: postgresql://landmark_test:landmark_test@localhost:5432/landmark_test
       # Fail on any skip too: a skipped DB test would otherwise look green.
       run: |
-        pytest -q -rs tests/test_auth.py | tee auth-tests.log
+        pytest -q -rs tests/test_auth.py tests/test_fraud_policy.py | tee auth-tests.log
         if grep -q "skipped" auth-tests.log; then
-          echo "::error::tests/test_auth.py skipped tests in CI (see -rs reasons above)"
+          echo "::error::auth or fraud-policy tests skipped in CI (see -rs reasons above)"
           exit 1
         fi
 
