@@ -231,11 +231,16 @@ class ReferralAttributionFlowTests(unittest.TestCase):
         self.assertEqual(self.store.users_by_phone[existing["phone"]]["referred_by"], self.referrer["id"])
         self.assertNotEqual(user["referred_by"], other["id"])
 
-    def test_invalid_referral_rejected(self):
+    def test_invalid_referral_is_ignored_and_never_attributed(self):
+        # Audit section 5 decision: an unknown code must not stop signup, so it
+        # is ignored (and flagged to the OTP response) instead of rejected.
         with self.app.test_request_context("/", json={"ref": "NOPE"}):
+            from flask import g
             ok, err = persist_referral_for_phone("9876543210", {"ref": "NOPE"})
-        self.assertFalse(ok)
-        self.assertIn("Invalid", err)
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+            self.assertTrue(g.referral_code_ignored)
+        self.assertNotIn("9876543210", self.store.pending)
 
     def test_self_referral_does_not_attribute_or_block_login(self):
         with self.app.test_request_context("/", json={"ref": "REFCODE1"}):
@@ -326,13 +331,24 @@ class ReferralAttributionFlowTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(self.store.pending["9876501234"]["referrer_id"], self.referrer["id"])
 
-    def test_send_otp_rejects_invalid_ref(self):
-        res = self.client.post(
-            "/api/auth/send-otp?ref=MISSING",
-            json={"phone": "9876501234", "ref": "MISSING"},
-        )
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("Invalid", res.get_json()["message"])
+    def test_send_otp_ignores_invalid_ref_and_still_sends_the_otp(self):
+        # Audit section 5 decision: an unknown code never stops signup. The OTP
+        # is sent, no referral is stored, and the response says the code was ignored.
+        sms = MagicMock()
+        sms.send_otp.return_value = (True, {"responseCode": 200}, "vid-1")
+        with patch.object(auth_routes, "get_sms_service", return_value=sms), \
+             patch.object(auth_routes, "store_verification"):
+            res = self.client.post(
+                "/api/auth/send-otp?ref=MISSING",
+                json={"phone": "9876501234", "ref": "MISSING"},
+            )
+        self.assertEqual(res.status_code, 200, res.get_json())
+        body = res.get_json()
+        self.assertTrue(body["success"])
+        self.assertTrue(body["referral_ignored"])
+        self.assertIn("not recognised", body["referral_note"])
+        sms.send_otp.assert_called_once()
+        self.assertNotIn("9876501234", self.store.pending)
 
     def test_verify_otp_new_user_without_session_cookie(self):
         self.store.pending["9876509999"] = {

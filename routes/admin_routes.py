@@ -660,9 +660,10 @@ def admin_chart_data():
             ).scalar()
             revenue_daily.append(rev)
 
-            # Referral transactions created on that day
+            # Referred accounts that signed up on that day (the old
+            # referral_transactions table is never written to)
             rc = conn.execute(
-                text("SELECT COUNT(*) FROM referral_transactions WHERE DATE(created_at) = :date"),
+                text("SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND DATE(created_at) = :date"),
                 {"date": date_str}
             ).scalar()
             referral_counts.append(rc)

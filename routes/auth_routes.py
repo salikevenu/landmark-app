@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from urllib.parse import quote
 
-from flask import Blueprint, request, jsonify, current_app, render_template, redirect, session
+from flask import Blueprint, request, jsonify, current_app, render_template, redirect, session, g
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
@@ -346,8 +346,11 @@ def persist_referral_for_phone(phone, data=None):
     """
     Validate and persist a referral for this phone.
     Empty ref is allowed (no attribution).
-    Invalid or self-referral codes are rejected.
-    Returns (ok, error_message).
+    An unknown code (typo, old link) is ignored and logged, never an error:
+    signup carries on without an agent and ``g.referral_code_ignored`` lets
+    the OTP response tell the user. A code that belongs to this same phone
+    is dropped the same way (fraud_policy logs it).
+    Returns (ok, error_message); ok is only False if a future rule refuses.
     """
     ref = extract_referral_code(data)
     if not ref:
@@ -358,7 +361,9 @@ def persist_referral_for_phone(phone, data=None):
 
     referrer = fetch_referrer_by_code(ref)
     if not referrer:
-        return False, "Invalid referral code."
+        fraud_policy.note_unknown_referral_code(phone, ref)
+        g.referral_code_ignored = True
+        return True, None
 
     referrer_phone = clean_phone(referrer.get("phone") or "")
     stored_code = referrer.get("referral_code") or ref
@@ -371,6 +376,14 @@ def persist_referral_for_phone(phone, data=None):
     session["ref_code"] = stored_code
     upsert_pending_referral(phone, stored_code, referrer["id"])
     return True, None
+
+
+def _with_referral_note(payload):
+    """Tell the client when a submitted referral code was ignored (see persist_referral_for_phone)."""
+    if getattr(g, "referral_code_ignored", False):
+        payload["referral_ignored"] = True
+        payload["referral_note"] = "Referral code not recognised; continuing without it."
+    return payload
 
 
 def resolve_referrer_id_for_signup(phone, data=None):
@@ -765,11 +778,11 @@ def send_otp():
             store_verification(full_phone, verification_id)
             logger.info(f"OTP sent successfully to {full_phone} (Verification ID: {verification_id})")
             
-            return jsonify({
+            return jsonify(_with_referral_note({
                 "success": True,
                 "message": "OTP sent successfully",
                 "data": {"phone": phone}
-            })
+            }))
 
         # If SMS failed, clean up
         delete_verification(full_phone)
@@ -1058,7 +1071,7 @@ def resend_otp():
                 already_exists = str(response.get("message") or "").strip().upper() == "REQUEST_ALREADY_EXISTS"
                 if response_code in (506, "506") and already_exists:
                     message = "An OTP is already on its way — please check your messages"
-            return jsonify({"success": True, "message": message})
+            return jsonify(_with_referral_note({"success": True, "message": message}))
 
         return jsonify({"success": False, "message": "Failed to resend OTP"}), 502
 

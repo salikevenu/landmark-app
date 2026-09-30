@@ -30,6 +30,7 @@ the gap (or flip the assertion if you decide the current behaviour is right).
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sys
 import threading
@@ -84,7 +85,7 @@ from config.payment_config import duration_days_for_stored_amount, get_plan_spec
 from routes import auth_routes  # noqa: E402
 from routes.referral_routes import referral_bp  # noqa: E402
 from routes.wallet_routes import wallet_bp  # noqa: E402
-from services import wallet_service  # noqa: E402
+from services import admin_service, wallet_service  # noqa: E402
 from services.payment_service import finalize_paid_order  # noqa: E402
 from services.referral_commission import (  # noqa: E402
     after_payment_finalized,
@@ -253,19 +254,35 @@ class TestInvalidOrExpiredCode:
         user, status = signup(app, "9111111111", "203.0.113.11")
         assert status == "new" and user["referred_by"] is None
 
-    def test_an_unknown_code_is_rejected_with_a_clear_message(self):
+    def test_an_unknown_code_is_ignored_not_attributed_and_logged(self, caplog):
+        """Decision (audit note 5.2): a typo or stale link never stops signup."""
         app = Flask(__name__)
         app.config["SECRET_KEY"] = "test-secret"
-        with patch.object(auth_routes, "fetch_referrer_by_code", return_value=None):
+        caplog.set_level(logging.INFO)
+        with patch.object(auth_routes, "fetch_referrer_by_code", return_value=None), \
+             patch.object(auth_routes, "get_pending_referral", return_value=None), \
+             patch.object(auth_routes, "upsert_pending_referral") as upsert:
             with app.test_request_context("/"):
-                assert auth_routes.persist_referral_for_phone("9111111111", {"ref": "NOPE1234"}) == (
-                    False, "Invalid referral code.")
-                assert auth_routes.resolve_referrer_id_for_signup("9111111111", {"ref": "NOPE1234"}) == (
-                    None, "Invalid referral code.")
+                from flask import g
+                assert auth_routes.persist_referral_for_phone("9111111111", {"ref": "NOPE\n<b>1234"}) == (True, None)
+                assert g.referral_code_ignored is True
+                assert auth_routes.resolve_referrer_id_for_signup("9111111111", {"ref": "NOPE1234"}) == (None, None)
+        upsert.assert_not_called()
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("fraud_policy THROTTLE")]
+        assert lines and all("reason=referral_code_unknown" in m for m in lines)
+        assert "code=NOPEb1234" in lines[0] and "\n" not in lines[0] and "<" not in lines[0]  # input is sanitized
+        assert "9111111111" not in lines[0] and "phone=******1111" in lines[0]
 
-    @pytest.mark.xfail(strict=True, reason="audit note 5.2: an unknown code makes send-otp answer 400 and no OTP is "
-                                           "sent, so signup stops until the code is removed (decision pending)")
-    def test_an_unknown_code_does_not_stop_the_otp_being_sent(self):
+    @needs_db
+    def test_signup_with_an_unknown_code_creates_the_account_with_no_agent(self, pg):
+        app = Flask(__name__)
+        app.config["SECRET_KEY"] = "test-secret"
+        user, status = signup(app, "9111111111", "203.0.113.11", ref="NOPE1234")
+        assert status == "new" and user["referred_by"] is None
+        assert ledger(pg, user["id"]) == []
+
+    @pytest.mark.parametrize("path", ["/api/auth/send-otp", "/api/auth/resend-otp"])
+    def test_an_unknown_code_does_not_stop_the_otp_being_sent(self, path):
         app = http_app()
         sms = MagicMock()
         sms.send_otp.return_value = (True, {"responseCode": 200}, "vid-1")
@@ -273,13 +290,56 @@ class TestInvalidOrExpiredCode:
             auth_routes.limiter.reset()
         with patch.object(auth_routes, "fetch_referrer_by_code", return_value=None), \
              patch.object(auth_routes, "get_verification", return_value=None), \
+             patch.object(auth_routes, "_resend_cooldown_seconds", return_value=60), \
              patch.object(auth_routes, "store_verification"), \
              patch.object(auth_routes, "get_sms_service", return_value=sms):
             res = app.test_client().post(
-                "/api/auth/send-otp", json={"phone": "9111111111", "ref": "NOPE1234"},
+                path, json={"phone": "9111111111", "ref": "NOPE1234"},
                 environ_base={"REMOTE_ADDR": "203.0.113.21"},
             )
-        assert res.status_code == 200
+        body = res.get_json()
+        assert res.status_code == 200 and body["success"] is True
+        sms.send_otp.assert_called_once()
+        assert body["referral_ignored"] is True
+        assert body["referral_note"] == "Referral code not recognised; continuing without it."
+
+    def test_a_valid_code_adds_no_ignored_note(self):
+        app = http_app()
+        sms = MagicMock()
+        sms.send_otp.return_value = (True, {"responseCode": 200}, "vid-1")
+        if auth_routes.limiter is not None:
+            auth_routes.limiter.reset()
+        agent = {"id": 7, "phone": "9000000001", "referral_code": "AGENTAAA"}
+        with patch.object(auth_routes, "fetch_referrer_by_code", return_value=agent), \
+             patch.object(auth_routes, "upsert_pending_referral"), \
+             patch.object(auth_routes, "_resend_cooldown_seconds", return_value=60), \
+             patch.object(auth_routes, "get_verification", return_value=None), \
+             patch.object(auth_routes, "store_verification"), \
+             patch.object(auth_routes, "get_sms_service", return_value=sms):
+            res = app.test_client().post(
+                "/api/auth/send-otp", json={"phone": "9111111111", "ref": "AGENTAAA"},
+                environ_base={"REMOTE_ADDR": "203.0.113.22"},
+            )
+        assert res.status_code == 200 and "referral_ignored" not in res.get_json()
+
+    def test_an_unknown_code_does_not_block_verify_otp_either(self):
+        """verify-otp used to answer 400 'Invalid referral code.'; now the OTP itself decides."""
+        app = http_app()
+        sms = MagicMock()
+        sms.verify_otp.return_value = (False, {"message": "WRONG_OTP"})
+        stored = {"verification_id": "v1", "attempts": 0, "seconds_since_created": 5}
+        if auth_routes.limiter is not None:
+            auth_routes.limiter.reset()
+        with patch.object(auth_routes, "fetch_referrer_by_code", return_value=None), \
+             patch.object(auth_routes, "get_verification", return_value=stored), \
+             patch.object(auth_routes, "reserve_attempt", return_value={"verification_id": "v1", "attempts": 1}), \
+             patch.object(auth_routes, "_max_otp_attempts", return_value=3), \
+             patch.object(auth_routes, "get_sms_service", return_value=sms):
+            res = app.test_client().post(
+                "/api/auth/verify-otp", json={"phone": "9111111111", "otp": "123456", "ref": "NOPE1234"},
+                environ_base={"REMOTE_ADDR": "203.0.113.23"},
+            )
+        assert res.status_code == 401 and res.get_json()["message"] == "Incorrect OTP. Please try again."
 
 
 # =========================================================================
@@ -306,8 +366,8 @@ class TestCommissionAfterPayment:
         assert job.status == "pending" and job.attempts == 1 and "not in activated state" in job.last_error
 
     def test_first_monthly_payment_pays_a_fixed_bonus_by_plan_not_ten_percent(self, pg):
-        """Box text says 10%; the code (deliberately, see referral_commission.py) pays Rs 100 for
-        Business Basic's first monthly payment. 10% would be Rs 69.90. Audit note 5.3."""
+        """Decision (audit note 5.3): keep the fixed first-payment bonus. Business Basic pays
+        Rs 100 on the first monthly payment; 10% would have been Rs 69.90."""
         agent, referred = self._agent_and_referred(pg)
         new_order(pg, referred, "order_1")
         pay(referred, "order_1", "pay_1")
@@ -482,35 +542,127 @@ class TestCommissionCreditedOnce:
 # =========================================================================
 # 7. Commission reversed when the subscription is refunded
 # =========================================================================
+def refund_webhook(app, payment_id, order_id, *, user_id="1", event="refund.processed", payment_status="refunded",
+                   payment_amount=69900, refund_amount=69900, sign=True):
+    """A Razorpay refund notification, signed with a test secret (never a real key)."""
+    body = json.dumps({
+        "event": event,
+        "payload": {
+            "payment": {"entity": {"id": payment_id, "order_id": order_id, "status": payment_status,
+                                   "amount": payment_amount, "notes": {"user_id": str(user_id)}}},
+            "refund": {"entity": {"id": "rfnd_1", "payment_id": payment_id, "amount": refund_amount}},
+        },
+    }).encode()
+    signature = hmac.new(b"whsec_test", body, hashlib.sha256).hexdigest() if sign else "0" * 64
+    with patch.object(payment_routes_mod, "get_razorpay_webhook_secret", return_value="whsec_test"):
+        return app.test_client().post(
+            "/api/payment/razorpay/webhook", data=body,
+            headers={"X-Razorpay-Signature": signature, "Content-Type": "application/json"},
+        )
+
+
+def user_flag(engine, uid):
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT is_flagged, flag_reason FROM users WHERE id = :u"), {"u": uid}).fetchone()
+    return bool(row.is_flagged), row.flag_reason
+
+
 @needs_db
 class TestRefundReversesCommission:
-    @pytest.mark.xfail(strict=True, reason="audit note 5.7: refund webhooks are ignored; the referrer's commission "
-                                           "stays locked and is paid out on the next Saturday")
-    def test_a_refund_cancels_the_locked_commission(self, pg):
+    """Decision (audit note 5.7): cancel a commission that is still locked; flag, don't claw back, one already paid."""
+
+    def _paid(self, pg):
         agent = new_user(pg, "9000000001", "AGENTAAA", ip="198.51.100.1")
         referred = new_user(pg, "9000000002", "USERBBBB", referred_by=agent, ip="198.51.100.2")
         new_order(pg, referred, "order_ref1")
         pay(referred, "order_ref1", "pay_ref1")
-        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+        return agent, referred
 
-        body = json.dumps({
-            "event": "refund.processed",
-            "payload": {
-                "payment": {"entity": {"id": "pay_ref1", "order_id": "order_ref1", "status": "refunded",
-                                       "amount": 69900, "notes": {"user_id": str(referred)}}},
-                "refund": {"entity": {"id": "rfnd_1", "payment_id": "pay_ref1", "amount": 69900}},
-            },
-        }).encode()
-        signature = hmac.new(b"whsec_test", body, hashlib.sha256).hexdigest()
-        with patch.object(payment_routes_mod, "get_razorpay_webhook_secret", return_value="whsec_test"):
-            res = http_app().test_client().post(
-                "/api/payment/razorpay/webhook", data=body,
-                headers={"X-Razorpay-Signature": signature, "Content-Type": "application/json"},
-            )
-        assert res.status_code == 200
+    def test_a_full_refund_cancels_a_locked_commission_before_it_is_released(self, pg, caplog):
+        agent, referred = self._paid(pg)
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+        caplog.set_level(logging.INFO)
+        res = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred)
+        body = res.get_json()
+        assert res.status_code == 200 and body["status"] == "refund_processed"
+        assert (body["reversed"], body["flagged"], body["jobs_skipped"]) == (1, 0, 0)
+        assert [r["status"] for r in ledger(pg, agent)] == ["reversed"]
+        unlock_now(pg)  # only rows still 'locked' are ever released
+        assert release_locked_referral_payouts() == 0
+        assert balance(pg, agent) == 0.0
+        assert user_flag(pg, agent) == (False, None)
+        assert any("referral_commission REVERSED" in r.getMessage() and "pay_ref1" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_a_replayed_refund_webhook_changes_nothing_more(self, pg):
+        agent, referred = self._paid(pg)
+        first = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred).get_json()
+        again = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred).get_json()
+        assert first["reversed"] == 1 and again["reversed"] == 0
+        assert [r["status"] for r in ledger(pg, agent)] == ["reversed"]
+
+    def test_a_commission_already_paid_out_stays_in_the_wallet_and_flags_the_agent(self, pg):
+        agent, referred = self._paid(pg)
         unlock_now(pg)
         release_locked_referral_payouts()
-        assert balance(pg, agent) == 0.0  # a refunded payment must not pay a commission out
+        assert balance(pg, agent) == rupees(100.0)
+        body = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred).get_json()
+        assert (body["reversed"], body["flagged"]) == (0, 1)
+        assert balance(pg, agent) == rupees(100.0)  # no clawback, so no negative balance
+        assert [r["status"] for r in ledger(pg, agent)] == ["released"]
+        flagged, reason = user_flag(pg, agent)
+        assert flagged and "commission_refund_review" in reason and "pay_ref1" in reason and "already paid out" in reason
+        refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred)  # replay
+        assert user_flag(pg, agent)[1] == reason  # the same reason is not appended twice
+
+    def test_a_partial_refund_reverses_nothing_and_flags_the_agent(self, pg):
+        agent, referred = self._paid(pg)
+        body = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred,
+                              payment_status="captured", refund_amount=30000).get_json()
+        assert body["full_refund"] is False and (body["reversed"], body["flagged"]) == (0, 1)
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+        assert "partly refunded" in user_flag(pg, agent)[1] and "still locked" in user_flag(pg, agent)[1]
+
+    def test_a_refund_before_the_commission_job_ran_means_no_commission_is_ever_created(self, pg):
+        agent = new_user(pg, "9000000001", "AGENTAAA", ip="198.51.100.1")
+        referred = new_user(pg, "9000000002", "USERBBBB", referred_by=agent, ip="198.51.100.2")
+        new_order(pg, referred, "order_ref1")
+        _, spec = get_plan_spec("business_basic")
+        activated = finalize_paid_order("order_ref1", "pay_ref1", spec, 69900, user_id=referred, duration_days=30)
+        assert activated["success"]  # activation queued the job; nothing processed it yet
+        body = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred).get_json()
+        assert body["jobs_skipped"] == 1
+        after_payment_finalized(activated, razorpay_payment_id="pay_ref1")
+        assert ledger(pg, agent) == []
+        with pg.connect() as conn:
+            job = conn.execute(text("SELECT status, last_error FROM referral_commission_jobs")).fetchone()
+        assert job.status == "skipped" and job.last_error == "payment refunded"
+
+    def test_a_refund_for_an_unrelated_payment_touches_nothing(self, pg):
+        agent, _ = self._paid(pg)
+        body = refund_webhook(http_app(), "pay_other", "order_other").get_json()
+        assert (body["reversed"], body["flagged"], body["jobs_skipped"]) == (0, 0, 0)
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+
+    def test_the_refund_webhook_needs_a_valid_signature(self, pg):
+        agent, referred = self._paid(pg)
+        res = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred, sign=False)
+        assert res.status_code == 403
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+
+    def test_refund_created_does_not_reverse_anything_until_it_is_processed(self, pg):
+        agent, referred = self._paid(pg)
+        res = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred,
+                             event="refund.created", payment_status="captured")
+        assert res.status_code == 200
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
+
+    def test_a_failed_reversal_answers_500_so_razorpay_retries(self, pg):
+        agent, referred = self._paid(pg)
+        with patch.object(payment_routes_mod, "reverse_commission_for_refund", side_effect=RuntimeError("db down")):
+            res = refund_webhook(http_app(), "pay_ref1", "order_ref1", user_id=referred)
+        assert res.status_code == 500
+        assert [r["status"] for r in ledger(pg, agent)] == ["locked"]
 
 
 # =========================================================================
@@ -529,7 +681,7 @@ class TestAgentSeesEarnings:
 
     def test_wallet_overview_matches_the_ledger_before_and_after_release(self, pg):
         agent, _ = self._paid(pg)
-        client, headers = http_app().test_client(), None
+        client = http_app().test_client()
         headers = auth_header(client.application, agent)
         locked_total = sum(r["amount"] for r in ledger(pg, agent) if r["status"] == "locked")
         overview = client.get("/api/wallet/overview", headers=headers).get_json()
@@ -554,33 +706,62 @@ class TestAgentSeesEarnings:
         client = http_app().test_client()
         overview = client.get("/api/wallet/overview", headers=auth_header(client.application, referred)).get_json()
         assert overview["pending_unlock"] == rupees(0.0) and overview["available_balance"] == rupees(0.0)
+        tile = client.get("/api/payment/wallet", headers=auth_header(client.application, referred)).get_json()
+        assert tile["referral_earnings"] == 0
 
-    @pytest.mark.xfail(strict=True, reason="audit note 5.8: the dashboard's Referral Earnings tile reads "
-                                           "referral_earnings, which /api/payment/wallet never returns, so it "
-                                           "always shows Rs 0")
-    def test_the_dashboard_earnings_tile_gets_a_number_from_the_backend(self, pg):
-        agent, _ = self._paid(pg)
+    def test_the_dashboard_earnings_tile_is_all_commission_earned_and_matches_the_ledger(self, pg):
+        agent, referred = self._paid(pg)
         client = http_app().test_client()
-        data = client.get("/api/payment/wallet", headers=auth_header(client.application, agent)).get_json()
-        assert data["referral_earnings"] == rupees(169.90)
+        headers = auth_header(client.application, agent)
+        tile = client.get("/api/payment/wallet", headers=headers).get_json()
+        assert tile["referral_earnings"] == rupees(169.90)  # locked counts as earned
+        unlock_now(pg)
+        release_locked_referral_payouts()
+        tile = client.get("/api/payment/wallet", headers=headers).get_json()
+        assert tile["referral_earnings"] == rupees(169.90) and tile["wallet_balance"] == rupees(169.90)
+        # a refunded payment's commission is not earned (still-locked one is reversed):
+        new_order(pg, referred, "order_3")
+        pay(referred, "order_3", "pay_3")
+        assert client.get("/api/payment/wallet", headers=headers).get_json()["referral_earnings"] == rupees(239.80)
+        refund_webhook(http_app(), "pay_3", "order_3", user_id=referred)
+        assert client.get("/api/payment/wallet", headers=headers).get_json()["referral_earnings"] == rupees(169.90)
 
-    @pytest.mark.xfail(strict=True, reason="audit note 5.8: the leaderboard (and admin referral counts) read "
-                                           "referral_transactions, which nothing writes to, so they stay empty")
     def test_the_referral_leaderboard_counts_real_referrals(self, pg):
-        self._paid(pg)
+        agent_a = new_user(pg, "9000000001", "AGENTAAA", ip="198.51.100.1")
+        agent_c = new_user(pg, "9000000003", "AGENTCCC", ip="198.51.100.3")
+        for n, (phone, agent) in enumerate([("9111111111", agent_a), ("9222222222", agent_a), ("9333333333", agent_c)]):
+            new_user(pg, phone, f"REF{n:05d}", referred_by=agent, ip=f"203.0.113.{n + 1}")
+        with pg.connect() as conn:
+            conn.execute(text("UPDATE users SET name = 'Asha' WHERE id = :u"), {"u": agent_a})
+            conn.execute(text("UPDATE users SET name = 'Chetan' WHERE id = :u"), {"u": agent_c})
+            conn.commit()
         rows = http_app().test_client().get("/api/referral-leaderboard").get_json()
-        assert [r["total_referrals"] for r in rows] == [1]
+        assert [(r["name"], r["total_referrals"]) for r in rows] == [("Asha", 2), ("Chetan", 1)]
 
-    def test_nothing_writes_to_the_referral_transactions_table(self):
-        """Documents the cause of the two xfail tests above."""
+    def test_admin_referral_list_and_counts_match_the_ledger(self, pg):
+        agent, referred = self._paid(pg)
+        idle = new_user(pg, "9444444444", "IDLEUSER", referred_by=agent, ip="198.51.100.9")  # never pays
+        with patch.object(admin_service, "get_db_connection", pg.connect):
+            listing = admin_service.get_admin_referrals()
+            stats = admin_service.get_admin_stats("week")
+        rows = {r["referred_phone"]: r for r in listing["referrals"]}
+        assert listing["total"] == 2 and set(rows) == {"9000000002", "9444444444"}
+        assert rows["9000000002"]["reward_amount"] == 169.9 and rows["9000000002"]["status"] == "qualified"
+        assert rows["9444444444"]["reward_amount"] == 0 and rows["9444444444"]["status"] == "pending"
+        assert rows["9000000002"]["referrer_phone"] == "9000000001"
+        assert stats["total_referrals"] == 2
+
+    def test_nothing_reads_or_writes_the_dead_referral_transactions_table(self):
+        """It was read by the leaderboard and admin counts but never written, so they were always empty."""
         import re
 
-        writers = []
+        touching = []
         for folder in ("routes", "services", "agents", "utils", "migrations"):
             for path in (ROOT / folder).glob("*.py"):
-                if re.search(r"(?i)(insert\s+into|update|delete\s+from)\s+referral_transactions", path.read_text(encoding="utf-8-sig")):
-                    writers.append(path.name)
-        assert writers == []
+                if re.search(r"(?i)(from|join|insert\s+into|update|delete\s+from)\s+referral_transactions",
+                             path.read_text(encoding="utf-8-sig")):
+                    touching.append(path.name)
+        assert touching == []
 
 
 # =========================================================================
